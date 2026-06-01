@@ -232,6 +232,7 @@ async def list_devices(
         d.ip = ip_map.get(r.id)
         if d.ip and d.ip in addr_by_ip:
             aid, adev = addr_by_ip[d.ip]
+            d.ip_address_id = str(aid)   # 有對應的 IPAddress → IP 欄可點進該位址
             if adev != r.id:   # 還沒連到本裝置 → 可一鍵關聯
                 d.ip_match_id = str(aid)
         items.append(d)

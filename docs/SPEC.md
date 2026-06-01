@@ -2,13 +2,13 @@
 
 > 版本：v0.3（完整整合版）
 > 作者：Jason Tools Co., Ltd.（節省工具箱）
-> 定位：以 phpIPAM 操作邏輯為核心，重新打造的現代化 IPAM 系統，深度整合多家 DNS Server、LibreNMS 與本地 AI
+> 定位：新世代、可自架的現代化 IPAM 系統，深度整合多家 DNS Server、LibreNMS、OPNsense 與本地 AI；提供 phpIPAM 相容 API 與平滑遷移路徑（並非建構於 phpIPAM 之上）
 
 ---
 
 ## 〇、設計主軸
 
-**主軸：以 phpIPAM 的使用習慣與術語為準**，NetBox 的功能僅作為「補強」加入，不取代 phpIPAM 既有的操作邏輯。
+**主軸：自成一格的現代化 IPAM**；操作體驗「參考」phpIPAM 熟悉的術語與習慣以降低遷移門檻，並吸收 NetBox 的優點，但本系統並非建構於 phpIPAM 之上，也不受其架構限制。
 
 | 維度 | 採用方 | 說明 |
 |------|--------|------|

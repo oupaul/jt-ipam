@@ -145,9 +145,9 @@ const allIpColumns = computed<DataTableColumns<IPAddress>>(() => autoSort([
   { title: t("addresses.mac"), key: "mac", width: 150, render: (r) => r.mac ?? "" },
   { title: t("cols.vendor"), key: "mac_vendor", width: 140,
     ellipsis: { tooltip: true }, render: (r) => r.mac_vendor ?? "—" },
-  { title: t("addresses.switch_port"), key: "switch_port", width: 140,
+  { title: t("addresses.switch_port"), key: "switch_port", minWidth: 180,
     ellipsis: { tooltip: true }, render: (r) => r.switch_port ?? "" },
-  { title: t("common.description"), key: "description", width: 220,
+  { title: t("common.description"), key: "description", minWidth: 140,
     ellipsis: { tooltip: true }, render: (r) => r.description ?? "" },
   { title: t("addresses.last_seen"), key: "last_seen", width: 170, render: (r) => lastSeen(r) },
 ]));

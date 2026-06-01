@@ -93,6 +93,7 @@ async def list_addresses(
     q: str | None = Query(None, max_length=128,
                           description="模糊搜尋所有文字欄位（IP / hostname / MAC / "
                                       "description / owner / switch_port / note / state）"),
+    exact: bool = Query(False, description="完全符合：IP / hostname 須與 q 完全相等"),
     sort: str | None = Query(None, description="排序欄位：ip/hostname/mac/state/owner/switch_port/note/discovery_source"),
     order: str = Query("asc", pattern="^(asc|desc)$"),
     page: int = Query(1, ge=1, le=10_000),
@@ -119,19 +120,26 @@ async def list_addresses(
         count_stmt = count_stmt.where(IPAddress.device_id == device_id)
 
     if q:
-        # 跳脫 LIKE 萬用字元，避免使用者輸入 % / _ 造成大範圍掃描
-        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        pattern = f"%{escaped}%"
-        search_clause = or_(
-            cast(IPAddress.ip, String).ilike(pattern, escape="\\"),
-            IPAddress.hostname.ilike(pattern, escape="\\"),
-            cast(IPAddress.mac, String).ilike(pattern, escape="\\"),
-            IPAddress.description.ilike(pattern, escape="\\"),
-            IPAddress.owner.ilike(pattern, escape="\\"),
-            IPAddress.switch_port.ilike(pattern, escape="\\"),
-            IPAddress.note.ilike(pattern, escape="\\"),
-            IPAddress.state.ilike(pattern, escape="\\"),
-        )
+        if exact:
+            # 完全符合：IP 完全相等（host() 去掉 /prefix）或 hostname 完全相等
+            search_clause = or_(
+                func.host(IPAddress.ip) == q,
+                IPAddress.hostname == q,
+            )
+        else:
+            # 跳脫 LIKE 萬用字元，避免使用者輸入 % / _ 造成大範圍掃描
+            escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped}%"
+            search_clause = or_(
+                cast(IPAddress.ip, String).ilike(pattern, escape="\\"),
+                IPAddress.hostname.ilike(pattern, escape="\\"),
+                cast(IPAddress.mac, String).ilike(pattern, escape="\\"),
+                IPAddress.description.ilike(pattern, escape="\\"),
+                IPAddress.owner.ilike(pattern, escape="\\"),
+                IPAddress.switch_port.ilike(pattern, escape="\\"),
+                IPAddress.note.ilike(pattern, escape="\\"),
+                IPAddress.state.ilike(pattern, escape="\\"),
+            )
         stmt = stmt.where(search_clause)
         count_stmt = count_stmt.where(search_clause)
 

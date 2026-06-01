@@ -1,7 +1,7 @@
 {
   "app": {
     "title": "jt-ipam",
-    "tagline": "新世代 IPAM — 以 phpIPAM 為核心，整合 DNS / LibreNMS / AI"
+    "tagline": "新世代自架 IPAM — 整合 DNS / LibreNMS / OPNsense / AI，可從 phpIPAM 遷移"
   },
   "login": {
     "title": "登入 jt-ipam",
@@ -262,7 +262,9 @@
     "indicator_source": "來源：掃描代理 + LibreNMS + OPNsense ARP 綜合判定",
     "no_subnet_data": "沒有 subnet 資料；請先建立 區段 + 子網路 並配發 IP。",
     "heat_summary": "{subnets} 子網路 · {used} / {total}",
-    "pinned_subnets": "常用子網路"
+    "pinned_subnets": "常用子網路",
+    "pinned_locations": "常用機房 / 地點",
+    "pinned_racks": "常用機櫃"
   },
   "sections": {
     "title": "區段",
@@ -540,14 +542,16 @@
     "src": {
       "manual": "手動",
       "dns": "DNS",
-      "librenms": "LibreNMS",
+      "librenms": "LibreNMS (hostname)",
       "opnsense": "OPNsense",
       "scanner": "掃描代理",
       "proxmox": "Proxmox VE",
       "wazuh": "Wazuh",
       "adguard": "AdGuard",
-      "snmp": "SNMP sysName"
-    }
+      "snmp": "LibreNMS (sysName)"
+    },
+    "model_title": "裝置型號來源順序",
+    "model_subtitle": "多個來源（LibreNMS hardware / Proxmox / OPNsense）提供同一台裝置型號時，排越前面優先採用；手動最高且不可停用。拖拉調整。"
   },
   "addresses": {
     "search_placeholder": "搜尋所有欄位 (IP / 主機名稱 / MAC / 描述 / 擁有者 / 交換器位置 / 備註)",
@@ -586,7 +590,8 @@
     "effective_online": "上線",
     "effective_offline": "離線",
     "effective_unknown": "未知",
-    "effective_stale": "近期出現"
+    "effective_stale": "近期出現",
+    "exact_match": "完全符合"
   },
   "subnets": {
     "title": "子網路",
@@ -723,7 +728,11 @@
     "error_name_required": "請填名稱",
     "error_location_for_rack": "選了機櫃就要選對應的地點",
     "primary_ip": "主要 IP",
-    "link_matching_ip": "關聯相符的 IP 位址"
+    "link_matching_ip": "關聯相符的 IP 位址",
+    "pick_u": "挑選 U 位",
+    "pick_u_hint": "點空的 U 列即可填入起始 U 位（灰色為已占用）",
+    "u_free": "（空）",
+    "pick_u_btn": "挑 U"
   },
   "locations": {
     "site": "場域",
@@ -769,7 +778,11 @@
     "diagram_title": "機櫃示意圖",
     "diagram_empty": "請選擇機櫃以顯示 U 位視覺化。",
     "all_title": "所有機櫃",
-    "fp_location_hint": "完整的機櫃拖拉定位，請到「機櫃」頁選此機房編輯。"
+    "fp_location_hint": "完整的機櫃拖拉定位，請到「機櫃」頁選此機房編輯。",
+    "pick_device_here": "點此挑裝置放入這個 U 位",
+    "place_device": "放入裝置",
+    "pick_device_ph": "選擇裝置（未放置的排在前面）",
+    "place_device_hint": "選好後會把該裝置的機櫃與起始 U 位設成這裡（佔用 1U）。"
   },
   "requests": {
     "title": "IP 申請",

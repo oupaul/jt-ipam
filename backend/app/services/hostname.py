@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 HOSTNAME_KEY = "hostname_precedence"
 # 預設：人工最優先，其次 DNS、LibreNMS、OPNsense、掃描、Proxmox
-DEFAULT_ORDER: list[str] = ["manual", "dns", "librenms", "opnsense", "scanner", "proxmox"]
+DEFAULT_ORDER: list[str] = ["manual", "dns", "librenms", "opnsense", "scanner", "proxmox", "wazuh", "adguard"]
 _TTL_SEC = 60.0
 _cache: dict[str, tuple[float, list[str]]] = {}
 
@@ -44,6 +44,10 @@ def _sanitize_order(raw: object) -> list[str]:
                 out.append(s)
     # 補上沒列到的來源（維持 DEFAULT_ORDER 的相對次序）
     for s in DEFAULT_ORDER:
+        if s not in out:
+            out.append(s)
+    # 保險：HOSTNAME_SOURCES 內若有未列到的（如新增的 wazuh/adguard）也補上
+    for s in HOSTNAME_SOURCES:
         if s not in out:
             out.append(s)
     return out

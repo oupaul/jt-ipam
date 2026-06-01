@@ -148,8 +148,8 @@ function navigateTo(value: string) {
       router.push({ name: "section-detail", params: { id } });
       break;
     case "ip_address":
-      // 帶 IP 字串給位址頁去搜尋過濾 (後端 q 支援 IP 模糊)
-      router.push({ name: "addresses", query: { q: hit?.label ?? id } });
+      // 帶 IP 字串去過濾，並用 open=<id> 讓位址頁直接打開該筆明細
+      router.push({ name: "addresses", query: { q: hit?.label ?? id, open: id } });
       break;
     case "device":
       router.push({ name: "device-detail", params: { id } });

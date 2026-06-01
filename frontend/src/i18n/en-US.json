@@ -1,7 +1,7 @@
 {
   "app": {
     "title": "jt-ipam",
-    "tagline": "Modern IPAM — phpIPAM-aligned, integrating DNS / LibreNMS / AI"
+    "tagline": "Modern self-hosted IPAM — integrating DNS / LibreNMS / OPNsense / AI, with phpIPAM migration"
   },
   "login": {
     "title": "Sign in to jt-ipam",
@@ -262,7 +262,9 @@
     "indicator_source": "Source: scan agents + LibreNMS + OPNsense ARP (combined)",
     "no_subnet_data": "No subnet data; create a Section + Subnet and allocate IPs first.",
     "heat_summary": "{subnets} subnets · {used} / {total}",
-    "pinned_subnets": "Pinned subnets"
+    "pinned_subnets": "Pinned subnets",
+    "pinned_locations": "Pinned rooms / locations",
+    "pinned_racks": "Pinned racks"
   },
   "sections": {
     "title": "Sections",
@@ -540,14 +542,16 @@
     "src": {
       "manual": "Manual",
       "dns": "DNS (authoritative)",
-      "librenms": "LibreNMS",
+      "librenms": "LibreNMS (hostname)",
       "opnsense": "OPNsense",
       "scanner": "Scanner",
       "proxmox": "Proxmox VE",
       "wazuh": "Wazuh",
       "adguard": "AdGuard",
-      "snmp": "SNMP sysName"
-    }
+      "snmp": "LibreNMS (sysName)"
+    },
+    "model_title": "Device model source order",
+    "model_subtitle": "When multiple sources (LibreNMS hardware / Proxmox / OPNsense) provide a device model, higher = preferred; manual is highest and can't be disabled. Drag to reorder."
   },
   "addresses": {
     "search_placeholder": "Search all fields (IP / hostname / MAC / description / owner / switch location / note)",
@@ -586,7 +590,8 @@
     "effective_online": "online",
     "effective_offline": "offline",
     "effective_unknown": "unknown",
-    "effective_stale": "stale"
+    "effective_stale": "stale",
+    "exact_match": "Exact match"
   },
   "subnets": {
     "title": "Subnets",
@@ -723,7 +728,11 @@
     "error_name_required": "Name is required",
     "error_location_for_rack": "When picking a rack, also pick its location",
     "primary_ip": "Primary IP",
-    "link_matching_ip": "Link matching IP address"
+    "link_matching_ip": "Link matching IP address",
+    "pick_u": "Pick U position",
+    "pick_u_hint": "Click a free U row to set the starting U (grey = occupied)",
+    "u_free": "(free)",
+    "pick_u_btn": "Pick U"
   },
   "locations": {
     "site": "Site",
@@ -769,7 +778,11 @@
     "diagram_title": "Rack diagram",
     "diagram_empty": "Select a rack to view its U layout.",
     "all_title": "All racks",
-    "fp_location_hint": "For full rack drag-and-drop placement, open this room in the Racks page."
+    "fp_location_hint": "For full rack drag-and-drop placement, open this room in the Racks page.",
+    "pick_device_here": "Click to place a device in this U",
+    "place_device": "Place device",
+    "pick_device_ph": "Pick a device (unplaced first)",
+    "place_device_hint": "Sets the device's rack and starting U to here (1U)."
   },
   "requests": {
     "title": "IP Requests",

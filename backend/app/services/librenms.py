@@ -239,9 +239,11 @@ async def link_librenms_device(
     if dev is None:
         if not create:
             return None, False
+        from app.services.model_precedence import resolve_device_model
+        model_val = await resolve_device_model(session, {"librenms": str(ldev.hardware or "")})
         dev = Device(
             name=name, type=_infer_device_type(ldev),
-            vendor=ldev.os or ldev.hardware, serial=ldev.serial,
+            vendor=ldev.os or ldev.hardware, model=model_val, serial=ldev.serial,
         )
         session.add(dev)
         await session.flush()

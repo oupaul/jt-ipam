@@ -4,12 +4,13 @@
  * 原生 HTML5 拖拉排序，無額外相依。
  */
 import { onMounted, ref } from "vue";
-import { NButton, NCard, NSpin, NText, NSwitch, useMessage } from "naive-ui";
+import { NButton, NCard, NSpin, NText, NSwitch, NSpace, useMessage } from "naive-ui";
 import { useI18n } from "vue-i18n";
 import {
   getHostnamePrecedence, setHostnamePrecedence,
   getArpPrecedence, setArpPrecedence,
   getDevNamePrecedence, setDevNamePrecedence,
+  getModelPrecedence, setModelPrecedence,
 } from "@/api/hostname";
 
 const { t } = useI18n();
@@ -93,6 +94,42 @@ async function saveDev() {
   } finally { devSaving.value = false; }
 }
 
+// ── 裝置型號來源順序 ──
+const modelOrder = ref<string[]>([]);
+const modelDisabled = ref<string[]>([]);
+const modelSaving = ref(false);
+const modelDragIndex = ref<number | null>(null);
+function modelIsEnabled(s: string): boolean { return !modelDisabled.value.includes(s); }
+function modelSetEnabled(s: string, on: boolean) {
+  if (s === "manual") return;
+  if (on) modelDisabled.value = modelDisabled.value.filter((x) => x !== s);
+  else if (!modelDisabled.value.includes(s)) modelDisabled.value = [...modelDisabled.value, s];
+}
+function modelSrcLabel(s: string): string {
+  const key = `hostnameSrc.src.${s}`;
+  const out = t(key);
+  return out === key ? s : out;
+}
+function onModelDrop(i: number) {
+  if (modelDragIndex.value === null || modelDragIndex.value === i) return;
+  const arr = [...modelOrder.value];
+  const [moved] = arr.splice(modelDragIndex.value, 1);
+  arr.splice(i, 0, moved);
+  modelOrder.value = arr;
+  modelDragIndex.value = null;
+}
+async function saveModel() {
+  modelSaving.value = true;
+  try {
+    const r = await setModelPrecedence(modelOrder.value, modelDisabled.value);
+    modelOrder.value = r.order;
+    modelDisabled.value = r.disabled ?? [];
+    msg.success(t("hostnameSrc.saved"));
+  } catch (e: any) {
+    msg.error(e?.response?.data?.detail ?? "save failed");
+  } finally { modelSaving.value = false; }
+}
+
 function srcLabel(s: string): string {
   const key = `hostnameSrc.src.${s}`;
   const out = t(key);
@@ -108,8 +145,8 @@ function setEnabled(s: string, on: boolean) {
 async function load() {
   loading.value = true;
   try {
-    const [p, a, d] = await Promise.all([
-      getHostnamePrecedence(), getArpPrecedence(), getDevNamePrecedence(),
+    const [p, a, d, m] = await Promise.all([
+      getHostnamePrecedence(), getArpPrecedence(), getDevNamePrecedence(), getModelPrecedence(),
     ]);
     order.value = p.order;
     disabled.value = p.disabled ?? [];
@@ -117,6 +154,8 @@ async function load() {
     arpDisabled.value = a.disabled ?? [];
     devOrder.value = d.order;
     devDisabled.value = d.disabled ?? [];
+    modelOrder.value = m.order;
+    modelDisabled.value = m.disabled ?? [];
   } finally {
     loading.value = false;
   }
@@ -151,12 +190,12 @@ onMounted(load);
 </script>
 
 <template>
-  <n-card :title="t('hostnameSrc.page_title')" :bordered="false">
-    <n-text depth="3" style="display: block; margin-bottom: 16px; font-size: 13px">
-      {{ t("hostnameSrc.page_subtitle") }}
-    </n-text>
-
-    <n-spin :show="loading">
+  <n-spin :show="loading">
+   <n-space vertical :size="16">
+    <n-card :title="t('hostnameSrc.page_title')">
+      <n-text depth="3" style="display: block; margin-bottom: 12px; font-size: 13px">
+        {{ t("hostnameSrc.page_subtitle") }}
+      </n-text>
       <n-text depth="3" style="font-size: 12px">{{ t("hostnameSrc.drag_hint") }}</n-text>
       <ul class="rank-list">
         <li
@@ -189,9 +228,9 @@ onMounted(load);
       <n-button type="primary" :loading="saving" style="margin-top: 16px" @click="save">
         {{ t("hostnameSrc.save") }}
       </n-button>
+    </n-card>
 
-      <div class="arp-section">
-        <h3 style="margin: 0 0 4px">{{ t("hostnameSrc.arp_title") }}</h3>
+    <n-card :title="t('hostnameSrc.arp_title')">
         <n-text depth="3" style="display: block; font-size: 13px; margin-bottom: 8px">
           {{ t("hostnameSrc.arp_subtitle") }}
         </n-text>
@@ -225,10 +264,9 @@ onMounted(load);
         <n-button type="primary" :loading="arpSaving" style="margin-top: 16px" @click="saveArp">
           {{ t("hostnameSrc.save") }}
         </n-button>
-      </div>
+    </n-card>
 
-      <div class="arp-section">
-        <h3 style="margin: 0 0 4px">{{ t("hostnameSrc.dev_title") }}</h3>
+    <n-card :title="t('hostnameSrc.dev_title')">
         <n-text depth="3" style="display: block; font-size: 13px; margin-bottom: 8px">
           {{ t("hostnameSrc.dev_subtitle") }}
         </n-text>
@@ -262,9 +300,45 @@ onMounted(load);
         <n-button type="primary" :loading="devSaving" style="margin-top: 16px" @click="saveDev">
           {{ t("hostnameSrc.save") }}
         </n-button>
-      </div>
-    </n-spin>
-  </n-card>
+    </n-card>
+
+    <n-card :title="t('hostnameSrc.model_title')">
+        <n-text depth="3" style="display: block; font-size: 13px; margin-bottom: 8px">
+          {{ t("hostnameSrc.model_subtitle") }}
+        </n-text>
+        <ul class="rank-list">
+          <li
+            v-for="(s, i) in modelOrder" :key="s"
+            class="rank-item"
+            :class="{ dragging: modelDragIndex === i, disabled: !modelIsEnabled(s) }"
+            draggable="true"
+            @dragstart="modelDragIndex = i"
+            @dragover="onDragOver"
+            @drop="onModelDrop(i)"
+            @dragend="modelDragIndex = null"
+          >
+            <span class="rank-num">{{ i + 1 }}</span>
+            <span class="rank-handle">⠿</span>
+            <span class="rank-label">{{ modelSrcLabel(s) }}</span>
+            <span class="rank-key">{{ s }}</span>
+            <n-switch
+              :value="modelIsEnabled(s)"
+              :disabled="s === 'manual'"
+              size="small"
+              style="margin-left: auto"
+              @update:value="(v: boolean) => modelSetEnabled(s, v)"
+            >
+              <template #checked>{{ t("hostnameSrc.enabled") }}</template>
+              <template #unchecked>{{ t("hostnameSrc.disabled") }}</template>
+            </n-switch>
+          </li>
+        </ul>
+        <n-button type="primary" :loading="modelSaving" style="margin-top: 16px" @click="saveModel">
+          {{ t("hostnameSrc.save") }}
+        </n-button>
+    </n-card>
+   </n-space>
+  </n-spin>
 </template>
 
 <style scoped>

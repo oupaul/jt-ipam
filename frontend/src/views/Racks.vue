@@ -28,7 +28,7 @@ import RackDiagram from "@/components/RackDiagram.vue";
 import { RACK_DEVICE_TYPES, rackTypeColor } from "@/utils/rackColors";
 import RackFloorPlan from "@/components/RackFloorPlan.vue";
 import { getRackDiagram, type RackDiagram as RD } from "@/api/racks";
-import { bulkDeleteRacks, listLocations, type Location } from "@/api/basic";
+import { bulkDeleteRacks, listLocations, listDevices, updateDevice, type Location, type Device } from "@/api/basic";
 import { useAuthStore } from "@/stores/auth";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
@@ -290,6 +290,42 @@ onMounted(() => {
     }
   }).catch(() => { /* silent */ });
 });
+
+// ── 點空 U 位 → 挑裝置放入 ──
+const showDevicePick = ref(false);
+const pickEmptyU = ref<number | null>(null);
+const pickDeviceId = ref<string | null>(null);
+const pickableDevices = ref<Device[]>([]);
+const pickBusy = ref(false);
+const pickDeviceOpts = computed(() => pickableDevices.value.map((d) => ({
+  label: d.ip ? `${d.name} — ${d.ip}` : d.name, value: d.id,
+})));
+async function onPickEmpty(u: number) {
+  if (!diagram.value) return;
+  pickEmptyU.value = u;
+  pickDeviceId.value = null;
+  showDevicePick.value = true;
+  try {
+    const r = await listDevices();
+    // 優先列「尚未放進任何機櫃」的裝置；其餘也可選（會搬過來）
+    pickableDevices.value = r.items
+      .filter((d) => !(d as any).rack_id)
+      .concat(r.items.filter((d) => (d as any).rack_id));
+  } catch { msg.error(t("errors.network")); }
+}
+async function confirmPickDevice() {
+  if (!pickDeviceId.value || !diagram.value || pickEmptyU.value == null) return;
+  pickBusy.value = true;
+  try {
+    await updateDevice(pickDeviceId.value, {
+      rack_id: diagram.value.rack_id, u_position: pickEmptyU.value, u_size: 1,
+    } as any);
+    showDevicePick.value = false;
+    msg.success(t("common.ok"));
+    diagram.value = await getRackDiagram(diagram.value.rack_id);
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+  finally { pickBusy.value = false; }
+}
 </script>
 
 <template>
@@ -364,7 +400,7 @@ onMounted(() => {
 
     <!-- 單一機櫃模式 -->
     <n-spin v-else :show="diagramLoading">
-      <rack-diagram v-if="diagram" :diagram="diagram" />
+      <rack-diagram v-if="diagram" :diagram="diagram" :editable="isAdmin" @pick-empty="onPickEmpty" />
       <n-card v-else-if="!selected" :title="t('racks.diagram_title')">
         <p style="opacity: 0.7">{{ t("racks.diagram_empty") }}</p>
       </n-card>
@@ -459,6 +495,22 @@ onMounted(() => {
         <n-button type="primary" @click="submitRack">
           <template #icon><n-icon><SaveIcon /></n-icon></template>
           {{ t("common.save") }}
+        </n-button>
+      </n-space>
+    </n-modal>
+
+    <!-- 點空 U 位 → 挑裝置放入 -->
+    <n-modal v-model:show="showDevicePick" preset="card" style="width: 420px"
+             :title="t('racks.place_device') + (pickEmptyU != null ? ' · U' + pickEmptyU : '')">
+      <n-form-item :label="t('nav.devices')">
+        <n-select v-model:value="pickDeviceId" :options="pickDeviceOpts" filterable
+                  :placeholder="t('racks.pick_device_ph')" />
+      </n-form-item>
+      <p style="font-size:12px; opacity:.6; margin:0 0 8px">{{ t("racks.place_device_hint") }}</p>
+      <n-space justify="end">
+        <n-button @click="showDevicePick = false">{{ t("common.cancel") }}</n-button>
+        <n-button type="primary" :disabled="!pickDeviceId" :loading="pickBusy" @click="confirmPickDevice">
+          {{ t("common.ok") }}
         </n-button>
       </n-space>
     </n-modal>

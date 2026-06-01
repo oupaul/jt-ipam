@@ -1,4 +1,4 @@
-"""Device — phpIPAM 風格簡潔設備清單。"""
+"""Device — 簡潔設備清單。"""
 
 from __future__ import annotations
 

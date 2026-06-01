@@ -131,6 +131,46 @@ async def put_devname_precedence_ep(
     return HostnamePrecedenceOut(order=order, disabled=disabled, sources=list(DEVNAME_SOURCES))
 
 
+@router.get("/device-model-precedence", response_model=HostnamePrecedenceOut)
+async def get_model_precedence_ep(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HostnamePrecedenceOut:
+    """裝置型號來源順序：多來源（LibreNMS hardware/Proxmox/OPNsense…）提供型號時誰優先。"""
+    from app.services.model_precedence import (
+        MODEL_SOURCES, get_model_disabled, get_model_precedence,
+    )
+    return HostnamePrecedenceOut(
+        order=await get_model_precedence(session),
+        disabled=await get_model_disabled(session),
+        sources=list(MODEL_SOURCES),
+    )
+
+
+@router.put("/device-model-precedence", response_model=HostnamePrecedenceOut)
+async def put_model_precedence_ep(
+    payload: HostnamePrecedencePatch,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> HostnamePrecedenceOut:
+    from app.services.model_precedence import MODEL_SOURCES, set_model_precedence
+    order, disabled = await set_model_precedence(
+        session, order=payload.order, disabled=payload.disabled, updated_by_user_id=user.id,
+    )
+    await append_audit(
+        session,
+        actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "device_model_precedence", "order": order, "disabled": disabled},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return HostnamePrecedenceOut(order=order, disabled=disabled, sources=list(MODEL_SOURCES))
+
+
 @router.get("/arp-precedence", response_model=ArpPrecedenceOut)
 async def get_arp_precedence_ep(
     _user: CurrentUser,

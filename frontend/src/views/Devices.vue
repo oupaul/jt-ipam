@@ -5,15 +5,16 @@ import { useI18n } from "vue-i18n";
 import { apiClient } from "@/api/client";
 import {
   NCard, NDataTable, NSpace, NIcon, NButton, NModal, NForm, NFormItem,
-  NInput, NInputNumber, NSelect, NPopconfirm, NTag, NTooltip,
+  NInput, NInputNumber, NInputGroup, NSelect, NPopconfirm, NTag, NTooltip, NSpin,
   useMessage, type DataTableColumns, type DataTableRowKey,
 } from "naive-ui";
 import {
   listDevices, createDevice, updateDevice, deleteDevice, bulkDeleteDevices, type Device,
   listLocations, listRacks, type Location, type Rack,
 } from "@/api/basic";
+import { getRackDiagram, type RackDiagram } from "@/api/racks";
 import {
-  DevicesIcon, PlusIcon, EditIcon, DeleteIcon, RefreshIcon, SaveIcon, CancelIcon, EyeIcon, LinkIcon,
+  DevicesIcon, PlusIcon, EditIcon, DeleteIcon, RefreshIcon, SaveIcon, CancelIcon, EyeIcon, LinkIcon, RacksIcon,
 } from "@/icons";
 import { cmpNatural } from "@/utils/sort";
 import { listAddresses } from "@/api/addresses";
@@ -151,7 +152,41 @@ function openEdit(r: Device) {
 // 切 location 時清掉 rack(避免選到別 location 的 rack)
 function onLocationChange() {
   const rackStillValid = racks.value.find((r) => r.id === form.value.rack_id)?.location_id === form.value.location_id;
-  if (!rackStillValid) form.value.rack_id = null;
+  if (!rackStillValid) { form.value.rack_id = null; uPickerDiagram.value = null; }
+}
+function onRackChange() { uPickerDiagram.value = null; }
+
+// ── 迷你機櫃 U 位挑選器 ──
+const showUPicker = ref(false);
+const uPickerDiagram = ref<RackDiagram | null>(null);
+const uPickerLoading = ref(false);
+// U 編號 -> 佔用它的裝置名稱（顯示哪些 U 已被占用）
+const uOccupied = computed<Record<number, string>>(() => {
+  const m: Record<number, string> = {};
+  for (const d of uPickerDiagram.value?.devices ?? []) {
+    for (let u = d.u_position; u < d.u_position + d.u_size; u++) {
+      if (editing.value && d.device_id === editing.value.id) continue;  // 編輯中的自己不算占用
+      m[u] = d.name;
+    }
+  }
+  return m;
+});
+const uRows = computed(() => {
+  const n = uPickerDiagram.value?.u_height ?? 0;
+  return Array.from({ length: n }, (_, i) => n - i);   // 由上而下 = 大U在上
+});
+async function openUPicker() {
+  if (!form.value.rack_id) return;
+  uPickerLoading.value = true;
+  showUPicker.value = true;
+  try { uPickerDiagram.value = await getRackDiagram(form.value.rack_id); }
+  catch { msg.error(t("errors.network")); }
+  finally { uPickerLoading.value = false; }
+}
+function pickU(u: number) {
+  form.value.u_position = u;
+  if (!form.value.u_size) form.value.u_size = 1;
+  showUPicker.value = false;
 }
 
 async function submit() {
@@ -234,7 +269,21 @@ const allCols = computed<DataTableColumns<Device>>(() => [
   },
   {
     title: "IP", key: "ip",
-    render: (r) => r.ip ?? "—",
+    render: (r) => {
+      if (!r.ip) return "—";
+      // 有對應的 IP 位址物件 → 可點，帶去該位址
+      if (r.ip_address_id) {
+        return h("a", {
+          href: "#",
+          style: "color: var(--primary-color, #18a058); text-decoration: none; cursor: pointer;",
+          onClick: (e: MouseEvent) => {
+            e.preventDefault(); e.stopPropagation();
+            router.push({ name: "addresses", query: { q: r.ip } });
+          },
+        }, r.ip);
+      }
+      return r.ip;
+    },
     sorter: (a, b) => cmpNatural(a.ip ?? "", b.ip ?? ""),
   },
   {
@@ -409,30 +458,36 @@ onMounted(async () => {
         </n-form-item>
 
         <h4 style="margin: 8px 0 4px 0">{{ t("devices.placement_section") }}</h4>
-        <n-space>
-          <n-form-item :label="t('devices.location')" style="min-width: 240px">
+        <div class="dev-row">
+          <n-form-item :label="t('devices.location')">
             <n-select v-model:value="form.location_id" :options="locationOpts" filterable clearable
                       :placeholder="t('devices.location_placeholder')"
-                      @update:value="onLocationChange" />
+                      @update:value="onLocationChange" style="width: 100%" />
           </n-form-item>
-          <n-form-item :label="t('devices.rack')" style="min-width: 240px">
+          <n-form-item :label="t('devices.rack')">
             <n-select v-model:value="form.rack_id" :options="filteredRackOpts" filterable clearable
                       :placeholder="form.location_id
                         ? t('devices.rack_placeholder')
                         : t('devices.rack_pick_location_first')"
-                      :disabled="!form.location_id" />
+                      :disabled="!form.location_id" style="width: 100%"
+                      @update:value="onRackChange" />
           </n-form-item>
-        </n-space>
-        <n-space>
-          <n-form-item :label="t('devices.u_position')" style="min-width: 160px">
-            <n-input-number v-model:value="form.u_position" :min="1" :max="99" clearable
-                            :disabled="!form.rack_id" />
+        </div>
+        <div class="dev-row">
+          <n-form-item :label="t('devices.u_position')">
+            <n-input-group>
+              <n-input-number v-model:value="form.u_position" :min="1" :max="99" clearable
+                              :disabled="!form.rack_id" style="flex: 1" />
+              <n-button :disabled="!form.rack_id" @click="openUPicker" :title="t('devices.pick_u')">
+                <template #icon><n-icon><RacksIcon /></n-icon></template>
+              </n-button>
+            </n-input-group>
           </n-form-item>
-          <n-form-item :label="t('devices.u_size')" style="min-width: 160px">
+          <n-form-item :label="t('devices.u_size')">
             <n-input-number v-model:value="form.u_size" :min="1" :max="99" clearable
-                            :disabled="!form.rack_id" />
+                            :disabled="!form.rack_id" style="width: 100%" />
           </n-form-item>
-        </n-space>
+        </div>
 
         <n-form-item :label="t('nav.customers')" style="margin-top: 8px">
           <n-select v-model:value="form.customer_id" :options="customerOptions"
@@ -454,5 +509,37 @@ onMounted(async () => {
         </n-button>
       </n-space>
     </n-modal>
+
+    <!-- 迷你機櫃：挑 U 位 -->
+    <n-modal v-model:show="showUPicker" preset="card" style="width: 340px" :title="t('devices.pick_u')">
+      <n-spin :show="uPickerLoading">
+        <p style="font-size:12px; opacity:.65; margin:0 0 8px">{{ t("devices.pick_u_hint") }}</p>
+        <div class="upick-rack">
+          <div v-for="u in uRows" :key="u" class="upick-row"
+               :class="{ occupied: uOccupied[u], cur: form.u_position === u }"
+               @click="!uOccupied[u] && pickU(u)">
+            <span class="upick-u">{{ u }}</span>
+            <span class="upick-body">{{ uOccupied[u] || t("devices.u_free") }}</span>
+          </div>
+        </div>
+      </n-spin>
+    </n-modal>
   </n-card>
 </template>
+
+<style scoped>
+/* 地點/機櫃、U位/佔用U數：兩欄等寬 */
+.dev-row { display: flex; gap: 12px; }
+.dev-row > * { flex: 1 1 0; min-width: 0; }
+/* 迷你機櫃 U 位挑選 */
+.upick-rack { border: 1px solid var(--n-border-color, rgba(127,127,127,.25)); border-radius: 8px; overflow: hidden; max-height: 60vh; overflow-y: auto; }
+.upick-row { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 8px; font-size: 12px; border-bottom: 1px dashed rgba(127,127,127,.18); cursor: pointer; }
+.upick-row:last-child { border-bottom: none; }
+.upick-u { width: 28px; text-align: right; opacity: .55; font-variant-numeric: tabular-nums; }
+.upick-body { flex: 1; color: var(--n-text-color-3, #888); }
+.upick-row:not(.occupied):hover { background: rgba(24,160,88,.12); }
+.upick-row:not(.occupied):hover .upick-body { color: var(--primary-color, #18a058); font-weight: 600; }
+.upick-row.occupied { cursor: not-allowed; background: rgba(127,127,127,.12); }
+.upick-row.occupied .upick-body { color: var(--n-text-color-2, #555); font-weight: 600; }
+.upick-row.cur { box-shadow: inset 3px 0 0 var(--primary-color, #18a058); }
+</style>

@@ -4,7 +4,7 @@ import type { IPAddress, Paginated } from "@/types";
 export async function listAddresses(
   params: {
     subnetId?: string; sectionId?: string; customerId?: string;
-    deviceId?: string; q?: string; page?: number; pageSize?: number;
+    deviceId?: string; q?: string; exact?: boolean; page?: number; pageSize?: number;
     sort?: string; order?: "asc" | "desc";
   } = {},
 ): Promise<Paginated<IPAddress>> {
@@ -15,6 +15,7 @@ export async function listAddresses(
       customer_id: params.customerId,
       device_id: params.deviceId,
       q: params.q || undefined,
+      exact: params.exact || undefined,
       sort: params.sort || undefined,
       order: params.order || undefined,
       page: params.page ?? 1,

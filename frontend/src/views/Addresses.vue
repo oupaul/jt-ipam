@@ -8,6 +8,7 @@ import {
   NSpace,
   NIcon,
   NInput,
+  NCheckbox,
   NSelect,
   NButton,
   NTag,
@@ -41,6 +42,7 @@ const rows = ref<IPAddress[]>([]);
 const total = ref(0);
 const loading = ref(false);
 const q = ref<string>(typeof route.query.q === "string" ? route.query.q : "");
+const exactMatch = ref<boolean>(route.query.exact === "1" || route.query.exact === "true");
 const subnetId = ref<string | null>(
   typeof route.query.subnet_id === "string" ? route.query.subnet_id : null,
 );
@@ -300,6 +302,7 @@ async function refresh() {
   try {
     const res = await listAddresses({
       q: q.value.trim() || undefined,
+      exact: exactMatch.value || undefined,
       subnetId: subnetId.value || undefined,
       sectionId: sectionId.value || undefined,
       customerId: customerId.value || undefined,
@@ -311,12 +314,21 @@ async function refresh() {
     rows.value = res.items;
     total.value = res.total;
     void loadSubnetUsage();
+    // 從全域搜尋帶 open=<id> 進來 → 直接打開該筆位址明細
+    if (pendingOpenId) {
+      const target = rows.value.find((r) => r.id === pendingOpenId);
+      pendingOpenId = null;
+      if (target) openRow(target);
+    }
   } catch {
     msg.error(t("errors.network"));
   } finally {
     loading.value = false;
   }
 }
+
+let pendingOpenId: string | null =
+  typeof route.query.open === "string" ? route.query.open : null;
 
 onMounted(() => {
   void loadSubnets();
@@ -363,6 +375,10 @@ onMounted(() => {
       <n-input v-model:value="q" clearable
                :placeholder="t('addresses.search_placeholder')"
                style="width: 260px" />
+      <n-checkbox :checked="exactMatch"
+                  @update:checked="(v: boolean) => { exactMatch = v; page = 1; refresh(); }">
+        {{ t("addresses.exact_match") }}
+      </n-checkbox>
       <ColumnPicker
         :all="columnPickerItems"
         :visible="visibleKeys"

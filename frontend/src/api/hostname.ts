@@ -80,3 +80,14 @@ export async function setDevNamePrecedence(order: string[], disabled: string[] =
   );
   return data;
 }
+
+export async function getModelPrecedence(): Promise<DevNamePrecedence> {
+  const { data } = await apiClient.get<DevNamePrecedence>("/api/v1/system/device-model-precedence");
+  return data;
+}
+export async function setModelPrecedence(order: string[], disabled: string[] = []): Promise<DevNamePrecedence> {
+  const { data } = await apiClient.put<DevNamePrecedence>(
+    "/api/v1/system/device-model-precedence", { order, disabled },
+  );
+  return data;
+}

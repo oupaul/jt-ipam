@@ -384,7 +384,7 @@ function openRow(row: IPAddress) {
   modalShow.value = true;
 }
 
-// ── 閒置區間（phpIPAM 風格）：在已登記 IP 之間插入「起 - 迄 (N)」灰列 ──
+// ── 閒置區間：在已登記 IP 之間插入「起 - 迄 (N)」灰列 ──
 function _ipToInt(ip: string): number {
   const p = ip.split(".");
   if (p.length !== 4) return NaN;

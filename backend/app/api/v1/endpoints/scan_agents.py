@@ -361,14 +361,29 @@ async def agent_report(
     x_agent_key: Annotated[str | None, Header()] = None,
 ) -> dict[str, int]:
     """Agent push 掃描結果：對有回應的 IP stamp last_seen_scanner（+補 MAC）。"""
+    import ipaddress as _ipaddr
     agent = await _agent_from_key(session, x_agent_key)
     now = datetime.now(UTC)
     # 只在「指派給此 agent 的子網路」範圍內配對 —— 解決重疊網段（A/B 客戶都用
-    # 192.168.1.0/24）誤配到別人子網路的問題。
-    agent_subnet_ids = set((await session.execute(
-        select(Subnet.id).where(Subnet.scan_agent_id == agent.id)
-    )).scalars().all())
+    # 192.168.1.0/24）誤配到別人子網路的問題。同時帶出 CIDR，供自動新增比對。
+    agent_subnets = (await session.execute(
+        select(Subnet.id, Subnet.cidr, Subnet.scan_enabled)
+        .where(Subnet.scan_agent_id == agent.id)
+    )).all()
+    agent_subnet_ids = {s.id for s in agent_subnets}
+    # 可自動新增的網段（有開掃描）→ (network, subnet_id)，依首碼長度由長到短比對
+    addable_nets: list[tuple] = []
+    for s in agent_subnets:
+        if not s.scan_enabled:
+            continue
+        try:
+            addable_nets.append((_ipaddr.ip_network(str(s.cidr), strict=False), s.id))
+        except ValueError:
+            continue
+    addable_nets.sort(key=lambda x: x[0].prefixlen, reverse=True)
+
     updated = 0
+    created = 0
     for item in payload.results:
         if not item.alive:
             continue
@@ -378,8 +393,26 @@ async def agent_report(
         # 重疊網段下可能有多筆同 IP；限定 agent 子網路後通常唯一，取第一筆
         ipa = (await session.execute(stmt.limit(1))).scalar_one_or_none()
         if ipa is None:
-            continue
-        ipa.last_seen_scanner = now
+            # 掃描代理發現的新 IP → 自動加進它所屬（有開掃描）的子網路
+            try:
+                aip = _ipaddr.ip_address(str(item.ip).split("/")[0])
+            except ValueError:
+                continue
+            sub_id = next((sid for net, sid in addable_nets if aip in net), None)
+            if sub_id is None:
+                continue
+            ipa = IPAddress(
+                subnet_id=sub_id, ip=str(item.ip).split("/")[0], state="active",
+                discovery_source="scanner",
+                description="掃描代理自動探索新增",
+                note=(f"此 IP 由掃描代理「{agent.name}」於 "
+                      f"{now.astimezone().strftime('%Y-%m-%d %H:%M')} 主動探索時發現並自動建立。"),
+                last_seen_scanner=now,
+            )
+            session.add(ipa)
+            created += 1
+        else:
+            ipa.last_seen_scanner = now
         if item.mac:
             from app.services.arp_precedence import consider_mac
             await consider_mac(session, ip=ipa, mac=item.mac, source="scanner")

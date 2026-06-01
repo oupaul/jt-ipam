@@ -154,8 +154,10 @@ function goDevice(id: string) {
 interface Props {
   diagram: RackDiagram | null;
   showLegend?: boolean;   // 多機櫃並排時可關掉，由頁面放一個共用圖例
+  editable?: boolean;     // admin：點空 U 位可挑裝置放入
 }
-const props = withDefaults(defineProps<Props>(), { showLegend: true });
+const props = withDefaults(defineProps<Props>(), { showLegend: true, editable: false });
+const emit = defineEmits<{ (e: "pick-empty", u: number): void }>();
 const hoveredId = ref<string | null>(null);   // hover 某 U → 整台裝置點亮+框線
 
 interface Cell {
@@ -277,7 +279,11 @@ const cells = computed<Cell[]>(() => {
               </div>
             </n-tooltip>
             <!-- 空位 -->
-            <div v-else class="u-row" :title="`Empty (U${cell.u})`"></div>
+            <div v-else class="u-row" :class="{ 'u-pickable': editable }"
+                 :title="editable ? t('racks.pick_device_here') : `Empty (U${cell.u})`"
+                 @click="editable && emit('pick-empty', cell.u)">
+              <span v-if="editable" class="u-plus">＋</span>
+            </div>
           </template>
         </div>
       </div>
@@ -331,6 +337,10 @@ const cells = computed<Cell[]>(() => {
 .u-row:last-child {
   border-bottom: none;
 }
+.u-row.u-pickable { cursor: pointer; color: var(--n-text-color-3, #999); justify-content: center; }
+.u-row.u-pickable:hover { background: rgba(24,160,88,0.14); color: var(--primary-color, #18a058); }
+.u-plus { font-size: 13px; opacity: 0; }
+.u-row.u-pickable:hover .u-plus { opacity: 1; }
 .u-row:not(.u-occupied) {
   color: rgba(127, 127, 127, 0.5);
   background: transparent;

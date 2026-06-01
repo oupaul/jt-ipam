@@ -26,8 +26,10 @@ import {
   useMessage,
 } from "naive-ui";
 import { getOverview, type DashboardOverview } from "@/api/dashboard";
+import { listLocations, listRacks } from "@/api/basic";
+import { usePinned } from "@/composables/usePinned";
 import {
-  DashboardIcon, SectionsIcon, SubnetsIcon, AddressesIcon, AuditIcon,
+  DashboardIcon, SectionsIcon, SubnetsIcon, AddressesIcon, AuditIcon, LocationsIcon, RacksIcon,
 } from "@/icons";
 import { Database as CapacityIcon } from "@iconoir/vue";
 
@@ -84,7 +86,25 @@ function go(name: string, params?: Record<string, string>) {
   router.push({ name, params }).catch(() => {});
 }
 
-onMounted(load);
+// ── 常用機房 / 常用機櫃（localStorage 釘選）──
+const locPin = usePinned("locations");
+const rackPin = usePinned("racks");
+const allLocations = ref<{ id: string; name: string }[]>([]);
+const allRacks = ref<{ id: string; name: string; location_id: string | null }[]>([]);
+const pinnedLocations = computed(() => allLocations.value.filter((l) => locPin.isPinned(l.id)));
+const pinnedRacks = computed(() => allRacks.value.filter((r) => rackPin.isPinned(r.id)));
+async function loadPins() {
+  try {
+    const [l, r] = await Promise.all([listLocations(), listRacks()]);
+    allLocations.value = l.items.map((x: any) => ({ id: x.id, name: x.name }));
+    allRacks.value = r.items.map((x: any) => ({ id: x.id, name: x.name, location_id: x.location_id }));
+  } catch { /* silent */ }
+}
+function locName(id: string | null): string {
+  return allLocations.value.find((l) => l.id === id)?.name ?? "—";
+}
+
+onMounted(() => { void load(); void loadPins(); });
 </script>
 
 <template>
@@ -199,6 +219,27 @@ onMounted(load);
               />
             </div>
             <div class="row-num">{{ row.used }} / {{ row.total }}</div>
+          </div>
+        </n-space>
+      </n-card>
+
+      <!-- 常用機房 / 地點 -->
+      <n-card v-if="pinnedLocations.length" :title="t('dashboard.pinned_locations')">
+        <n-space vertical :size="6">
+          <div v-for="l in pinnedLocations" :key="l.id" class="row-line" @click="go('locations')">
+            <n-icon :size="16" style="opacity:.6"><LocationsIcon /></n-icon>
+            <span style="margin-left:8px">{{ l.name }}</span>
+          </div>
+        </n-space>
+      </n-card>
+
+      <!-- 常用機櫃 -->
+      <n-card v-if="pinnedRacks.length" :title="t('dashboard.pinned_racks')">
+        <n-space vertical :size="6">
+          <div v-for="r in pinnedRacks" :key="r.id" class="row-line" @click="go('racks')">
+            <n-icon :size="16" style="opacity:.6"><RacksIcon /></n-icon>
+            <span style="margin-left:8px">{{ r.name }}</span>
+            <span style="margin-left:auto; opacity:.55; font-size:12px">{{ locName(r.location_id) }}</span>
           </div>
         </n-space>
       </n-card>

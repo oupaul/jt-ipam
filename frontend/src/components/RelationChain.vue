@@ -22,6 +22,8 @@ const chainEl = ref<HTMLElement | null>(null);
 const segEls: HTMLElement[] = [];
 const newline = ref<boolean[]>([]);
 function setSeg(el: any, i: number) { if (el) segEls[i] = el as HTMLElement; }
+const wrapPaths = ref<{ d: string; tip: { x: number; y: number } }[]>([]);
+const svgSize = ref<{ w: number; h: number }>({ w: 0, h: 0 });
 function recompute() {
   const flags: boolean[] = [];
   for (let i = 0; i < segEls.length; i++) {
@@ -29,6 +31,25 @@ function recompute() {
       && segEls[i].offsetTop > segEls[i - 1].offsetTop + 4;
   }
   newline.value = flags;
+  // 換行處畫一條「折線」：從上一排最右往右→往下→往左→接到下一排最左
+  const box = chainEl.value;
+  const paths: { d: string; tip: { x: number; y: number } }[] = [];
+  if (box) {
+    svgSize.value = { w: box.scrollWidth, h: box.scrollHeight };
+    const br = box.getBoundingClientRect();
+    for (let i = 1; i < segEls.length; i++) {
+      if (!flags[i]) continue;
+      const prev = segEls[i - 1].getBoundingClientRect();
+      const cur = segEls[i].getBoundingClientRect();
+      // 從上一排最後一格「底部中央」往下 → 走兩排之間的空隙往左 → 進到下一排第一格「頂部中央」
+      const x1 = prev.left + prev.width / 2 - br.left, y1 = prev.bottom - br.top;
+      const x2 = cur.left + cur.width / 2 - br.left, y2 = cur.top - br.top;
+      const yg = (y1 + y2) / 2;
+      const d = `M ${x1} ${y1} V ${yg} H ${x2} V ${y2}`;
+      paths.push({ d, tip: { x: x2, y: y2 } });
+    }
+  }
+  wrapPaths.value = paths;
 }
 let ro: ResizeObserver | null = null;
 onMounted(() => {
@@ -62,8 +83,12 @@ function go(n: RelationNode) {
 
 <template>
   <div ref="chainEl" class="rel-chain">
-    <!-- 每個節點與其「前導連接符」綁成一段，換行時整段一起移動，
-         所以下一行的第一格前面會帶一個連接符（換行處用 ↳ 轉角，表示接上一行）。 -->
+    <!-- 換行折線（從上一排最右接到下一排最左）的 SVG 疊層，不擋點擊 -->
+    <svg v-if="wrapPaths.length" class="rel-svg" :width="svgSize.w" :height="svgSize.h">
+      <path v-for="(p, k) in wrapPaths" :key="k" :d="p.d" class="rel-foldline" />
+      <path v-for="(p, k) in wrapPaths" :key="'a' + k" class="rel-foldhead"
+            :d="`M ${p.tip.x - 4} ${p.tip.y - 6} L ${p.tip.x} ${p.tip.y} L ${p.tip.x + 4} ${p.tip.y - 6}`" />
+    </svg>
     <div
       v-for="(n, i) in nodes" :key="n.type + n.id"
       class="rel-seg" :ref="(el) => setSeg(el, i)"
@@ -81,9 +106,6 @@ function go(n: RelationNode) {
         <div class="rel-label">{{ n.label }}</div>
         <div v-if="n.sub" class="rel-sub">{{ n.sub }}</div>
       </div>
-      <!-- 這格是某一排的最後一格（下一格換行）→ 在右側拉一個「往下接下一排」的轉角箭頭 -->
-      <span v-if="i + 1 < nodes.length && newline[i + 1]" class="rel-arrow wrap-down"
-            :title="t('relations.wrap_hint')">↵</span>
     </div>
   </div>
 </template>
@@ -96,7 +118,11 @@ function go(n: RelationNode) {
   gap: 6px;
   row-gap: 10px;
 }
-.rel-seg { position: relative; display: inline-flex; align-items: stretch; gap: 6px; }
+.rel-chain { position: relative; }
+.rel-svg { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; z-index: 0; }
+.rel-foldline { fill: none; stroke: var(--primary-color, #18a058); stroke-width: 1.6; stroke-dasharray: 4 3; }
+.rel-foldhead { fill: none; stroke: var(--primary-color, #18a058); stroke-width: 1.6; }
+.rel-seg { position: relative; display: inline-flex; align-items: stretch; gap: 6px; z-index: 1; }
 .rel-node {
   display: flex;
   flex-direction: column;
