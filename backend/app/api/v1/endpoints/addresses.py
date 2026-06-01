@@ -1,0 +1,646 @@
+"""IPAddress CRUD + first_free 配發。"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Annotated, Any
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
+from fastapi.responses import Response
+from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1.dependencies import CurrentUser
+from app.core.audit import append_audit
+from app.core.db import get_session
+from app.models.address import IPAddress
+from app.models.subnet import Subnet
+from app.services.oui import mac_prefix, vendor_for_mac, vendor_map
+from app.schemas.address import (
+    IPAddressAllocate,
+    IPAddressCreate,
+    IPAddressRead,
+    IPAddressUpdate,
+)
+from app.schemas.base import Paginated, StrictModel
+from app.services.address import (
+    IPAlreadyExists,
+    IPNotInSubnet,
+    SubnetFull,
+    allocate_first_free,
+    assert_in_subnet,
+    create_ip,
+)
+from app.services.csv_io import (
+    export_addresses_csv,
+    import_addresses_csv,
+)
+from app.services.custom_field import CustomFieldError, validate_custom_fields
+from app.models.ip_change_log import IPChangeLog
+from app.models.user import User
+from app.schemas.ip_change_log import IPChangeLogRead
+from app.services.hostname import (
+    apply_observation,
+    recompute_effective,
+    seed_observation,
+)
+from app.services.ip_history import log_change, log_field_diffs
+from app.services.permission import (
+    filter_visible,
+    get_object_permission,
+    has_permission,
+)
+
+router = APIRouter(prefix="/addresses", tags=["addresses"])
+
+
+async def _require_subnet_perm(
+    session: AsyncSession,
+    user,
+    subnet_id: uuid.UUID,
+    required: str,
+) -> Subnet:
+    subnet = await session.get(Subnet, subnet_id)
+    if subnet is None:
+        raise HTTPException(status_code=404, detail="Subnet not found")
+    level = await get_object_permission(
+        session, user=user, object_type="subnet", object_id=subnet.id
+    )
+    if not has_permission(level, required):
+        # A01：不洩漏存在性
+        raise HTTPException(status_code=404, detail="Subnet not found")
+    return subnet
+
+
+@router.get("", response_model=Paginated[IPAddressRead])
+async def list_addresses(
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    subnet_id: uuid.UUID | None = Query(None),
+    section_id: uuid.UUID | None = Query(None, description="篩選某區段（含其所有子網路的 IP）"),
+    customer_id: uuid.UUID | None = Query(None, description="篩選某客戶 / 管理單位"),
+    device_id: uuid.UUID | None = Query(None),
+    q: str | None = Query(None, max_length=128,
+                          description="模糊搜尋所有文字欄位（IP / hostname / MAC / "
+                                      "description / owner / switch_port / note / state）"),
+    sort: str | None = Query(None, description="排序欄位：ip/hostname/mac/state/owner/switch_port/note/discovery_source"),
+    order: str = Query("asc", pattern="^(asc|desc)$"),
+    page: int = Query(1, ge=1, le=10_000),
+    page_size: int = Query(100, ge=1, le=1000),
+) -> Paginated[IPAddressRead]:
+    stmt = select(IPAddress)
+    count_stmt = select(func.count()).select_from(IPAddress)
+    if subnet_id is not None:
+        # 須對該 subnet 有 read 權限
+        await _require_subnet_perm(session, user, subnet_id, "read")
+        stmt = stmt.where(IPAddress.subnet_id == subnet_id)
+        count_stmt = count_stmt.where(IPAddress.subnet_id == subnet_id)
+    if section_id is not None:
+        # 區段篩選：該區段底下所有子網路的 IP（逐筆 subnet 權限在最後把關）
+        sub_ids = select(Subnet.id).where(Subnet.section_id == section_id)
+        stmt = stmt.where(IPAddress.subnet_id.in_(sub_ids))
+        count_stmt = count_stmt.where(IPAddress.subnet_id.in_(sub_ids))
+    if customer_id is not None:
+        stmt = stmt.where(IPAddress.customer_id == customer_id)
+        count_stmt = count_stmt.where(IPAddress.customer_id == customer_id)
+    if device_id is not None:
+        # 跨 subnet 取 device 的 IP 清單；底下還會逐筆檢查 subnet 權限
+        stmt = stmt.where(IPAddress.device_id == device_id)
+        count_stmt = count_stmt.where(IPAddress.device_id == device_id)
+
+    if q:
+        # 跳脫 LIKE 萬用字元，避免使用者輸入 % / _ 造成大範圍掃描
+        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        search_clause = or_(
+            cast(IPAddress.ip, String).ilike(pattern, escape="\\"),
+            IPAddress.hostname.ilike(pattern, escape="\\"),
+            cast(IPAddress.mac, String).ilike(pattern, escape="\\"),
+            IPAddress.description.ilike(pattern, escape="\\"),
+            IPAddress.owner.ilike(pattern, escape="\\"),
+            IPAddress.switch_port.ilike(pattern, escape="\\"),
+            IPAddress.note.ilike(pattern, escape="\\"),
+            IPAddress.state.ilike(pattern, escape="\\"),
+        )
+        stmt = stmt.where(search_clause)
+        count_stmt = count_stmt.where(search_clause)
+
+    # 伺服器端排序（remote 表格用）；未指定 → 預設依 IP
+    _SORT_COLS = {
+        "ip": IPAddress.ip, "hostname": IPAddress.hostname, "mac": IPAddress.mac,
+        "state": IPAddress.state, "owner": IPAddress.owner,
+        "switch_port": IPAddress.switch_port, "note": IPAddress.note,
+        "discovery_source": IPAddress.discovery_source,
+    }
+    sort_col = _SORT_COLS.get(sort or "", IPAddress.ip)
+    stmt = stmt.order_by(sort_col.desc() if order == "desc" else sort_col.asc())
+    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+    rows = list((await session.execute(stmt)).scalars().all())
+
+    if subnet_id is None:
+        # 跨 subnet 列表 — 必須逐筆檢查 subnet 權限
+        candidate_subnet_ids = list({r.subnet_id for r in rows})
+        visible_subnet_ids = set(
+            await filter_visible(
+                session,
+                user=user,
+                object_type="subnet",
+                object_ids=candidate_subnet_ids,
+                required="read",
+            )
+        )
+        rows = [r for r in rows if r.subnet_id in visible_subnet_ids]
+
+    items = [IPAddressRead.model_validate(r) for r in rows]
+    # 批次 lookup OUI vendor，一次 SQL 處理整頁
+    vmap = await vendor_map(session, [r.mac for r in rows])
+    # 批次帶上所屬 subnet 的 scan_enabled（沒掃描的網段，前端不該把 IP 標離線）
+    scan_ids = list({r.subnet_id for r in rows})
+    scan_map: dict[uuid.UUID, bool] = {}
+    if scan_ids:
+        scan_map = dict(
+            (await session.execute(
+                select(Subnet.id, Subnet.scan_enabled).where(Subnet.id.in_(scan_ids))
+            )).all()
+        )
+    for it, r in zip(items, rows, strict=False):
+        p = mac_prefix(r.mac)
+        if p:
+            it.mac_vendor = vmap.get(p)
+        it.subnet_scan_enabled = scan_map.get(r.subnet_id)
+    total = int(await session.scalar(count_stmt) or 0)
+    return Paginated[IPAddressRead](items=items, total=total, page=page, page_size=page_size)
+
+
+# 注意：此路由必須宣告在 /{address_id} 之前，否則 "export.csv" 會被當成 address_id（UUID 驗證 422）
+@router.get("/export.csv")
+async def export_csv(
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    subnet_id: uuid.UUID = Query(..., description="必要：限定要匯出的 subnet"),
+) -> Response:
+    """以 CSV 匯出某個 subnet 的所有 IP（須對該 subnet 有 read 權限）。Excel 友善：UTF-8 + BOM。"""
+    await _require_subnet_perm(session, user, subnet_id, "read")
+    rows = list((await session.execute(
+        select(IPAddress).where(IPAddress.subnet_id == subnet_id).order_by(IPAddress.ip)
+    )).scalars().all())
+    body = export_addresses_csv(rows)
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="addresses-{subnet_id}.csv"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/{address_id}", response_model=IPAddressRead)
+async def get_address(
+    address_id: uuid.UUID,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> IPAddressRead:
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "read")
+    out = IPAddressRead.model_validate(obj)
+    out.mac_vendor = await vendor_for_mac(session, obj.mac)
+    return out
+
+
+@router.get("/{address_id}/history", response_model=list[IPChangeLogRead])
+async def get_address_history(
+    address_id: uuid.UUID,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: int = Query(200, ge=1, le=1000),
+) -> list[IPChangeLogRead]:
+    """單一 IP 的異動記錄（feature B），時間倒序。"""
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "read")
+
+    rows = list((await session.execute(
+        select(IPChangeLog)
+        .where(IPChangeLog.ip_id == address_id)
+        .order_by(IPChangeLog.created_at.desc())
+        .limit(limit)
+    )).scalars().all())
+
+    actor_ids = list({r.actor_user_id for r in rows if r.actor_user_id is not None})
+    name_map: dict[uuid.UUID, str] = {}
+    if actor_ids:
+        for uid, uname in (await session.execute(
+            select(User.id, User.username).where(User.id.in_(actor_ids))
+        )).all():
+            name_map[uid] = uname
+
+    out: list[IPChangeLogRead] = []
+    for r in rows:
+        m = IPChangeLogRead.model_validate(r)
+        m.actor_username = name_map.get(r.actor_user_id) if r.actor_user_id else None
+        out.append(m)
+    return out
+
+
+@router.get("/{address_id}/switch-port")
+async def get_address_switch_port(
+    address_id: uuid.UUID,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """此 IP 在 FDB 裡對到的 switch + port（access port = 該 port MAC 數最少者）。"""
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "read")
+    from app.mcp.tools import switch_port_for_ip
+    try:
+        return await switch_port_for_ip(session, user=user, ip=str(obj.ip).split("/")[0])
+    except Exception:  # noqa: BLE001
+        return {"ip": str(obj.ip), "mac": obj.mac and str(obj.mac), "locations": []}
+
+
+@router.get("/{address_id}/hostname-sources")
+async def get_address_hostname_sources(
+    address_id: uuid.UUID,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """單一 IP 的各來源 hostname 觀測 + 目前 pin + 全域優先序（feature A，給 pin UI）。"""
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "read")
+
+    from app.models.ip_hostname import IPHostnameObservation
+    from app.services.hostname import get_precedence
+    rows = (await session.execute(
+        select(IPHostnameObservation)
+        .where(IPHostnameObservation.ip_id == address_id)
+    )).scalars().all()
+    return {
+        "effective": obj.hostname,
+        "pin": obj.hostname_source_pin,
+        "order": await get_precedence(session),
+        "observations": [
+            {"source": r.source, "hostname": r.hostname,
+             "observed_at": r.observed_at.isoformat()}
+            for r in rows
+        ],
+    }
+
+
+@router.post("", response_model=IPAddressRead, status_code=status.HTTP_201_CREATED)
+async def create_address(
+    payload: IPAddressCreate,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> IPAddressRead:
+    subnet = await _require_subnet_perm(session, user, payload.subnet_id, "write")
+
+    try:
+        obj = await create_ip(
+            session,
+            subnet=subnet,
+            ip=payload.ip,
+            hostname=payload.hostname,
+            description=payload.description,
+            mac=payload.mac,
+            state=payload.state,
+        )
+    except IPNotInSubnet as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except IPAlreadyExists as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # 應用後續欄位
+    try:
+        cf = await validate_custom_fields(
+            session, object_type="ip", payload=payload.custom_fields
+        )
+    except CustomFieldError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    obj.owner = payload.owner
+    obj.device_id = payload.device_id
+    obj.switch_port = payload.switch_port
+    obj.exclude_from_ping = payload.exclude_from_ping
+    obj.ptr_ignore = payload.ptr_ignore
+    obj.note = payload.note
+    obj.custom_fields = cf or None
+
+    await append_audit(
+        session,
+        actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="ip_address",
+        object_id=str(obj.id),
+        action="create",
+        diff={"after": payload.model_dump(mode="json")},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await log_change(session, ip=obj, event_type="created",
+                     source="manual", actor_user_id=str(user.id))
+    # feature A：把建立時填的 hostname 記成 manual 觀測
+    await seed_observation(session, ip=obj, source="manual", hostname=payload.hostname)
+    await session.commit()
+    await session.refresh(obj)
+    out = IPAddressRead.model_validate(obj); out.mac_vendor = await vendor_for_mac(session, obj.mac); return out
+
+
+@router.post("/first_free", response_model=IPAddressRead, status_code=status.HTTP_201_CREATED)
+async def allocate_first_free_address(
+    payload: IPAddressAllocate,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> IPAddressRead:
+    subnet = await _require_subnet_perm(session, user, payload.subnet_id, "write")
+
+    try:
+        obj = await allocate_first_free(
+            session,
+            subnet=subnet,
+            hostname=payload.hostname,
+            description=payload.description,
+            mac=payload.mac,
+            state=payload.state,
+        )
+    except SubnetFull as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    await append_audit(
+        session,
+        actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="ip_address",
+        object_id=str(obj.id),
+        action="allocate_first_free",
+        diff={"after": {"subnet_id": str(subnet.id), "ip": str(obj.ip), "hostname": obj.hostname}},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await log_change(session, ip=obj, event_type="created",
+                     source="manual", actor_user_id=str(user.id),
+                     note="first_free 配發")
+    await seed_observation(session, ip=obj, source="manual", hostname=payload.hostname)
+    await session.commit()
+    await session.refresh(obj)
+    out = IPAddressRead.model_validate(obj); out.mac_vendor = await vendor_for_mac(session, obj.mac); return out
+
+
+@router.patch("/{address_id}", response_model=IPAddressRead)
+async def update_address(
+    address_id: uuid.UUID,
+    payload: IPAddressUpdate,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> IPAddressRead:
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "write")
+
+    before = {
+        "hostname": obj.hostname,
+        "state": obj.state,
+        "mac": str(obj.mac) if obj.mac else None,
+        "description": obj.description,
+        "owner": obj.owner,
+        "switch_port": obj.switch_port,
+        "device_id": str(obj.device_id) if obj.device_id else None,
+        "note": obj.note,
+        "customer_id": str(obj.customer_id) if obj.customer_id else None,
+    }
+    changes = payload.model_dump(exclude_unset=True)
+    if "custom_fields" in changes:
+        try:
+            changes["custom_fields"] = await validate_custom_fields(
+                session, object_type="ip", payload=changes["custom_fields"]
+            ) or None
+        except CustomFieldError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # feature A：hostname 不直接設，改走 observation + 優先序解析
+    _UNSET = object()
+    hostname_change = changes.pop("hostname", _UNSET)
+    pin_changed = "hostname_source_pin" in changes
+    if pin_changed and not changes["hostname_source_pin"]:
+        changes["hostname_source_pin"] = None  # "" → 取消 pin
+
+    for key, value in changes.items():
+        setattr(obj, key, value)
+
+    # feature B：逐欄記錄人為編輯（hostname 改走 apply_observation，這裡不含它）
+    await log_field_diffs(
+        session, ip=obj, before=before, changes=changes,
+        source="manual", actor_user_id=str(user.id),
+    )
+
+    # feature A：套用 hostname 觀測 / pin 變更後重算有效 hostname（內含 hostname_changed 記錄）
+    if hostname_change is not _UNSET:
+        await apply_observation(
+            session, ip=obj, source="manual",
+            hostname=hostname_change, actor_user_id=str(user.id),
+        )
+    elif pin_changed:
+        await recompute_effective(
+            session, ip=obj, source="manual", actor_user_id=str(user.id),
+        )
+
+    await append_audit(
+        session,
+        actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="ip_address",
+        object_id=str(obj.id),
+        action="update",
+        diff={"before": before, "changes": changes},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    await session.refresh(obj)
+    out = IPAddressRead.model_validate(obj); out.mac_vendor = await vendor_for_mac(session, obj.mac); return out
+
+
+@router.delete("/{address_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_address(
+    address_id: uuid.UUID,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "admin")
+
+    await append_audit(
+        session,
+        actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="ip_address",
+        object_id=str(obj.id),
+        action="delete",
+        diff={"before": {"ip": str(obj.ip), "subnet_id": str(obj.subnet_id), "hostname": obj.hostname}},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    # feature B：刪除前記一筆（ip_id 之後會被 SET NULL，但 ip_text 快照保留）
+    await log_change(session, ip=obj, event_type="deleted",
+                     source="manual", actor_user_id=str(user.id),
+                     old=str(obj.ip))
+    await session.delete(obj)
+    await session.commit()
+
+
+class BulkDeletePayload(StrictModel):
+    ids: list[uuid.UUID]
+
+
+@router.post("/bulk-delete", status_code=status.HTTP_200_OK)
+async def bulk_delete(
+    payload: BulkDeletePayload,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """批次刪除 IP；逐筆檢查 subnet admin 權限，失敗的計入 failed。"""
+    if not payload.ids:
+        return {"deleted": 0, "failed": 0, "errors": []}
+    if len(payload.ids) > 5000:
+        raise HTTPException(400, detail="too many ids in one batch (max 5000)")
+
+    deleted = 0
+    errors: list[dict[str, str]] = []
+    actor_ip = request.client.host if request.client else None
+    actor_ua = request.headers.get("user-agent")
+    request_id = getattr(request.state, "request_id", None)
+
+    for aid in payload.ids:
+        obj = await session.get(IPAddress, aid)
+        if obj is None:
+            errors.append({"id": str(aid), "error": "not_found"})
+            continue
+        try:
+            await _require_subnet_perm(session, user, obj.subnet_id, "admin")
+        except HTTPException:
+            errors.append({"id": str(aid), "error": "no_permission"})
+            continue
+        await append_audit(
+            session,
+            actor_user_id=str(user.id),
+            actor_ip=actor_ip,
+            actor_user_agent=actor_ua,
+            object_type="ip_address",
+            object_id=str(obj.id),
+            action="delete",
+            diff={"before": {"ip": str(obj.ip), "subnet_id": str(obj.subnet_id),
+                              "hostname": obj.hostname}, "bulk": True},
+            request_id=request_id,
+        )
+        await session.delete(obj)
+        deleted += 1
+
+    await session.commit()
+    return {"deleted": deleted, "failed": len(errors), "errors": errors[:50]}
+
+
+# ─────────────────── CSV 匯出 / 匯入 ───────────────────
+
+
+@router.post("/import")
+async def import_csv(
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    subnet_id: Annotated[uuid.UUID, Form()],
+    file: Annotated[UploadFile, File()],
+    dry_run: Annotated[bool, Form()] = False,
+) -> dict[str, object]:
+    """匯入 CSV 至指定 subnet。
+
+    比 phpIPAM 改進：
+    - header-driven（欄位順序不重要，只要 header 含 ip）
+    - 容忍 BOM、自動偵測 delimiter
+    - dry_run=true 只回傳預覽與錯誤，不寫 DB
+    - idempotent：已存在的 (subnet_id, ip) 自動 skip
+    """
+    subnet = await _require_subnet_perm(session, user, subnet_id, "write")
+
+    # 檔案大小限制（A04）：16 MB。實際匯入走背景作業，大檔不卡請求。
+    raw = await file.read()
+    if len(raw) > 16_777_216:
+        raise HTTPException(413, detail="CSV file too large (max 16 MB)")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(400, detail=f"CSV must be UTF-8: {exc}") from exc
+
+    # dry-run：同步回預覽（不寫 DB），讓 UI 立刻看結果
+    if dry_run:
+        result = await import_addresses_csv(
+            session, subnet=subnet, csv_text=text, dry_run=True,
+        )
+        return {"dry_run": True, **result.to_dict()}
+
+    # 實際匯入：走背景作業，回 task_id；前端到「作業」頁看進度。
+    from app.models.subnet import Subnet
+    from app.services.background_tasks import spawn_task
+
+    csv_text = text
+    subnet_id_val = subnet.id
+    subnet_label = subnet.cidr
+    filename = file.filename
+    actor_user_id_str = str(user.id)
+    actor_ip = request.client.host if request.client else None
+    actor_ua = request.headers.get("user-agent")
+    request_id = getattr(request.state, "request_id", None)
+
+    async def _runner(sess: AsyncSession, _task) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        sub = await sess.get(Subnet, subnet_id_val)
+        if sub is None:
+            raise RuntimeError("subnet no longer exists")
+        result = await import_addresses_csv(sess, subnet=sub, csv_text=csv_text, dry_run=False)
+        await append_audit(
+            sess,
+            actor_user_id=actor_user_id_str,
+            actor_ip=actor_ip, actor_user_agent=actor_ua,
+            object_type="subnet", object_id=str(subnet_id_val),
+            action="ip_csv_import",
+            diff={
+                "inserted": result.inserted, "skipped": result.skipped,
+                "errored": result.errored, "filename": filename,
+            },
+            request_id=request_id,
+        )
+        await sess.commit()
+        return {"dry_run": False, **result.to_dict()}
+
+    task = await spawn_task(
+        session=session,
+        kind="ip.csv_import",
+        target_type="subnet",
+        target_id=subnet_id_val,
+        target_label=subnet_label,
+        actor_user_id=user.id,
+        runner=_runner,
+    )
+    return {"task_id": str(task.id), "status": task.status, "dry_run": False}

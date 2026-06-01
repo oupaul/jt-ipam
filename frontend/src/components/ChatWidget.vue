@@ -1,0 +1,468 @@
+<script setup lang="ts">
+/**
+ * 浮動 AI 聊天視窗 (規格 §11.1 — UI 右下角浮動按鈕)。
+ *
+ * 規格 §11.1：本地推論不外送 — 後端走 Ollama，本元件只與後端 /api/v1/ai/chat 通訊。
+ */
+import { computed, nextTick, ref, watch } from "vue";
+import {
+  NButton,
+  NCard,
+  NEmpty,
+  NIcon,
+  NInput,
+  NSpace,
+  NSpin,
+  NTag,
+  NText,
+  NTooltip,
+  useMessage,
+} from "naive-ui";
+import { useI18n } from "vue-i18n";
+import { useRoute } from "vue-router";
+import {
+  chatStream, listMyConversations, getConversation, deleteConversation, getModelInfo,
+  type ChatMessage, type ChatPageContext, type ConversationSummary, type ModelInfo,
+} from "@/api/chat";
+import { fmtRelative, fmtDateTime } from "@/utils/datetime";
+import { BubbleStar } from "@iconoir/vue";
+import { useAuthStore } from "@/stores/auth";
+import { renderMarkdown } from "@/utils/markdown";
+
+const { t } = useI18n();
+const route = useRoute();
+const auth = useAuthStore();
+const userLabel = computed(() => auth.me?.username || "You");
+
+// 把目前所在頁面 (子網路 / 裝置 / 區段) 帶給 AI，讓它在沒指定網段時自動沿用
+const pageContext = computed<ChatPageContext>(() => {
+  const id = route.params.id as string | undefined;
+  if (!id) return {};
+  if (route.name === "subnet-detail") return { subnet_id: id };
+  if (route.name === "device-detail") return { device_id: id };
+  if (route.name === "section-detail") return { section_id: id };
+  return {};
+});
+
+// UI 端訊息：除了 role/content 還記每則回應的 model 與耗時（不回傳給後端）
+type UiMessage = ChatMessage & { model?: string | null; elapsedMs?: number | null; ts?: string | null };
+
+const open = ref(false);
+const input = ref("");
+const messages = ref<UiMessage[]>([]);
+const loading = ref(false);
+// 最近一次回應用的 model（給 badge tooltip 顯示）
+const lastModel = computed<string | null>(() => {
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    if (messages.value[i].role === "assistant" && messages.value[i].model) return messages.value[i].model ?? null;
+  }
+  return null;
+});
+function fmtElapsed(ms?: number | null): string {
+  if (ms == null) return "";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+// 模型參數（hover badge 顯示「名稱與參數」）
+const modelInfo = ref<ModelInfo | null>(null);
+watch(lastModel, async (m) => {
+  if (!m) { modelInfo.value = null; return; }
+  if (modelInfo.value?.model === m) return;
+  try { modelInfo.value = await getModelInfo(m); } catch { modelInfo.value = null; }
+}, { immediate: true });
+const modelTip = computed(() => {
+  if (!lastModel.value) return t("chat.model_tip_none");
+  const mi = modelInfo.value;
+  const parts: string[] = [];
+  if (mi?.parameter_size) parts.push(mi.parameter_size);
+  if (mi?.quantization) parts.push(mi.quantization);
+  if (mi?.context_length) parts.push(`ctx ${mi.context_length.toLocaleString()}`);
+  const detail = parts.length ? "\n" + parts.join(" · ") : "";
+  return t("chat.model_tip", { model: lastModel.value }) + detail;
+});
+const partial = ref("");        // 串流中累積的最終答案
+const toolStatus = ref("");     // 正在執行的工具提示
+const trace = ref<ChatMessage[]>([]);
+const showTrace = ref(false);
+const conversationId = ref<string | null>(null);   // 多輪同一段對話 → 後端 append
+const showHistory = ref(false);
+const history = ref<ConversationSummary[]>([]);
+const historyLoading = ref(false);
+const msg = useMessage();
+const scrollEl = ref<HTMLDivElement | null>(null);
+
+const visibleMessages = computed(() =>
+  messages.value.filter((m) => m.role === "user" || m.role === "assistant"),
+);
+
+async function send() {
+  if (!input.value.trim() || loading.value) return;
+  showHistory.value = false;   // 在歷程清單時送新問題 → 自動切回最新對話內容
+  const userMsg: UiMessage = { role: "user", content: input.value.trim(), ts: new Date().toISOString() };
+  messages.value.push(userMsg);
+  input.value = "";
+  loading.value = true;
+  partial.value = "";
+  toolStatus.value = "";
+  const startTs = Date.now();
+  await scroll();
+  try {
+    await chatStream(
+      // 只送 role/content（後端 StrictModel 不收多餘欄位）
+      messages.value
+        .filter((m) => ["user", "assistant", "system"].includes(m.role))
+        .map((m) => ({ role: m.role, content: m.content })),
+      4,
+      (ev) => {
+        if (ev.type === "token") {
+          partial.value += ev.text;
+          void scroll();
+        } else if (ev.type === "tool") {
+          toolStatus.value = t("chat.tool_running", { name: ev.name });
+        } else if (ev.type === "tool_round") {
+          partial.value = "";   // 該輪非最終答案，清掉暫存
+        } else if (ev.type === "done") {
+          messages.value.push({
+            role: "assistant",
+            content: ev.answer || t("chat.no_answer"),
+            model: ev.model ?? null,
+            // 後端有給就用後端的 LLM 耗時；否則用前端量到的整體耗時兜底
+            elapsedMs: ev.elapsed_ms ?? (Date.now() - startTs),
+            ts: new Date().toISOString(),
+          });
+          trace.value = ev.trace_messages;
+          if (ev.conversation_id) conversationId.value = ev.conversation_id;
+          partial.value = "";
+          toolStatus.value = "";
+        } else if (ev.type === "error") {
+          msg.error(ev.detail || "Chat failed");
+        }
+      },
+      undefined,
+      pageContext.value,
+      conversationId.value,
+    );
+  } catch (e: any) {
+    msg.error(e?.message ?? "Chat failed");
+  } finally {
+    loading.value = false;
+    partial.value = "";
+    toolStatus.value = "";
+    await scroll();
+  }
+}
+
+async function scroll() {
+  await nextTick();
+  if (scrollEl.value) {
+    scrollEl.value.scrollTop = scrollEl.value.scrollHeight;
+  }
+}
+
+function reset() {
+  messages.value = [];
+  trace.value = [];
+  showTrace.value = false;
+  conversationId.value = null;   // 新對話
+}
+
+async function toggleHistory() {
+  showHistory.value = !showHistory.value;
+  if (showHistory.value) await loadHistory();
+}
+async function loadHistory() {
+  historyLoading.value = true;
+  try {
+    history.value = await listMyConversations();
+  } catch { /* silent */ } finally {
+    historyLoading.value = false;
+  }
+}
+async function openConversation(id: string) {
+  try {
+    const conv = await getConversation(id);
+    messages.value = conv.messages.map((m) => ({
+      role: m.role as ChatMessage["role"],
+      content: m.content,
+      model: m.model,
+      elapsedMs: m.elapsed_ms,
+      ts: m.created_at,
+    }));
+    conversationId.value = conv.id;
+    showHistory.value = false;
+    await scroll();
+  } catch {
+    msg.error(t("errors.network"));
+  }
+}
+async function removeConversation(id: string) {
+  try {
+    await deleteConversation(id);
+    if (conversationId.value === id) reset();
+    await loadHistory();
+  } catch {
+    msg.error(t("errors.network"));
+  }
+}
+</script>
+
+<template>
+  <button
+    v-if="!open"
+    class="chat-fab"
+    :title="t('chat.assistant')"
+    @click="open = true"
+  >
+    <n-icon :size="26"><BubbleStar /></n-icon>
+  </button>
+
+  <div v-if="open" class="chat-shell">
+    <n-card size="small" :bordered="false">
+      <template #header>
+        <n-space align="center">
+          <span>jt-ipam AI</span>
+          <n-tooltip :z-index="10001">
+            <template #trigger>
+              <n-tag size="tiny" type="info">{{ t("chat.local_badge") }}</n-tag>
+            </template>
+            <div style="white-space:pre-line">{{ modelTip }}</div>
+          </n-tooltip>
+        </n-space>
+      </template>
+      <template #header-extra>
+        <n-space>
+          <n-button text size="tiny" @click="toggleHistory">
+            {{ showHistory ? t("chat.hide_history") : t("chat.history") }}
+          </n-button>
+          <n-button text size="tiny" @click="showTrace = !showTrace">
+            {{ showTrace ? t("chat.hide_trace") : t("chat.trace") }}
+          </n-button>
+          <n-button text size="tiny" @click="reset">{{ t("chat.reset") }}</n-button>
+          <n-button text size="tiny" @click="open = false">×</n-button>
+        </n-space>
+      </template>
+
+      <div v-if="showHistory" class="chat-history">
+        <n-spin v-if="historyLoading" size="small" style="margin: 8px" />
+        <n-empty v-else-if="!history.length" :description="t('chat.no_history')" size="small" style="margin: 12px" />
+        <div v-for="c in history" v-else :key="c.id" class="hist-row">
+          <div class="hist-main" @click="openConversation(c.id)">
+            <div class="hist-title">{{ c.title || t("chat.untitled") }}</div>
+            <div class="hist-meta">{{ fmtRelative(c.updated_at) }} · {{ c.message_count ?? 0 }}</div>
+          </div>
+          <n-button text size="tiny" type="error" @click.stop="removeConversation(c.id)">×</n-button>
+        </div>
+      </div>
+
+      <div v-show="!showHistory" ref="scrollEl" class="chat-scroll">
+        <div
+          v-for="(m, i) in visibleMessages"
+          :key="i"
+          class="bubble"
+          :class="m.role"
+        >
+          <strong v-if="m.role === 'user'">{{ userLabel }}</strong>
+          <strong v-else>AI</strong>
+          <pre v-if="m.role === 'user'">{{ m.content }}</pre>
+          <!-- eslint-disable-next-line vue/no-v-html -->
+          <div v-else class="md" v-html="renderMarkdown(m.content)"></div>
+          <div v-if="m.ts || m.model || m.elapsedMs != null" class="msg-meta">
+            <span v-if="m.ts">{{ fmtDateTime(m.ts) }}</span>
+            <span v-if="m.ts && (m.model || m.elapsedMs != null)"> · </span>
+            <span v-if="m.model">{{ m.model }}</span>
+            <span v-if="m.model && m.elapsedMs != null"> · </span>
+            <span v-if="m.elapsedMs != null">{{ fmtElapsed(m.elapsedMs) }}</span>
+          </div>
+        </div>
+        <div v-if="loading && partial" class="bubble assistant">
+          <strong>AI</strong>
+          <!-- eslint-disable-next-line vue/no-v-html -->
+          <div class="md" v-html="renderMarkdown(partial)"></div>
+        </div>
+        <div v-if="loading && toolStatus" class="tool-status">{{ toolStatus }}</div>
+        <n-spin v-if="loading && !partial" size="small" style="margin: 8px 0" />
+      </div>
+
+      <details v-if="showTrace && trace.length" class="trace">
+        <summary>{{ t("chat.tool_trace", { count: trace.length }) }}</summary>
+        <pre>{{ JSON.stringify(trace, null, 2) }}</pre>
+      </details>
+
+      <div class="chat-input-row">
+        <n-input
+          v-model:value="input"
+          :placeholder="t('chat.placeholder')"
+          type="textarea"
+          :autosize="{ minRows: 2, maxRows: 6 }"
+          :disabled="loading"
+          @keydown.enter.exact.prevent="send"
+          style="flex: 1 1 auto; min-width: 0"
+        />
+        <n-button type="primary" :loading="loading" :disabled="!input.trim()"
+                  @click="send" class="chat-send-btn">
+          {{ t("chat.send") }}
+        </n-button>
+      </div>
+      <div class="chat-foot">
+        <kbd>Enter</kbd> {{ t("chat.foot_send") }}
+        · <kbd>Shift</kbd>+<kbd>Enter</kbd> {{ t("chat.foot_newline") }}
+        · {{ t("chat.foot_local") }}
+      </div>
+    </n-card>
+  </div>
+</template>
+
+<style scoped>
+.chat-foot {
+  font-size: 11px;
+  margin-top: 6px;
+  opacity: 0.7;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+}
+.chat-foot kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  border: 1px solid rgba(127, 127, 127, 0.4);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.12);
+}
+.chat-fab {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: white;
+  font-size: 24px;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  z-index: 9000;
+}
+.chat-fab:hover {
+  transform: scale(1.05);
+}
+.chat-shell {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: min(480px, calc(100vw - 48px));
+  max-height: 70vh;
+  z-index: 9000;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--n-border-color, rgba(128, 128, 128, 0.35));
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+  background: var(--n-card-color, white);
+  display: flex;
+  flex-direction: column;
+}
+.chat-input-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 8px;
+}
+.chat-send-btn {
+  flex: 0 0 auto;
+  align-self: stretch;
+  min-width: 64px;
+}
+.chat-scroll {
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+.msg-meta {
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.55;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.chat-history {
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.hist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+.hist-row:hover { background: rgba(128, 128, 128, 0.1); }
+.hist-main { flex: 1 1 auto; cursor: pointer; min-width: 0; }
+.hist-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hist-meta { font-size: 11px; opacity: 0.55; }
+.bubble {
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.bubble.user {
+  background: rgba(99, 102, 241, 0.1);
+}
+.bubble.assistant {
+  background: rgba(34, 197, 94, 0.08);
+}
+.tool-status {
+  font-size: 12px;
+  color: var(--n-text-color-3, #888);
+  font-style: italic;
+  margin: 4px 0;
+  padding: 0 4px;
+}
+.bubble pre {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+}
+.bubble .md {
+  margin-top: 4px;
+  line-height: 1.5;
+}
+.bubble .md :first-child { margin-top: 0; }
+.bubble .md :last-child { margin-bottom: 0; }
+.bubble .md p { margin: 4px 0; }
+.bubble .md ul, .bubble .md ol { margin: 4px 0; padding-left: 20px; }
+.bubble .md li { margin: 2px 0; }
+.bubble .md h1, .bubble .md h2, .bubble .md h3,
+.bubble .md h4, .bubble .md h5, .bubble .md h6 {
+  margin: 6px 0 2px; font-size: 14px; font-weight: 600;
+}
+.bubble .md code {
+  background: rgba(127, 127, 127, 0.16);
+  padding: 1px 5px; border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+}
+.bubble .md pre {
+  background: rgba(127, 127, 127, 0.12);
+  padding: 8px 10px; border-radius: 6px; overflow-x: auto; margin: 6px 0;
+}
+.bubble .md pre code { background: none; padding: 0; }
+.bubble .md a { color: var(--primary-color, #18a058); }
+.trace pre {
+  font-size: 10px;
+  max-height: 240px;
+  overflow: auto;
+  background: rgba(127, 127, 127, 0.06);
+  padding: 8px;
+  border-radius: 4px;
+}
+</style>

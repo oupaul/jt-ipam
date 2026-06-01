@@ -1,0 +1,523 @@
+<script setup lang="ts">
+/**
+ * 通用 IP 編輯 modal。
+ * SubnetDetail / Addresses 都用同一個。
+ *
+ * 預設 read-only 顯示完整欄位；按「編輯」進 edit 模式才能改。
+ */
+import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
+import {
+  NModal, NCard, NSpace, NButton, NDescriptions, NDescriptionsItem,
+  NForm, NFormItem, NInput, NSelect, NSwitch, NPopconfirm, NTag, NIcon,
+  NCollapse, NCollapseItem, NTimeline, NTimelineItem, NText, NEmpty, NSpin,
+  NTooltip,
+  useMessage,
+} from "naive-ui";
+import type { IPAddress } from "@/types";
+import { updateAddress, deleteAddress, createAddress, type IPAddressUpdate } from "@/api/addresses";
+import { getAddressHistory, getAddressSwitchPort, type IPChangeLog, type SwitchPortInfo } from "@/api/ip_history";
+import { getHostnameSources, type HostnameSources } from "@/api/hostname";
+import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon } from "@/icons";
+import { fmtDateTime } from "@/utils/datetime";
+import { useCustomers } from "@/composables/useCustomers";
+import { useRouter } from "vue-router";
+import { listDevices, type Device } from "@/api/basic";
+
+const router = useRouter();
+const { options: customerOptions, labelFor: customerLabelFor, ensureLoaded: ensureCustomersLoaded } = useCustomers();
+const devices = ref<Device[]>([]);
+
+async function loadDevices() {
+  if (devices.value.length) return;
+  try {
+    const r = await listDevices();
+    devices.value = r.items;
+  } catch { /* silent */ }
+}
+
+function deviceLabel(id: string | null | undefined): string {
+  if (!id) return "—";
+  return devices.value.find((d) => d.id === id)?.name ?? id.slice(0, 8) + "…";
+}
+
+function goDevice(id: string | null | undefined) {
+  if (!id) return;
+  void router.push({ name: "device-detail", params: { id } });
+}
+
+function goSubnet(id: string | null | undefined) {
+  if (!id) return;
+  void router.push({ name: "subnet-detail", params: { id } });
+}
+
+// 後端原始值 → i18n 顯示；找不到 key 就回原值
+function labelState(v: string | null | undefined): string {
+  if (!v) return "—";
+  const key = `addresses.state_${v}`;
+  const out = t(key);
+  return out === key ? v : out;
+}
+function labelSource(v: string | null | undefined): string {
+  if (!v) return "—";
+  const key = `addresses.source_${v}`;
+  const out = t(key);
+  return out === key ? v : out;
+}
+function labelEffective(v: string | null | undefined): string {
+  if (!v) return "—";
+  // 後端可能塞 "online (scanner)" 之類有附註的字串；只翻譯主詞
+  const m = /^(\w+)(.*)$/.exec(v);
+  if (!m) return v;
+  const base = m[1].toLowerCase();
+  const rest = m[2];
+  const key = `addresses.effective_${base}`;
+  const out = t(key);
+  return (out === key ? m[1] : out) + rest;
+}
+
+const props = defineProps<{
+  show: boolean;
+  address: IPAddress | null;
+  // create 模式：address 留 null，傳 createContext = { subnet_id, ip }
+  createContext?: { subnet_id: string; ip: string } | null;
+}>();
+
+const emit = defineEmits<{
+  (e: "update:show", v: boolean): void;
+  (e: "saved", v: IPAddress): void;
+  (e: "deleted", id: string): void;
+  (e: "created", v: IPAddress): void;
+}>();
+
+const { t } = useI18n();
+const msg = useMessage();
+
+const editMode = ref(false);
+const saving = ref(false);
+const deleting = ref(false);
+
+const isCreate = computed(() => !props.address && !!props.createContext);
+
+interface FormState {
+  hostname: string;
+  description: string;
+  state: string;
+  mac: string;
+  owner: string;
+  switch_port: string;
+  exclude_from_ping: boolean;
+  ptr_ignore: boolean;
+  note: string;
+  customer_id: string | null;
+  hostname_source_pin: string;  // "" = 自動 (跟全域優先序)
+}
+
+const form = ref<FormState>(emptyForm());
+
+function emptyForm(): FormState {
+  return {
+    hostname: "", description: "", state: "active", mac: "",
+    owner: "", switch_port: "",
+    exclude_from_ping: false, ptr_ignore: false, note: "",
+    customer_id: null,
+    hostname_source_pin: "",
+  };
+}
+
+function fromAddress(a: IPAddress): FormState {
+  return {
+    hostname: a.hostname ?? "",
+    description: a.description ?? "",
+    state: a.state ?? "active",
+    mac: a.mac ?? "",
+    owner: a.owner ?? "",
+    switch_port: a.switch_port ?? "",
+    exclude_from_ping: !!a.exclude_from_ping,
+    ptr_ignore: !!a.ptr_ignore,
+    note: a.note ?? "",
+    customer_id: a.customer_id ?? null,
+    hostname_source_pin: a.hostname_source_pin ?? "",
+  };
+}
+
+const stateOptions = computed(() => [
+  { label: labelState("active"), value: "active" },
+  { label: labelState("reserved"), value: "reserved" },
+  { label: labelState("offline"), value: "offline" },
+  { label: labelState("dhcp"), value: "dhcp" },
+  { label: labelState("used"), value: "used" },
+]);
+
+watch(
+  () => [props.show, props.address?.id, props.createContext?.ip],
+  () => {
+    // create 模式自動進 edit form；既有 IP 進 view
+    editMode.value = isCreate.value;
+    form.value = props.address ? fromAddress(props.address) : emptyForm();
+    if (props.show) {
+      void ensureCustomersLoaded();
+      void loadDevices();
+    }
+  },
+);
+
+const stateType = computed<"success" | "info" | "warning" | "error" | "default">(() => {
+  const s = props.address?.state ?? "active";
+  return s === "active" ? "success"
+       : s === "reserved" ? "info"
+       : s === "offline" ? "error"
+       : s === "dhcp" ? "warning"
+       : "default";
+});
+
+// ── 異動記錄 (feature B)：展開時才載入 ──
+const history = ref<IPChangeLog[]>([]);
+const historyLoading = ref(false);
+const historyLoaded = ref(false);
+
+async function loadHistory() {
+  if (historyLoaded.value || !props.address?.id) return;
+  historyLoading.value = true;
+  try {
+    history.value = await getAddressHistory(props.address.id);
+    historyLoaded.value = true;
+  } catch { /* silent */ } finally {
+    historyLoading.value = false;
+  }
+}
+
+function onHistoryToggle(names: Array<string | number>) {
+  if (names.includes("history")) void loadHistory();
+}
+
+function eventLabel(e: string): string {
+  const key = `ipChanges.event.${e}`;
+  const out = t(key);
+  return out === key ? e : out;
+}
+
+const HISTORY_TYPE: Record<string, "default" | "info" | "success" | "warning" | "error"> = {
+  created: "success", deleted: "error", online: "success", offline: "warning",
+  hostname_changed: "info", mac_changed: "info", arp_changed: "info",
+  state_changed: "warning", edited: "default",
+};
+
+// ── hostname 多來源 (feature A)：開 modal 時載入，給 pin 下拉用 ──
+const hostnameSources = ref<HostnameSources | null>(null);
+const hostnameSourcesLoaded = ref(false);
+
+async function loadHostnameSources() {
+  if (hostnameSourcesLoaded.value || !props.address?.id) return;
+  try {
+    hostnameSources.value = await getHostnameSources(props.address.id);
+    hostnameSourcesLoaded.value = true;
+  } catch { /* silent */ }
+}
+
+// pin 下拉選項：auto + 有觀測的來源 (顯示該來源回報的 hostname)
+const pinOptions = computed(() => {
+  const opts: Array<{ label: string; value: string }> = [
+    { label: t("hostnameSrc.auto"), value: "" },
+  ];
+  for (const o of hostnameSources.value?.observations ?? []) {
+    opts.push({ label: `${o.source} — ${o.hostname}`, value: o.source });
+  }
+  return opts;
+});
+
+// 換 IP 時清掉舊快取
+watch(() => props.address?.id, () => {
+  history.value = [];
+  historyLoaded.value = false;
+  hostnameSources.value = null;
+  hostnameSourcesLoaded.value = false;
+  switchPort.value = null;
+});
+
+// FDB 推得的 switch port(feature E)
+const switchPort = ref<SwitchPortInfo | null>(null);
+async function loadSwitchPort() {
+  if (!props.address?.id) return;
+  try { switchPort.value = await getAddressSwitchPort(props.address.id); }
+  catch { switchPort.value = null; }
+}
+
+watch(() => [props.show, props.address?.id], () => {
+  if (props.show && props.address?.id) { void loadHostnameSources(); void loadSwitchPort(); }
+});
+
+function close() { emit("update:show", false); }
+
+async function save() {
+  saving.value = true;
+  try {
+    if (isCreate.value && props.createContext) {
+      const created = await createAddress({
+        subnet_id: props.createContext.subnet_id,
+        ip: props.createContext.ip,
+        hostname: form.value.hostname.trim() || null,
+        description: form.value.description.trim() || null,
+        state: form.value.state,
+        mac: form.value.mac.trim() || null,
+        owner: form.value.owner.trim() || null,
+        switch_port: form.value.switch_port.trim() || null,
+        note: form.value.note.trim() || null,
+        customer_id: form.value.customer_id ?? null,
+      });
+      msg.success(t("common.ok"));
+      emit("created", created);
+      emit("update:show", false);
+      return;
+    }
+    if (!props.address) return;
+    const payload: IPAddressUpdate = {
+      hostname: form.value.hostname.trim() || null,
+      description: form.value.description.trim() || null,
+      state: form.value.state,
+      mac: form.value.mac.trim() || null,
+      owner: form.value.owner.trim() || null,
+      switch_port: form.value.switch_port.trim() || null,
+      exclude_from_ping: form.value.exclude_from_ping,
+      ptr_ignore: form.value.ptr_ignore,
+      note: form.value.note.trim() || null,
+      customer_id: form.value.customer_id ?? null,
+      hostname_source_pin: form.value.hostname_source_pin || null,
+    };
+    const updated = await updateAddress(props.address?.id, payload);
+    hostnameSourcesLoaded.value = false;  // 重新整理來源/有效 hostname
+    msg.success(t("common.ok"));
+    emit("saved", updated);
+    editMode.value = false;
+  } catch (e: any) {
+    msg.error(e?.response?.data?.detail ?? t("errors.network"));
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function remove() {
+  if (!props.address) return;
+  deleting.value = true;
+  try {
+    const id = props.address?.id;
+    await deleteAddress(id);
+    msg.success(t("common.ok"));
+    emit("deleted", id);
+    close();
+  } catch (e: any) {
+    msg.error(e?.response?.data?.detail ?? t("errors.network"));
+  } finally {
+    deleting.value = false;
+  }
+}
+</script>
+
+<template>
+  <n-modal :show="props.show" @update:show="emit('update:show', $event)">
+    <n-card
+      style="width: 880px; max-width: 95vw"
+      :title="props.address?.ip ?? props.createContext?.ip ?? ''"
+      :bordered="false"
+      role="dialog"
+      aria-modal="true"
+    >
+      <template #header-extra>
+        <n-tag v-if="isCreate" type="info" size="small">{{ t("common.create") }}</n-tag>
+        <n-tag v-else :type="stateType" size="small">{{ labelState(props.address?.state) }}</n-tag>
+      </template>
+
+      <div v-if="props.address || isCreate">
+        <!-- view mode -->
+        <n-descriptions v-if="!editMode" bordered :column="2" size="small" label-placement="left"
+                        label-align="left"
+                        :label-style="{ width: '132px', whiteSpace: 'nowrap', verticalAlign: 'top' }"
+                        :content-style="{ verticalAlign: 'top', wordBreak: 'break-word', minWidth: '160px' }">
+          <n-descriptions-item :label="t('addresses.ip')">{{ props.address?.ip }}</n-descriptions-item>
+          <n-descriptions-item :label="t('common.status')">{{ labelState(props.address?.state) }}</n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.hostname')">
+            <span>{{ props.address?.hostname ?? "—" }}</span>
+            <n-tag v-if="hostnameSources?.pin" size="tiny" type="warning" :bordered="false"
+                   style="margin-left: 6px">{{ t("hostnameSrc.pinned", { src: hostnameSources.pin }) }}</n-tag>
+          </n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.mac')">
+            <span>{{ props.address?.mac ?? "—" }}</span>
+            <n-tag v-if="props.address?.mac_vendor" size="tiny" type="info" bordered
+                   style="margin-left: 6px">{{ props.address.mac_vendor }}</n-tag>
+          </n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.owner')">{{ props.address?.owner ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.switch_port')">
+            <template v-if="props.address?.switch_port">
+              <n-tooltip v-if="props.address?.switch_port_confident === false">
+                <template #trigger>
+                  <span style="color: var(--n-text-color-3, #888)">{{ props.address.switch_port }}</span>
+                </template>
+                {{ t("addresses.switch_port_uncertain") }}
+              </n-tooltip>
+              <span v-else>{{ props.address.switch_port }}</span>
+            </template>
+            <span v-else>—</span>
+            <n-tag v-if="switchPort?.likely_access_port?.port" size="tiny" type="info"
+                   style="margin-left: 6px">
+              FDB: {{ switchPort.likely_access_port.switch }} / {{ switchPort.likely_access_port.port }}
+            </n-tag>
+          </n-descriptions-item>
+          <n-descriptions-item :label="t('nav.devices')" :span="2">
+            <a v-if="props.address?.device_id" href="#"
+               style="color: var(--primary-color, #18a058); text-decoration: none;"
+               @click.prevent="goDevice(props.address?.device_id)">
+              {{ deviceLabel(props.address?.device_id) }}
+            </a>
+            <span v-else>—</span>
+          </n-descriptions-item>
+          <n-descriptions-item
+            v-if="hostnameSources && hostnameSources.observations.length"
+            :label="t('hostnameSrc.sources')" :span="2"
+          >
+            <n-space :size="6" style="flex-wrap: wrap">
+              <n-tag
+                v-for="o in hostnameSources.observations" :key="o.source"
+                size="small" :bordered="false"
+                :type="o.hostname === props.address?.hostname ? 'success' : 'default'"
+              >
+                {{ labelSource(o.source) }}: {{ o.hostname }}
+              </n-tag>
+            </n-space>
+          </n-descriptions-item>
+          <n-descriptions-item :label="t('common.description')" :span="2">
+            {{ props.address?.description ?? "—" }}
+          </n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.note')" :span="2">
+            {{ props.address?.note ?? "—" }}
+          </n-descriptions-item>
+          <n-descriptions-item :label="t('nav.customers')" :span="2">
+            {{ customerLabelFor(props.address?.customer_id) }}
+          </n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.exclude_from_ping')">{{ props.address?.exclude_from_ping ? "✓" : "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.ptr_ignore')">{{ props.address?.ptr_ignore ? "✓" : "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.source')">{{ labelSource(props.address?.discovery_source) }}</n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.effective_status')">{{ labelEffective(props.address?.effective_status) }}</n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.last_seen_scanner')">{{ fmtDateTime(props.address?.last_seen_scanner) }}</n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.last_seen_librenms')">{{ fmtDateTime(props.address?.last_seen_librenms) }}</n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.last_seen_dns')">{{ fmtDateTime(props.address?.last_seen_dns) }}</n-descriptions-item>
+          <n-descriptions-item :label="t('common.created_at')">{{ fmtDateTime(props.address?.created_at) }}</n-descriptions-item>
+          <n-descriptions-item :label="t('common.updated_at')" :span="2">{{ fmtDateTime(props.address?.updated_at) }}</n-descriptions-item>
+        </n-descriptions>
+
+        <!-- 異動記錄 (feature B)，展開才載入 -->
+        <n-collapse v-if="!editMode && props.address" style="margin-top: 12px" @update:expanded-names="onHistoryToggle">
+          <n-collapse-item :title="t('ipChanges.history')" name="history">
+            <n-spin :show="historyLoading">
+              <n-empty v-if="historyLoaded && !history.length" :description="t('ipChanges.empty')" size="small" />
+              <n-timeline v-else style="padding: 4px 0">
+                <n-timeline-item
+                  v-for="h in history" :key="h.id"
+                  :type="HISTORY_TYPE[h.event_type] ?? 'default'"
+                  :time="fmtDateTime(h.created_at)"
+                >
+                  <template #header>
+                    <n-space align="center" :size="6">
+                      <strong>{{ eventLabel(h.event_type) }}</strong>
+                      <n-tag size="tiny" :bordered="false">{{ labelSource(h.source) }}</n-tag>
+                      <n-text v-if="h.actor_username" depth="3" style="font-size: 12px">{{ h.actor_username }}</n-text>
+                    </n-space>
+                  </template>
+                  <n-text v-if="h.old_value != null || h.new_value != null" style="font-size: 13px">
+                    <span v-if="h.field">{{ h.field }}: </span>
+                    <n-text depth="3" delete>{{ h.old_value ?? "∅" }}</n-text>
+                    →
+                    <n-text strong>{{ h.new_value ?? "∅" }}</n-text>
+                  </n-text>
+                  <n-text v-if="h.note" depth="3" style="font-size: 12px; display: block">{{ h.note }}</n-text>
+                </n-timeline-item>
+              </n-timeline>
+            </n-spin>
+          </n-collapse-item>
+        </n-collapse>
+
+        <!-- edit mode -->
+        <n-form v-else label-placement="top">
+          <n-space :size="12" :wrap-item="false" style="flex-wrap: wrap">
+            <n-form-item :label="t('addresses.hostname')" style="flex: 1 1 300px">
+              <n-input v-model:value="form.hostname" placeholder="host.example.com" />
+            </n-form-item>
+            <n-form-item :label="t('common.status')" style="flex: 0 0 160px">
+              <n-select v-model:value="form.state" :options="stateOptions" />
+            </n-form-item>
+          </n-space>
+          <n-form-item v-if="!isCreate" :label="t('hostnameSrc.pin_label')">
+            <n-select
+              v-model:value="form.hostname_source_pin"
+              :options="pinOptions" :placeholder="t('hostnameSrc.auto')"
+            />
+            <template #feedback>
+              <span style="font-size: 11px; opacity: .7">{{ t("hostnameSrc.pin_hint") }}</span>
+            </template>
+          </n-form-item>
+          <n-space :size="12" :wrap-item="false" style="flex-wrap: wrap">
+            <n-form-item :label="t('addresses.mac')" style="flex: 1 1 240px">
+              <n-input v-model:value="form.mac" placeholder="aa:bb:cc:dd:ee:ff" />
+            </n-form-item>
+            <n-form-item :label="t('addresses.owner')" style="flex: 1 1 240px">
+              <n-input v-model:value="form.owner" />
+            </n-form-item>
+            <n-form-item :label="t('addresses.switch_port')" style="flex: 1 1 200px">
+              <n-input v-model:value="form.switch_port" />
+            </n-form-item>
+          </n-space>
+          <n-form-item :label="t('common.description')">
+            <n-input v-model:value="form.description" type="textarea" :rows="2" />
+          </n-form-item>
+          <n-form-item :label="t('addresses.note')">
+            <n-input v-model:value="form.note" type="textarea" :rows="2" />
+          </n-form-item>
+          <n-form-item :label="t('nav.customers')">
+            <n-select v-model:value="form.customer_id" :options="customerOptions"
+                      :placeholder="t('common.not_specified')" clearable filterable />
+          </n-form-item>
+          <n-space :size="24">
+            <n-form-item :label="t('addresses.exclude_from_ping')">
+              <n-switch v-model:value="form.exclude_from_ping" />
+            </n-form-item>
+            <n-form-item :label="t('addresses.ptr_ignore')">
+              <n-switch v-model:value="form.ptr_ignore" />
+            </n-form-item>
+          </n-space>
+        </n-form>
+      </div>
+
+      <template #footer>
+        <n-space justify="space-between">
+          <n-popconfirm v-if="!isCreate" @positive-click="remove">
+            <template #trigger>
+              <n-button type="error" ghost size="small" :loading="deleting" :disabled="!props.address">
+                <template #icon><n-icon><DeleteIcon /></n-icon></template>
+                {{ t("common.delete") }}
+              </n-button>
+            </template>
+            {{ t("common.confirm_delete") }}
+          </n-popconfirm>
+          <span v-else></span>
+          <n-space>
+            <n-button @click="close">
+              <template #icon><n-icon><CancelIcon /></n-icon></template>
+              {{ t("common.cancel") }}
+            </n-button>
+            <n-button v-if="isCreate" type="primary" :loading="saving" @click="save">
+              <template #icon><n-icon><PlusIcon /></n-icon></template>
+              {{ t("common.create") }}
+            </n-button>
+            <n-button v-else-if="!editMode" type="primary" @click="editMode = true">
+              <template #icon><n-icon><EditIcon /></n-icon></template>
+              {{ t("common.edit") }}
+            </n-button>
+            <n-button v-else type="primary" :loading="saving" @click="save">
+              <template #icon><n-icon><SaveIcon /></n-icon></template>
+              {{ t("common.save") }}
+            </n-button>
+          </n-space>
+        </n-space>
+      </template>
+    </n-card>
+  </n-modal>
+</template>

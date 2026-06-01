@@ -1,0 +1,473 @@
+<script setup lang="ts">
+import { computed, h, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { useI18n } from "vue-i18n";
+import { useFloatingHScroll } from "@/composables/useFloatingHScroll";
+import {
+  NLayout,
+  NLayoutHeader,
+  NLayoutSider,
+  NLayoutContent,
+  NMenu,
+  NSpace,
+  NSelect,
+  NDropdown,
+  NButton,
+  NIcon,
+  type MenuOption,
+} from "naive-ui";
+import { storeToRefs } from "pinia";
+import { useUiStore } from "@/stores/ui";
+import { useAuthStore } from "@/stores/auth";
+import { listSubnets } from "@/api/subnets";
+import { useCustomers } from "@/composables/useCustomers";
+import type { Subnet } from "@/types";
+import NotificationBell from "@/components/NotificationBell.vue";
+import GlobalSearch from "@/components/GlobalSearch.vue";
+import ChatWidget from "@/components/ChatWidget.vue";
+import {
+  // 主導覽
+  DashboardIcon, SectionsIcon, SubnetsIcon, AddressesIcon, IPChangesIcon, VlansIcon, VrfsIcon,
+  NatIcon, DevicesIcon, RacksIcon, LocationsIcon, RequestsIcon, TopologyIcon,
+  ToolsIcon, SettingsIcon, TasksIcon,
+  // Phase 3 / Admin
+  Phase3Icon, AdvancedIcon, VirtualizationIcon, PhysicalIcon, PowerIcon, VpnIcon,
+  AdminIcon, AuditIcon, UsersIcon, GroupsIcon, CustomFieldsIcon, CustomersIcon, AnomalyIcon, ChatHistoryIcon,
+  DnsIcon, LibreNMSIcon, FirewallIcon, WazuhIcon, ScanAgentsIcon, WebhooksIcon,
+  MigrationIcon, ImportIcon, PluginsIcon,
+  // topbar / user menu
+  LogoutIcon,
+  renderIcon,
+} from "@/icons";
+import { User as UserOutline } from "@iconoir/vue";
+
+const { t } = useI18n();
+const route = useRoute();
+const router = useRouter();
+const appVersion = __APP_VERSION__;
+const ui = useUiStore();
+
+// 全站懸浮水平捲軸：任何頁面的寬表格只要原生捲軸落在畫面外，視窗底部就會出現一條
+useFloatingHScroll();
+const auth = useAuthStore();
+const { theme, locale } = storeToRefs(ui);
+const { me } = storeToRefs(auth);
+
+// ── 子網路導覽 tree（在子網路詳情頁時，左側選單把子網路展開、依客戶分組）──
+const { labelFor: customerLabelFor, ensureLoaded: ensureCustomersLoaded } = useCustomers();
+const navSubnets = ref<Subnet[]>([]);
+let navSubnetsLoaded = false;
+async function loadNavSubnets() {
+  if (navSubnetsLoaded) return;
+  navSubnetsLoaded = true;
+  void ensureCustomersLoaded();
+  try {
+    const res = await listSubnets({ page: 1, pageSize: 500 });
+    navSubnets.value = res.items;
+  } catch { navSubnetsLoaded = false; }
+}
+
+const currentSubnetId = computed(() =>
+  route.name === "subnet-detail" ? (route.params.id as string) : null,
+);
+// 在「子網路」清單頁或某個子網路詳情頁時，左選單就展開子網路樹
+const inSubnetContext = computed(() =>
+  route.name === "subnets" || route.name === "subnet-detail",
+);
+
+const subnetTreeChildren = computed<MenuOption[] | undefined>(() => {
+  if (!inSubnetContext.value || !navSubnets.value.length) return undefined;
+  const groups = new Map<string, { label: string; items: Subnet[] }>();
+  for (const s of navSubnets.value) {
+    const cid = s.customer_id || "__none__";
+    if (!groups.has(cid)) {
+      groups.set(cid, {
+        label: s.customer_id ? customerLabelFor(s.customer_id) : t("nav.subnet_no_customer"),
+        items: [],
+      });
+    }
+    groups.get(cid)!.items.push(s);
+  }
+  const groupOpts: MenuOption[] = [...groups.entries()]
+    .sort((a, b) => a[1].label.localeCompare(b[1].label))
+    .map(([cid, g]) => ({
+      key: `subnetgrp:${cid}`,
+      label: g.label,
+      icon: renderIcon(CustomersIcon),
+      children: g.items
+        .slice()
+        .sort((x, y) => x.cidr.localeCompare(y.cidr, undefined, { numeric: true }))
+        .map((s) => ({
+          key: `subnet:${s.id}`,
+          label: s.description ? `${s.cidr} (${s.description})` : s.cidr,
+        })),
+    }));
+  return [
+    { key: "subnets-all", label: () => t("nav.subnet_all"), icon: renderIcon(SubnetsIcon) },
+    ...groupOpts,
+  ];
+});
+
+const menuValue = computed(() =>
+  currentSubnetId.value ? `subnet:${currentSubnetId.value}`
+    : route.name === "subnets" ? "subnets-all"
+    : (route.name as string),
+);
+
+const expandedKeys = ref<string[]>([]);
+watch(inSubnetContext, (v) => { if (v) void loadNavSubnets(); }, { immediate: true });
+watch([inSubnetContext, currentSubnetId, navSubnets], () => {
+  if (!inSubnetContext.value) return;
+  const keys = new Set(expandedKeys.value);
+  keys.add("subnets");
+  const id = currentSubnetId.value;
+  const s = id ? navSubnets.value.find((x) => x.id === id) : null;
+  if (s) keys.add(`subnetgrp:${s.customer_id || "__none__"}`);
+  expandedKeys.value = [...keys];
+});
+
+const menuOptions = computed<MenuOption[]>(() => {
+  const base: MenuOption[] = [
+    { label: () => t("nav.dashboard"),   key: "dashboard",  icon: renderIcon(DashboardIcon) },
+    { label: () => t("nav.sections"),    key: "sections",   icon: renderIcon(SectionsIcon) },
+    { label: () => t("nav.subnets"),     key: "subnets",    icon: renderIcon(SubnetsIcon), children: subnetTreeChildren.value },
+    { label: () => t("nav.addresses"),   key: "addresses",  icon: renderIcon(AddressesIcon) },
+    { label: () => t("nav.ip_changes"),  key: "ip_changes", icon: renderIcon(IPChangesIcon) },
+    { label: () => t("nav.vlans"),       key: "vlans",      icon: renderIcon(VlansIcon) },
+    { label: () => t("nav.vrfs"),        key: "vrfs",       icon: renderIcon(VrfsIcon) },
+    { label: () => t("nav.nat"),         key: "nat",        icon: renderIcon(NatIcon) },
+    { label: () => t("nav.devices"),     key: "devices",    icon: renderIcon(DevicesIcon) },
+    { label: () => t("nav.racks"),       key: "racks",      icon: renderIcon(RacksIcon) },
+    { label: () => t("nav.locations"),   key: "locations",  icon: renderIcon(LocationsIcon) },
+    ...(me.value?.is_admin
+      ? [{ label: () => t("nav.customers"), key: "customers", icon: renderIcon(CustomersIcon) }]
+      : []),
+    { label: () => t("nav.requests"),    key: "requests",   icon: renderIcon(RequestsIcon) },
+    { label: () => t("nav.topology"),    key: "topology",   icon: renderIcon(TopologyIcon) },
+    {
+      label: () => t("nav.phase3_section"),
+      key: "phase3",
+      icon: renderIcon(Phase3Icon),
+      children: [
+        { label: () => t("nav.advanced"),       key: "advanced", icon: renderIcon(AdvancedIcon) },
+        { label: () => t("nav.virtualization"), key: "virt",     icon: renderIcon(VirtualizationIcon) },
+        { label: () => t("nav.cabling"),        key: "cabling",     icon: renderIcon(PhysicalIcon) },
+        { label: () => t("nav.power"),          key: "power",       icon: renderIcon(PowerIcon) },
+        { label: () => t("nav.vpn_tunnels"),    key: "vpn-tunnels", icon: renderIcon(VpnIcon) },
+      ],
+    },
+    { label: () => t("nav.tools"),       key: "tools",      icon: renderIcon(ToolsIcon) },
+    { label: () => t("nav.tasks"),       key: "tasks",      icon: renderIcon(TasksIcon) },
+  ];
+  if (me.value?.is_admin) {
+    base.push(
+      { type: "divider", key: "d-admin" },
+      {
+        label: () => t("nav.admin_section"),
+        key: "admin",
+        icon: renderIcon(AdminIcon),
+        children: [
+          { label: () => t("nav.audit"),         key: "audit",          icon: renderIcon(AuditIcon) },
+          { label: () => t("nav.users"),         key: "users",          icon: renderIcon(UsersIcon) },
+          { label: () => t("nav.groups"),        key: "groups",         icon: renderIcon(GroupsIcon) },
+          { label: () => t("nav.permissions"),   key: "permissions",    icon: renderIcon(AdminIcon) },
+          { label: () => t("nav.custom_fields"), key: "custom_fields",  icon: renderIcon(CustomFieldsIcon) },
+          { label: () => t("nav.hostname_precedence"), key: "hostname_precedence", icon: renderIcon(AddressesIcon) },
+          { label: () => t("nav.anomaly"),       key: "anomaly",        icon: renderIcon(AnomalyIcon) },
+          { label: () => t("nav.dns"),           key: "dns",            icon: renderIcon(DnsIcon) },
+          { label: () => t("nav.adguard"),       key: "adguard",        icon: renderIcon(DnsIcon) },
+          { label: () => t("nav.librenms"),      key: "librenms",       icon: renderIcon(LibreNMSIcon) },
+          { label: () => t("nav.firewall"),      key: "firewall",       icon: renderIcon(FirewallIcon) },
+          { label: () => t("nav.wazuh"),         key: "wazuh",          icon: renderIcon(WazuhIcon) },
+          { label: () => t("nav.scan_agents"),   key: "scan_agents",    icon: renderIcon(ScanAgentsIcon) },
+          { label: () => t("nav.webhooks"),      key: "webhooks",       icon: renderIcon(WebhooksIcon) },
+          { label: () => t("nav.migration"),     key: "migration",      icon: renderIcon(MigrationIcon) },
+          { label: () => t("nav.import"),        key: "import",         icon: renderIcon(ImportIcon) },
+          { label: () => t("nav.plugins"),       key: "plugins",        icon: renderIcon(PluginsIcon) },
+          { label: () => "LLM / AI",             key: "llm_settings",   icon: renderIcon(SettingsIcon) },
+          { label: () => t("nav.chat_history"),  key: "chat_history",   icon: renderIcon(ChatHistoryIcon) },
+        ],
+      },
+    );
+  }
+  return base;
+});
+
+const localeOptions = [
+  { label: "繁體中文", value: "zh-TW" },
+  { label: "English",  value: "en-US" },
+];
+
+const themeOptions = computed(() => [
+  { label: t("topbar.theme.light"), value: "light" },
+  { label: t("topbar.theme.dark"),  value: "dark" },
+  { label: t("topbar.theme.auto"),  value: "auto" },
+]);
+
+const userMenuOptions = computed(() => [
+  { label: t("topbar.user_menu.profile"),     key: "profile",     icon: renderIcon(UserOutline, 16) },
+  { label: t("topbar.user_menu.preferences"), key: "preferences", icon: renderIcon(SettingsIcon, 16) },
+  { type: "divider" as const, key: "d" },
+  { label: t("topbar.user_menu.logout"),      key: "logout",      icon: renderIcon(LogoutIcon, 16) },
+]);
+
+function handleMenu(key: string) {
+  if (key === "subnets-all" || key === "subnets") {
+    router.push({ name: "subnets" }).catch(() => {});
+    return;
+  }
+  if (key.startsWith("subnet:")) {
+    router.push({ name: "subnet-detail", params: { id: key.slice(7) } }).catch(() => {});
+    return;
+  }
+  if (key.startsWith("subnetgrp:")) return; // 群組節點只負責展開/收合
+  router.push({ name: key }).catch(() => {});
+}
+
+async function handleUserMenu(key: string) {
+  if (key === "logout") {
+    await auth.logout();
+    router.push({ name: "login" });
+  } else if (key === "preferences" || key === "profile") {
+    router.push({ name: "settings" });
+  }
+}
+
+
+const siderCollapsed = ref(false);
+
+// ── 左側選單可拖動改變寬度 ──
+const SIDER_MIN = 180;
+const SIDER_MAX = 480;
+const siderWidth = ref(
+  Math.min(SIDER_MAX, Math.max(SIDER_MIN,
+    Number(localStorage.getItem("jt-ipam:sider_width")) || 240)),
+);
+let dragging = false;
+function onDrag(e: MouseEvent) {
+  if (!dragging) return;
+  siderWidth.value = Math.min(SIDER_MAX, Math.max(SIDER_MIN, e.clientX));
+}
+function stopDrag() {
+  if (!dragging) return;
+  dragging = false;
+  document.removeEventListener("mousemove", onDrag);
+  document.removeEventListener("mouseup", stopDrag);
+  document.body.style.userSelect = "";
+  document.body.style.cursor = "";
+  localStorage.setItem("jt-ipam:sider_width", String(siderWidth.value));
+}
+function startDrag(e: MouseEvent) {
+  if (siderCollapsed.value) return;
+  dragging = true;
+  e.preventDefault();
+  document.addEventListener("mousemove", onDrag);
+  document.addEventListener("mouseup", stopDrag);
+  document.body.style.userSelect = "none";
+  document.body.style.cursor = "col-resize";
+}
+</script>
+
+<template>
+  <n-layout has-sider style="height: 100vh">
+    <n-layout-sider
+      class="app-sider"
+      bordered
+      collapse-mode="width"
+      :collapsed-width="64"
+      :width="siderWidth"
+      show-trigger
+      :collapsed="siderCollapsed"
+      @update:collapsed="(v) => { siderCollapsed = v; }"
+    >
+      <div v-if="!siderCollapsed" class="sider-resizer" @mousedown="startDrag"></div>
+      <div class="brand" :class="{ 'brand-collapsed': siderCollapsed }">
+        <!-- 收折：只顯示方塊 icon；展開：方塊 + jt-ipam wordmark(currentColor 跟主題色) -->
+        <svg v-if="siderCollapsed"
+             xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" class="brand-logo" aria-label="jt-ipam">
+          <rect width="48" height="48" rx="10" fill="#18a058" />
+          <g stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-opacity="0.9">
+            <line x1="13" y1="13" x2="24" y2="24" />
+            <line x1="35" y1="13" x2="24" y2="24" />
+            <line x1="13" y1="35" x2="24" y2="24" />
+            <line x1="35" y1="35" x2="24" y2="24" />
+          </g>
+          <g fill="#ffffff">
+            <circle cx="13" cy="13" r="3.8" />
+            <circle cx="35" cy="13" r="3.8" />
+            <circle cx="13" cy="35" r="3.8" />
+            <circle cx="35" cy="35" r="3.8" />
+          </g>
+          <circle cx="24" cy="24" r="6" fill="#ffffff" />
+          <circle cx="24" cy="24" r="2.6" fill="#18a058" />
+        </svg>
+        <svg v-else
+             xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 48" class="brand-logo" aria-label="jt-ipam">
+          <rect width="48" height="48" rx="10" fill="#18a058" />
+          <g stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-opacity="0.9">
+            <line x1="13" y1="13" x2="24" y2="24" />
+            <line x1="35" y1="13" x2="24" y2="24" />
+            <line x1="13" y1="35" x2="24" y2="24" />
+            <line x1="35" y1="35" x2="24" y2="24" />
+          </g>
+          <g fill="#ffffff">
+            <circle cx="13" cy="13" r="3.8" />
+            <circle cx="35" cy="13" r="3.8" />
+            <circle cx="13" cy="35" r="3.8" />
+            <circle cx="35" cy="35" r="3.8" />
+          </g>
+          <circle cx="24" cy="24" r="6" fill="#ffffff" />
+          <circle cx="24" cy="24" r="2.6" fill="#18a058" />
+          <text x="60" y="32"
+                font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+                font-size="22" font-weight="600" fill="currentColor"
+                letter-spacing="-0.3">jt-ipam</text>
+          <text x="150" y="33"
+                font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+                font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6"
+                letter-spacing="0">v{{ appVersion }}</text>
+        </svg>
+      </div>
+      <n-menu
+        :options="menuOptions"
+        :value="menuValue"
+        :expanded-keys="expandedKeys"
+        :collapsed="siderCollapsed"
+        :collapsed-width="64"
+        :collapsed-icon-size="22"
+        :indent="12"
+        @update:value="handleMenu"
+        @update:expanded-keys="(v: string[]) => expandedKeys = v"
+      />
+    </n-layout-sider>
+    <n-layout>
+      <n-layout-header bordered class="topbar">
+        <n-space align="center" justify="end" style="width: 100%">
+          <n-space align="center" :size="10" :wrap="false">
+            <global-search v-if="me" />
+            <n-select
+              :value="locale"
+              :options="localeOptions"
+              size="small"
+              style="width: 110px; flex-shrink: 0;"
+              @update:value="ui.setLocale"
+            />
+            <n-select
+              :value="theme"
+              :options="themeOptions"
+              size="small"
+              style="width: 90px; flex-shrink: 0;"
+              @update:value="ui.setTheme"
+            />
+            <notification-bell v-if="me" />
+            <n-dropdown
+              v-if="me"
+              :options="userMenuOptions"
+              trigger="click"
+              @select="handleUserMenu"
+            >
+              <n-button text style="display: flex; gap: 6px; align-items: center">
+                <span>{{ me.username }}{{ me.is_admin ? " · admin" : "" }}</span>
+              </n-button>
+            </n-dropdown>
+          </n-space>
+        </n-space>
+      </n-layout-header>
+      <n-layout-content content-style="padding: 16px;">
+        <router-view />
+      </n-layout-content>
+    </n-layout>
+    <chat-widget v-if="me" />
+  </n-layout>
+</template>
+
+<style scoped>
+.brand {
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+}
+.brand-collapsed {
+  padding: 14px 0;
+  justify-content: center;
+}
+.brand-logo {
+  height: 32px;
+  width: auto;
+  display: block;
+}
+.topbar {
+  padding: 8px 16px;
+}
+
+/* ── 左側選單拖動把手 ── */
+.app-sider { position: relative; }
+.sider-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+}
+.sider-resizer:hover {
+  background: linear-gradient(to right, transparent, rgba(24, 160, 88, 0.35));
+}
+/* 收合觸發鈕要蓋在把手之上，才點得到 */
+.app-sider :deep(.n-layout-toggle-button) { z-index: 5; }
+
+/* ── 展開的下層：字小一級、行距更密 ── */
+.app-sider :deep(.n-submenu-children .n-menu-item),
+.app-sider :deep(.n-submenu-children .n-submenu > .n-menu-item) {
+  height: 30px !important;
+}
+.app-sider :deep(.n-submenu-children .n-menu-item-content) {
+  font-size: 13px;
+  height: 30px !important;
+  min-height: 30px !important;
+  /* 縮短文字與虛線主幹的距離（每層縮排靠 .n-submenu-children 的 margin-left 提供） */
+  padding-left: 18px !important;
+}
+.app-sider :deep(.n-submenu-children .n-menu-item-content .n-menu-item-content-header) {
+  line-height: 1.25;
+}
+
+/* ── treeview 虛線：每層一條垂直主幹（container 左邊界）+ 每列一條水平接出 ──
+   水平線用每個 item 自身的 ::before（left:0 = 該層主幹位置），所以無論第幾層都自動對齊。 */
+.app-sider :deep(.n-submenu-children) {
+  position: relative;
+  margin-left: 16px;
+}
+.app-sider :deep(.n-submenu-children > .n-menu-item),
+.app-sider :deep(.n-submenu-children > .n-submenu > .n-menu-item) { position: relative; }
+/* 垂直主幹：每個直接子列各畫一段（只含該列、不含群組展開的子項），相鄰列相接成連續線 */
+.app-sider :deep(.n-submenu-children > .n-menu-item)::after,
+.app-sider :deep(.n-submenu-children > .n-submenu > .n-menu-item)::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed rgba(150, 150, 150, 0.5);
+  pointer-events: none;
+}
+/* 最後一個直接子項：垂直線只到中點（連到自己後就轉進來，不再往下畫） */
+.app-sider :deep(.n-submenu-children > .n-menu-item:last-child)::after,
+.app-sider :deep(.n-submenu-children > .n-submenu:last-child > .n-menu-item)::after {
+  bottom: auto;
+  height: 50%;
+}
+/* 水平接出 */
+.app-sider :deep(.n-submenu-children > .n-menu-item)::before,
+.app-sider :deep(.n-submenu-children > .n-submenu > .n-menu-item)::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  width: 12px;
+  top: 50%;
+  border-top: 1px dashed rgba(150, 150, 150, 0.5);
+  pointer-events: none;
+  z-index: 1;
+}
+</style>

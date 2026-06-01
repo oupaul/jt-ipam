@@ -1,0 +1,433 @@
+<script setup lang="ts">
+import { computed, h, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
+import {
+  NCard, NTabs, NTabPane, NDataTable, NSpace, NIcon, NButton, NTooltip,
+  NModal, NForm, NFormItem, NInput, NInputNumber, NSelect, NPopconfirm,
+  useMessage, type DataTableColumns,
+} from "naive-ui";
+import { apiClient } from "@/api/client";
+import { Advanced } from "@/api/phase3";
+import {
+  AdvancedIcon, PlusIcon, DeleteIcon, RefreshIcon, SaveIcon, CancelIcon,
+  CustomersIcon, VlansIcon, PhysicalIcon, UsersIcon, ScanAgentsIcon,
+} from "@/icons";
+import { autoSort } from "@/composables/useTableSort";
+
+const { t } = useI18n();
+const msg = useMessage();
+const tab = ref<"tenancy" | "asn" | "circuits" | "contacts" | "wireless">("tenancy");
+
+const tenants = ref<any[]>([]);
+const tenantGroups = ref<any[]>([]);
+const asns = ref<any[]>([]);
+const providers = ref<any[]>([]);
+const circuitTypes = ref<any[]>([]);
+const circuits = ref<any[]>([]);
+const contactGroups = ref<any[]>([]);
+const contacts = ref<any[]>([]);
+const ssids = ref<any[]>([]);
+const loading = ref(false);
+
+async function loadAll() {
+  loading.value = true;
+  try {
+    [tenants.value, tenantGroups.value, asns.value, providers.value,
+     circuitTypes.value, circuits.value, contactGroups.value,
+     contacts.value, ssids.value]
+      = await Promise.all([
+        Advanced.tenants(), Advanced.tenantGroups(), Advanced.asns(),
+        Advanced.providers(), Advanced.circuitTypes(), Advanced.circuits(),
+        Advanced.contactGroups(), Advanced.contacts(), Advanced.ssids(),
+      ]);
+  } catch { msg.error(t("errors.network")); }
+  finally { loading.value = false; }
+}
+
+async function delResource(resource: string, id: string) {
+  try {
+    await apiClient.delete(`/api/v1/${resource}/${id}`);
+    await loadAll();
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+}
+
+// ── 各資源的 modal state ──
+type Resource = "tenant" | "tenant_group" | "asn" | "provider" | "circuit" | "contact_group" | "contact" | "ssid";
+const showCreate = ref(false);
+const createKind = ref<Resource>("tenant");
+const form = ref<Record<string, any>>({});
+
+function openCreate(kind: Resource) {
+  createKind.value = kind;
+  switch (kind) {
+    case "tenant":        form.value = { name: "", tenant_group_id: null, description: "" }; break;
+    case "tenant_group":  form.value = { name: "", description: "" }; break;
+    case "asn":           form.value = { number: 65000, rir: "", description: "", tenant_id: null }; break;
+    case "provider":      form.value = { name: "", account: "", description: "" }; break;
+    case "circuit":       form.value = { cid: "", provider_id: null, type_id: null, status: "active", description: "" }; break;
+    case "contact_group": form.value = { name: "", description: "" }; break;
+    case "contact":       form.value = { name: "", email: "", phone: "", group_id: null, description: "" }; break;
+    case "ssid":          form.value = { name: "", description: "" }; break;
+  }
+  showCreate.value = true;
+}
+
+const URL_MAP: Record<Resource, string> = {
+  tenant:        "tenants",
+  tenant_group:  "tenant-groups",
+  asn:           "asns",
+  provider:      "providers",
+  circuit:       "circuits",
+  contact_group: "contact-groups",
+  contact:       "contacts",
+  ssid:          "wireless/ssids",
+};
+
+async function submit() {
+  // 清掉空字串 → null(避免 backend 嚴格驗證擋住)
+  const payload: Record<string, any> = {};
+  for (const [k, v] of Object.entries(form.value)) {
+    payload[k] = v === "" ? null : v;
+  }
+  if (!payload.name && createKind.value !== "asn" && createKind.value !== "circuit") {
+    msg.error(t("advanced.error_name_required"));
+    return;
+  }
+  if (createKind.value === "asn" && !payload.number) {
+    msg.error(t("advanced.error_asn_number_required"));
+    return;
+  }
+  if (createKind.value === "circuit" && (!payload.cid || !payload.provider_id || !payload.type_id)) {
+    msg.error(t("advanced.error_circuit_required"));
+    return;
+  }
+  try {
+    await apiClient.post(`/api/v1/${URL_MAP[createKind.value]}`, payload);
+    showCreate.value = false;
+    await loadAll();
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+}
+
+// ── select options ──
+const tenantGroupOpts = computed(() => tenantGroups.value.map((g) => ({ label: g.name, value: g.id })));
+const tenantOpts = computed(() => tenants.value.map((g) => ({ label: g.name, value: g.id })));
+const providerOpts = computed(() => providers.value.map((g) => ({ label: g.name, value: g.id })));
+const circuitTypeOpts = computed(() => circuitTypes.value.map((g) => ({ label: g.name, value: g.id })));
+const contactGroupOpts = computed(() => contactGroups.value.map((g) => ({ label: g.name, value: g.id })));
+
+const delBtn = (resource: string, id: string) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
+  h(NPopconfirm, {
+    onPositiveClick: () => delResource(resource, id),
+  }, {
+    trigger: () => h(NTooltip, null, {
+      trigger: () => h(NButton, { size: "small", quaternary: true, type: "error",
+        onClick: (e: MouseEvent) => { e.stopPropagation(); } },
+        { icon: () => h(NIcon, null, () => h(DeleteIcon)) }),
+      default: () => t("common.delete"),
+    }),
+    default: () => t("common.confirm_delete"),
+  }),
+]);
+
+const tenantCols = computed<DataTableColumns<any>>(() => autoSort([
+  { title: t("common.name"), key: "name", minWidth: 180, ellipsis: { tooltip: true } },
+  { title: t("advanced.tenant_group"), key: "tenant_group_id", width: 160, ellipsis: { tooltip: true },
+    render: (r) => tenantGroups.value.find((g) => g.id === r.tenant_group_id)?.name ?? "—" },
+  { title: t("sections.description"), key: "description", minWidth: 200, ellipsis: { tooltip: true }, render: (r) => r.description ?? "—" },
+  { title: t("common.actions"), key: "_", className: "col-actions", width: 56, render: (r) => delBtn("tenants", r.id) },
+]));
+const tenantGroupCols = computed<DataTableColumns<any>>(() => autoSort([
+  { title: t("common.name"), key: "name", minWidth: 180, ellipsis: { tooltip: true } },
+  { title: t("sections.description"), key: "description", minWidth: 220, ellipsis: { tooltip: true }, render: (r) => r.description ?? "—" },
+  { title: t("common.actions"), key: "_", className: "col-actions", width: 56, render: (r) => delBtn("tenant-groups", r.id) },
+]));
+const asnCols = computed<DataTableColumns<any>>(() => autoSort([
+  { title: "ASN", key: "number", width: 140 },
+  { title: t("cols.rir"), key: "rir", width: 120, render: (r) => r.rir ?? "—" },
+  { title: t("sections.description"), key: "description", minWidth: 220, ellipsis: { tooltip: true }, render: (r) => r.description ?? "—" },
+  { title: t("common.actions"), key: "_", className: "col-actions", width: 56, render: (r) => delBtn("asns", r.id) },
+]));
+const providerCols = computed<DataTableColumns<any>>(() => autoSort([
+  { title: t("common.name"), key: "name", minWidth: 180, ellipsis: { tooltip: true } },
+  { title: t("circuits.account"), key: "account", width: 160, ellipsis: { tooltip: true }, render: (r) => r.account ?? "—" },
+  { title: t("sections.description"), key: "description", minWidth: 200, ellipsis: { tooltip: true }, render: (r) => r.description ?? "—" },
+  { title: t("common.actions"), key: "_", className: "col-actions", width: 56, render: (r) => delBtn("providers", r.id) },
+]));
+const circuitCols = computed<DataTableColumns<any>>(() => autoSort([
+  { title: t("cols.cid"), key: "cid", minWidth: 160, ellipsis: { tooltip: true } },
+  { title: t("circuits.provider"), key: "provider_id", width: 180, ellipsis: { tooltip: true },
+    render: (r) => providers.value.find((p) => p.id === r.provider_id)?.name ?? "—" },
+  { title: t("circuits.type"), key: "type_id", width: 160, ellipsis: { tooltip: true },
+    render: (r) => circuitTypes.value.find((p) => p.id === r.type_id)?.name ?? "—" },
+  { title: t("common.status"), key: "status", width: 120 },
+]));
+const contactCols = computed<DataTableColumns<any>>(() => autoSort([
+  { title: t("common.name"), key: "name", minWidth: 160, ellipsis: { tooltip: true } },
+  { title: t("cols.email"), key: "email", minWidth: 180, ellipsis: { tooltip: true }, render: (r) => r.email ?? "—" },
+  { title: t("cols.phone"), key: "phone", width: 140, render: (r) => r.phone ?? "—" },
+  { title: t("contacts.group"), key: "group_id", width: 160, ellipsis: { tooltip: true },
+    render: (r) => contactGroups.value.find((g) => g.id === r.group_id)?.name ?? "—" },
+  { title: t("common.actions"), key: "_", className: "col-actions", width: 56, render: (r) => delBtn("contacts", r.id) },
+]));
+const ssidCols = computed<DataTableColumns<any>>(() => autoSort([
+  { title: "SSID", key: "name", minWidth: 180, ellipsis: { tooltip: true } },
+  { title: t("sections.description"), key: "description", minWidth: 220, ellipsis: { tooltip: true }, render: (r) => r.description ?? "—" },
+  { title: t("common.actions"), key: "_", className: "col-actions", width: 56, render: (r) => delBtn("wireless/ssids", r.id) },
+]));
+
+onMounted(() => { void loadAll(); });
+</script>
+
+<template>
+  <n-card>
+    <template #header>
+      <n-space align="center" :wrap-item="false">
+        <n-icon :size="22"><AdvancedIcon /></n-icon>
+        <span>{{ t("nav.advanced") }}</span>
+      </n-space>
+    </template>
+    <n-space style="margin-bottom: 12px">
+      <n-button @click="loadAll" :loading="loading">
+        <template #icon><n-icon><RefreshIcon /></n-icon></template>
+        {{ t("common.refresh") }}
+      </n-button>
+    </n-space>
+
+    <n-tabs v-model:value="tab" type="line">
+      <n-tab-pane name="tenancy">
+        <template #tab>
+          <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><CustomersIcon /></n-icon>{{ t('advanced.tenancy') }}</span>
+        </template>
+        <h3>{{ t("advanced.tenants") }}</h3>
+        <n-space style="margin: 8px 0">
+          <n-button size="small" type="primary" @click="openCreate('tenant')">
+            <template #icon><n-icon><PlusIcon /></n-icon></template>
+            {{ t("common.create") }}
+          </n-button>
+        </n-space>
+        <n-data-table :columns="tenantCols" :data="tenants" :loading="loading" :bordered="false" :scroll-x="596" />
+
+        <h3 style="margin-top: 24px">{{ t("advanced.tenant_groups") }}</h3>
+        <n-space style="margin: 8px 0">
+          <n-button size="small" type="primary" @click="openCreate('tenant_group')">
+            <template #icon><n-icon><PlusIcon /></n-icon></template>
+            {{ t("common.create") }}
+          </n-button>
+        </n-space>
+        <n-data-table :columns="tenantGroupCols" :data="tenantGroups" :loading="loading" :bordered="false" :scroll-x="456" />
+      </n-tab-pane>
+
+      <n-tab-pane name="asn">
+        <template #tab>
+          <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><VlansIcon /></n-icon>ASN</span>
+        </template>
+        <n-space style="margin: 8px 0">
+          <n-button size="small" type="primary" @click="openCreate('asn')">
+            <template #icon><n-icon><PlusIcon /></n-icon></template>
+            {{ t("common.create") }}
+          </n-button>
+        </n-space>
+        <n-data-table :columns="asnCols" :data="asns" :loading="loading" :bordered="false" :scroll-x="536" />
+      </n-tab-pane>
+
+      <n-tab-pane name="circuits">
+        <template #tab>
+          <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><PhysicalIcon /></n-icon>{{ t('advanced.circuits') }}</span>
+        </template>
+        <h3>{{ t("circuits.providers") }}</h3>
+        <n-space style="margin: 8px 0">
+          <n-button size="small" type="primary" @click="openCreate('provider')">
+            <template #icon><n-icon><PlusIcon /></n-icon></template>
+            {{ t("common.create") }}
+          </n-button>
+        </n-space>
+        <n-data-table :columns="providerCols" :data="providers" :loading="loading" :bordered="false" :scroll-x="596" />
+
+        <h3 style="margin-top: 24px">{{ t("advanced.circuits") }}</h3>
+        <n-space style="margin: 8px 0">
+          <n-button size="small" type="primary" @click="openCreate('circuit')">
+            <template #icon><n-icon><PlusIcon /></n-icon></template>
+            {{ t("common.create") }}
+          </n-button>
+        </n-space>
+        <n-data-table :columns="circuitCols" :data="circuits" :loading="loading" :bordered="false" :scroll-x="620" />
+      </n-tab-pane>
+
+      <n-tab-pane name="contacts">
+        <template #tab>
+          <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><UsersIcon /></n-icon>{{ t('advanced.contacts') }}</span>
+        </template>
+        <h3>{{ t("advanced.contact_groups") }}</h3>
+        <n-space style="margin: 8px 0">
+          <n-button size="small" type="primary" @click="openCreate('contact_group')">
+            <template #icon><n-icon><PlusIcon /></n-icon></template>
+            {{ t("common.create") }}
+          </n-button>
+        </n-space>
+        <n-data-table :columns="tenantGroupCols" :data="contactGroups" :loading="loading" :bordered="false" :scroll-x="456" />
+
+        <h3 style="margin-top: 24px">{{ t("advanced.contacts") }}</h3>
+        <n-space style="margin: 8px 0">
+          <n-button size="small" type="primary" @click="openCreate('contact')">
+            <template #icon><n-icon><PlusIcon /></n-icon></template>
+            {{ t("common.create") }}
+          </n-button>
+        </n-space>
+        <n-data-table :columns="contactCols" :data="contacts" :loading="loading" :bordered="false" :scroll-x="696" />
+      </n-tab-pane>
+
+      <n-tab-pane name="wireless">
+        <template #tab>
+          <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><ScanAgentsIcon /></n-icon>{{ t('advanced.wireless') }}</span>
+        </template>
+        <h3>SSID</h3>
+        <n-space style="margin: 8px 0">
+          <n-button size="small" type="primary" @click="openCreate('ssid')">
+            <template #icon><n-icon><PlusIcon /></n-icon></template>
+            {{ t("common.create") }}
+          </n-button>
+        </n-space>
+        <n-data-table :columns="ssidCols" :data="ssids" :loading="loading" :bordered="false" :scroll-x="456" />
+      </n-tab-pane>
+    </n-tabs>
+
+    <n-modal v-model:show="showCreate" preset="card" style="width: 520px">
+      <template #header>
+        <n-space align="center">
+          <n-icon :size="20"><PlusIcon /></n-icon>
+          <span>{{ t(`advanced.create_${createKind}`) }}</span>
+        </n-space>
+      </template>
+
+      <n-form label-placement="top">
+        <!-- Tenant -->
+        <template v-if="createKind === 'tenant'">
+          <n-form-item :label="t('common.name')">
+            <n-input v-model:value="form.name" placeholder="ACME Corp" />
+          </n-form-item>
+          <n-form-item :label="t('advanced.tenant_group')">
+            <n-select v-model:value="form.tenant_group_id" :options="tenantGroupOpts" clearable
+                      :placeholder="t('advanced.tenant_group_placeholder')" />
+          </n-form-item>
+          <n-form-item :label="t('sections.description')">
+            <n-input v-model:value="form.description" type="textarea" :rows="2" />
+          </n-form-item>
+        </template>
+
+        <!-- Tenant Group -->
+        <template v-else-if="createKind === 'tenant_group'">
+          <n-form-item :label="t('common.name')">
+            <n-input v-model:value="form.name" />
+          </n-form-item>
+          <n-form-item :label="t('sections.description')">
+            <n-input v-model:value="form.description" type="textarea" :rows="2" />
+          </n-form-item>
+        </template>
+
+        <!-- ASN -->
+        <template v-else-if="createKind === 'asn'">
+          <n-form-item label="AS Number">
+            <n-input-number v-model:value="form.number" :min="1" :max="4294967295" />
+          </n-form-item>
+          <n-form-item label="RIR">
+            <n-select v-model:value="form.rir" clearable
+                      :options="['APNIC','ARIN','RIPE','LACNIC','AFRINIC'].map(v => ({label: v, value: v}))" />
+          </n-form-item>
+          <n-form-item :label="t('advanced.owner_tenant')">
+            <n-select v-model:value="form.tenant_id" :options="tenantOpts" clearable filterable />
+          </n-form-item>
+          <n-form-item :label="t('sections.description')">
+            <n-input v-model:value="form.description" type="textarea" :rows="2" />
+          </n-form-item>
+        </template>
+
+        <!-- Provider -->
+        <template v-else-if="createKind === 'provider'">
+          <n-form-item :label="t('common.name')">
+            <n-input v-model:value="form.name" placeholder="HiNet / TFN / NTT …" />
+          </n-form-item>
+          <n-form-item :label="t('circuits.account')">
+            <n-input v-model:value="form.account" :placeholder="t('advanced.account_ph')" />
+          </n-form-item>
+          <n-form-item :label="t('sections.description')">
+            <n-input v-model:value="form.description" type="textarea" :rows="2" />
+          </n-form-item>
+        </template>
+
+        <!-- Circuit -->
+        <template v-else-if="createKind === 'circuit'">
+          <n-form-item :label="t('advanced.cid_label')">
+            <n-input v-model:value="form.cid" placeholder="CID-TPE-001" />
+          </n-form-item>
+          <n-form-item :label="t('circuits.provider')">
+            <n-select v-model:value="form.provider_id" :options="providerOpts" filterable
+                      :placeholder="t('circuits.provider_placeholder')" />
+          </n-form-item>
+          <n-form-item :label="t('circuits.type')">
+            <n-select v-model:value="form.type_id" :options="circuitTypeOpts" filterable
+                      :placeholder="t('circuits.type_placeholder')" />
+          </n-form-item>
+          <n-form-item :label="t('common.status')">
+            <n-select v-model:value="form.status"
+                      :options="['active','planned','provisioning','offline','decommissioned'].map(v => ({label: v, value: v}))" />
+          </n-form-item>
+          <n-form-item :label="t('sections.description')">
+            <n-input v-model:value="form.description" type="textarea" :rows="2" />
+          </n-form-item>
+        </template>
+
+        <!-- Contact Group -->
+        <template v-else-if="createKind === 'contact_group'">
+          <n-form-item :label="t('common.name')">
+            <n-input v-model:value="form.name" :placeholder="t('advanced.contact_name_ph')" />
+          </n-form-item>
+          <n-form-item :label="t('sections.description')">
+            <n-input v-model:value="form.description" type="textarea" :rows="2" />
+          </n-form-item>
+        </template>
+
+        <!-- Contact -->
+        <template v-else-if="createKind === 'contact'">
+          <n-form-item :label="t('common.name')">
+            <n-input v-model:value="form.name" />
+          </n-form-item>
+          <n-space>
+            <n-form-item label="Email" style="min-width: 240px">
+              <n-input v-model:value="form.email" placeholder="alice@example.com" />
+            </n-form-item>
+            <n-form-item label="Phone" style="min-width: 200px">
+              <n-input v-model:value="form.phone" placeholder="+886-2-1234-5678" />
+            </n-form-item>
+          </n-space>
+          <n-form-item :label="t('contacts.group')">
+            <n-select v-model:value="form.group_id" :options="contactGroupOpts" clearable filterable />
+          </n-form-item>
+          <n-form-item :label="t('sections.description')">
+            <n-input v-model:value="form.description" type="textarea" :rows="2" />
+          </n-form-item>
+        </template>
+
+        <!-- SSID -->
+        <template v-else-if="createKind === 'ssid'">
+          <n-form-item label="SSID">
+            <n-input v-model:value="form.name" placeholder="Corp-WiFi" />
+          </n-form-item>
+          <n-form-item :label="t('sections.description')">
+            <n-input v-model:value="form.description" type="textarea" :rows="2" />
+          </n-form-item>
+        </template>
+      </n-form>
+
+      <n-space justify="end">
+        <n-button @click="showCreate = false">
+          <template #icon><n-icon><CancelIcon /></n-icon></template>
+          {{ t("common.cancel") }}
+        </n-button>
+        <n-button type="primary" @click="submit">
+          <template #icon><n-icon><SaveIcon /></n-icon></template>
+          {{ t("common.save") }}
+        </n-button>
+      </n-space>
+    </n-modal>
+  </n-card>
+</template>

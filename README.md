@@ -1,0 +1,109 @@
+# jt-ipam
+
+> A next-generation IPAM — phpIPAM-style workflow at its core, deeply integrated with multiple DNS servers, LibreNMS, OPNsense, Proxmox VE, Wazuh, and a local LLM.
+>
+> By Jason Tools Co., Ltd. · License: AGPL-3.0 · 繁體中文: [README_zh-TW.md](README_zh-TW.md)
+
+---
+
+## Why jt-ipam?
+
+Zero learning curve for phpIPAM veterans, with a modern stack that fixes the performance / UI / API debt of the original. Deep integrations:
+
+- **DNS** — PowerDNS, BIND 9, OPNsense Unbound, Univention UCS, Microsoft Windows DNS (two-way sync)
+- **LibreNMS** — device sync, ARP / FDB harvesting, online-status reconciliation, auto-onboarding to monitoring
+- **Infrastructure** — Proxmox VE, Wazuh, OPNsense (alias / rule / NAT sync), AdGuard
+- **Local AI** — natural-language queries and semantic search over Ollama (data never leaves the host), plus an MCP server (stdio and Streamable HTTP transports) so external LLM clients can drive the IPAM
+
+Full spec in [`docs/SPEC.md`](docs/SPEC.md).
+
+## Core entities
+
+`Section → Subnet → IPAddress`, plus `Device` / `Rack` / `Location`, `Customer` (managing unit), `VLAN` / `VRF`, `NAT`, OPNsense firewalls, and an IEEE OUI vendor table (monthly refresh).
+
+## Access control (RBAC)
+
+Object-level permissions across **7 object types** (customer / section / subnet / IP / device / rack / location) with:
+
+- **Hierarchical cascade** — granting an upper level (e.g. a customer or section) automatically covers everything beneath it (subnets → IPs; locations → racks → devices)
+- **"All" wildcard** per object type
+- **5 built-in roles** — System Administrator, Read-only Viewer, Network Operator, Auditor, Department Administrator
+- Visibility is enforced everywhere: list endpoints, global search, the topology graph, and every dropdown only ever show objects the principal may see. Deny-by-default.
+
+## Security (OWASP Top 10:2025)
+
+Security is a day-one requirement; every module and PR is checked against **OWASP Top 10:2025**. See [`docs/SECURITY.md`](docs/SECURITY.md).
+
+- **TLS enforced** — pick one: nginx reverse-proxy termination (`BACKEND_TLS_MODE=nginx`) or uvicorn serving a self-signed cert directly (`BACKEND_TLS_MODE=direct`)
+- A01 — deny-by-default RBAC with object-level checks (above)
+- A02 — argon2id password hashing; application-layer encryption for stored secrets (DNS credentials / SNMP / API tokens)
+- A03 — parameterized SQLAlchemy, strict Pydantic v2 validation, CSP + output escaping
+- A05 — HSTS, CSP, X-Frame-Options, Referrer-Policy
+- A07 — TOTP MFA, account lockout, HttpOnly+Secure+SameSite cookies, API-token TTL
+- A08 — SHA-256 audit chain
+- A09 — structured audit logging
+- A10 — SSRF allow-listing for all outbound integrations; metadata / link-local blocked
+
+## Stack
+
+| Layer | Choice |
+|------|--------|
+| Backend | Python 3.12 · FastAPI · SQLAlchemy 2.0 (async) · asyncpg · Alembic · Pydantic v2 |
+| Database | PostgreSQL 16 (native `inet`/`cidr`/`macaddr`) + pgvector |
+| Frontend | Vue 3 · TypeScript · Vite · Naive UI · Pinia · vue-i18n |
+| Auth | argon2id · TOTP · short-lived JWT + refresh |
+| AI | Ollama (local) · pgvector · MCP server |
+| Deploy | systemd + nginx + apt packages — **no containers** (Proxmox LXC / bare-metal friendly) |
+
+## Install (single host / Proxmox LXC)
+
+> Debian 12 / Ubuntu 22.04+, 2 vCPU / 4 GB RAM minimum. TLS is mandatory.
+
+```bash
+git clone https://github.com/jasoncheng7115/jt-ipam.git /opt/jt-ipam
+cd /opt/jt-ipam
+sudo bash scripts/jt-ipam.sh install    # one script: install / upgrade / uninstall
+```
+
+The script installs `postgresql-16` / `python3.12` / `nginx`, creates the `jtipam` system account and PG role, generates keys into `/etc/jt-ipam/backend.env`, runs `alembic upgrade head`, builds the frontend, and enables `jt-ipam-backend.service`.
+
+Upgrade an existing install with `sudo bash scripts/jt-ipam.sh upgrade` (backup → deps → alembic → build → restart). See [`docs/INSTALL.md`](docs/INSTALL.md).
+
+## Project layout
+
+```
+jt-ipam/
+├── docs/              # spec, security, data model, API reference
+├── backend/           # FastAPI app
+│   └── app/
+│       ├── core/      # config / db / audit / safe_http / encrypted_secret
+│       ├── models/    # SQLAlchemy 2.0
+│       ├── schemas/   # Pydantic v2
+│       ├── api/v1/    # REST API
+│       ├── services/  # business logic (ai / oui / opnsense / topology / search / permission)
+│       ├── mcp/       # MCP server + tools (for LLM clients)
+│       └── plugins/   # plugin system
+├── frontend/          # Vue 3 + TS
+│   └── src/{views,components,composables,api,stores,i18n,router}
+└── scripts/           # jt-ipam.sh (install/upgrade/uninstall), ci.sh, oui_refresh.py
+```
+
+## Roadmap status
+
+- **Phase 1** ✅ — phpIPAM parity + improvements (Section/Subnet/IP/VLAN/VRF/NAT/Devices/Racks/Locations/IP-Requests, TOTP/API-Token/RBAC, phpIPAM import, CSV/RIPE/TWNIC, visual subnet grid, forced TLS)
+- **Phase 2** ✅ — multi-vendor DNS + deep LibreNMS integration (device/ARP/FDB/effective-status) + anomaly detection + SHA-256 audit chain + pgvector AI semantic search
+- **Phase 3** ✅ — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox sync + Cytoscape topology + OIDC/SAML SSO + OPNsense firewall sync + Wazuh agent inventory
+- **Phase 4** ✅ (scoped) — MCP server + local-LLM natural language (Ollama) + plugin mechanism
+
+**Out of scope:** HA deployment, Ansible Collection, Terraform Provider, Zimbra/Odoo integration, Docker/Helm/K8s.
+
+## Contributing
+
+1. Every PR passes the OWASP Top 10:2025 mental checklist in [`docs/SECURITY.md`](docs/SECURITY.md)
+2. Backend: `ruff`, `mypy`, `pytest`, `pip-audit`
+3. Frontend: `npm run lint`, `npm run type-check`, `npm run build`
+4. Changes to sensitive files (auth / crypto / SSRF / migrations) get an extra review
+
+## License
+
+AGPL-3.0. Commercial support: contact Jason Tools.

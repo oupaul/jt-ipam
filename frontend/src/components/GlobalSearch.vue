@@ -1,0 +1,220 @@
+<script setup lang="ts">
+/**
+ * 全域搜尋框 — 帶自動類型偵測 (CIDR / IP / MAC / 自由文字)。
+ *
+ * 比 phpIPAM 改進的地方：
+ *  - 一個 input 接受所有查詢類型，後端自動 dispatch
+ *  - debounce + race-safe(後請求覆蓋前請求結果)
+ *  - 結果按類別分組，每類限 8 筆，分數排序
+ */
+import { computed, h as vh, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
+import { useRouter } from "vue-router";
+import {
+  NAutoComplete,
+  NTag,
+  NSpace,
+  NText,
+  type AutoCompleteOption,
+} from "naive-ui";
+import { search, type SearchHit } from "@/api/search";
+
+const { t: tr } = useI18n();
+const router = useRouter();
+const q = ref("");
+const hits = ref<SearchHit[]>([]);
+const detected = ref<string>("");
+const loading = ref(false);
+
+let debounceTimer: number | null = null;
+let lastIssued = 0;
+
+watch(q, (val) => {
+  if (debounceTimer !== null) window.clearTimeout(debounceTimer);
+  if (!val || val.trim().length < 2) {
+    hits.value = [];
+    detected.value = "";
+    loading.value = false;
+    return;
+  }
+  // 立刻進 loading 狀態 — 不等 debounce + API，讓使用者馬上看到「搜尋中」
+  loading.value = true;
+  debounceTimer = window.setTimeout(() => {
+    void runSearch(val);
+  }, 250);
+});
+
+async function runSearch(query: string) {
+  loading.value = true;
+  const myIssue = ++lastIssued;
+  try {
+    const res = await search(query, 8);
+    if (myIssue !== lastIssued) return; // race-safe
+    hits.value = res.results;
+    detected.value = res.detected;
+  } catch {
+    // ignore — keep prior results
+  } finally {
+    if (myIssue === lastIssued) loading.value = false;
+  }
+}
+
+interface GroupedOption {
+  type: string;
+  label: string;
+  children: AutoCompleteOption[];
+}
+
+const options = computed<any[]>(() => {
+  // 還沒有結果、但正在搜尋 → 給一個 disabled 的「搜尋中」占位
+  if (loading.value && hits.value.length === 0) {
+    return [{
+      type: "group",
+      label: tr("global_search.searching"),
+      key: "__loading",
+      children: [{
+        label: tr("global_search.searching"),
+        value: "__loading",
+        disabled: true,
+      }],
+    }];
+  }
+  if (!loading.value && hits.value.length === 0 && q.value.trim().length >= 2) {
+    return [{
+      type: "group",
+      label: tr("global_search.no_results"),
+      key: "__empty",
+      children: [{
+        label: tr("global_search.no_match"),
+        value: "__empty",
+        disabled: true,
+      }],
+    }];
+  }
+  const groups: Record<string, SearchHit[]> = {};
+  for (const x of hits.value) {
+    (groups[x.type] ??= []).push(x);
+  }
+  const order = ["section", "subnet", "vlan", "ip_address", "device", "vpn", "customer", "rack", "location", "nat", "dns_record", "firewall", "ip_request"];
+  const labelMap: Record<string, string> = {
+    section: tr("global_search.t_section"),
+    subnet: tr("global_search.t_subnet"),
+    vlan: "VLAN",
+    ip_address: tr("global_search.t_ip"),
+    device: tr("global_search.t_device"),
+    vpn: "VPN",
+    customer: tr("nav.customers"),
+    rack: tr("nav.racks"),
+    location: tr("nav.locations"),
+    nat: tr("nav.nat"),
+    dns_record: tr("nav.dns"),
+    firewall: tr("nav.firewall"),
+    ip_request: tr("nav.requests"),
+  };
+  return order
+    .filter((t) => groups[t]?.length)
+    .map((t) => ({
+      type: "group",
+      label: labelMap[t] || t,
+      key: t,
+      children: groups[t].map((x) => ({
+        label: x.label,
+        value: `${x.type}:${x.id}`,
+        sublabel: x.sublabel,
+      })),
+    }));
+});
+
+function renderOption(option: any) {
+  // group title 用預設
+  if (option.type === "group") return option.label;
+  return vh("div", { style: "display: flex; flex-direction: column; padding: 2px 0;" }, [
+    vh("div", { style: "font-weight: 500;" }, option.label),
+    option.sublabel
+      ? vh("div", { style: "font-size: 11px; opacity: 0.65;" }, option.sublabel)
+      : null,
+  ]);
+}
+
+function navigateTo(value: string) {
+  if (value === "__loading" || value === "__empty") return;
+  const [type, id] = value.split(":", 2);
+  const hit = hits.value.find((h) => h.type === type && h.id === id);
+  switch (type) {
+    case "subnet":
+      router.push({ name: "subnet-detail", params: { id } });
+      break;
+    case "section":
+      router.push({ name: "section-detail", params: { id } });
+      break;
+    case "ip_address":
+      // 帶 IP 字串給位址頁去搜尋過濾 (後端 q 支援 IP 模糊)
+      router.push({ name: "addresses", query: { q: hit?.label ?? id } });
+      break;
+    case "device":
+      router.push({ name: "device-detail", params: { id } });
+      break;
+    case "vlan":
+      router.push({ name: "vlans" });
+      break;
+    case "vpn":
+      router.push({ name: "vpn-tunnels" });
+      break;
+    case "customer":
+      router.push({ name: "customer-detail", params: { id } });
+      break;
+    case "rack":
+      router.push({ name: "racks" });
+      break;
+    case "location":
+      router.push({ name: "locations" });
+      break;
+    case "nat":
+      router.push({ name: "nat" });
+      break;
+    case "dns_record":
+      router.push({ name: "dns" });
+      break;
+    case "firewall":
+      router.push({ name: "firewall" });
+      break;
+    case "ip_request":
+      router.push({ name: "requests" });
+      break;
+  }
+  q.value = "";
+  hits.value = [];
+}
+
+function detectedTagType(d: string): "info" | "success" | "warning" | "default" {
+  if (d === "cidr" || d === "ip") return "success";
+  if (d === "mac") return "info";
+  if (d === "vlan_number") return "warning";
+  return "default";
+}
+</script>
+
+<template>
+  <n-space align="center" :wrap="false" :size="6" style="width: 380px; flex-shrink: 0;">
+    <n-auto-complete
+      v-model:value="q"
+      :options="options as any"
+      :render-label="renderOption"
+      :loading="loading"
+      size="small"
+      :placeholder="tr('global_search.placeholder')"
+      clearable
+      :get-show="() => q.trim().length >= 2"
+      style="width: 320px"
+      @select="(v: string) => navigateTo(v)"
+    />
+    <n-tag
+      v-if="detected && detected !== 'free' && detected !== 'empty'"
+      size="small"
+      :type="detectedTagType(detected)"
+      style="margin-left: 4px"
+    >
+      {{ detected }}
+    </n-tag>
+  </n-space>
+</template>
