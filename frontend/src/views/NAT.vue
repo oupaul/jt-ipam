@@ -21,8 +21,8 @@ const { t } = useI18n();
 const router = useRouter();
 const { visibleKeys, setVisible, reset } = useColumnPrefs(
   "nat",
-  ["name", "type", "protocol", "src_ip_id", "dst_ip_id", "src_port", "dst_port", "src_interface", "device_id", "description", "source_label", "actions"],
-  ["name", "type", "protocol", "src_ip_id", "dst_ip_id", "src_port", "dst_port", "src_interface", "device_id", "description", "source_label", "actions"],
+  ["name", "type", "protocol", "src_ip_id", "src_interface", "src_port", "dst_ip_id", "dst_port", "device_id", "description", "source_label", "actions"],
+  ["name", "type", "protocol", "src_ip_id", "src_interface", "src_port", "dst_ip_id", "dst_port", "device_id", "description", "source_label", "actions"],
 );
 const columnPickerItems = computed(() => [
   { key: "name", label: t("cols.name") },
@@ -231,16 +231,16 @@ const allCols = computed<DataTableColumns<NAT>>(() => autoSort([
   },
   { title: t("nat.protocol"), key: "protocol", width: 100 },
   {
-    title: t("nat.src_ip"), key: "src_ip_id", width: 150,
+    title: t("nat.src_ip"), key: "src_ip_id", width: 96,
     render: (r) => ipLinkCell(r.src_ip_id),
   },
+  { title: t("nat.src_interface"), key: "src_interface", width: 130, render: (r) => r.src_interface ?? "—" },
+  { title: t("nat.src_port"), key: "src_port", width: 100, render: (r) => r.src_port ?? "—" },
   {
     title: t("nat.dst_ip"), key: "dst_ip_id", width: 150,
     render: (r) => ipLinkCell(r.dst_ip_id),
   },
-  { title: t("nat.src_port"), key: "src_port", width: 100, render: (r) => r.src_port ?? "—" },
   { title: t("nat.dst_port"), key: "dst_port", width: 100, render: (r) => r.dst_port ?? "—" },
-  { title: t("nat.src_interface"), key: "src_interface", width: 130, render: (r) => r.src_interface ?? "—" },
   {
     title: t("nav.devices"), key: "device_id", width: 150, ellipsis: { tooltip: true },
     render: (r) => deviceLinkCell(r.device_id),
@@ -358,26 +358,28 @@ onMounted(() => { void refresh(); void loadOpts(); });
         <n-form-item :label="t('nat.type')">
           <n-select v-model:value="form.type" :options="typeOpts" />
         </n-form-item>
-        <n-form-item :label="t('nat.src_ip')">
-          <n-select v-model:value="form.src_ip_id" :options="addrOpts" filterable clearable
-                    :placeholder="t('nat.src_ip_placeholder')" />
-        </n-form-item>
-        <n-form-item :label="t('nat.dst_ip')">
-          <n-select v-model:value="form.dst_ip_id" :options="addrOpts" filterable clearable
-                    :placeholder="t('nat.dst_ip_placeholder')" />
-        </n-form-item>
-        <n-form-item :label="t('nat.src_interface')">
-          <n-input v-model:value="form.src_interface" placeholder="wan / lan / opt2 …" />
+        <n-form-item :label="t('nat.protocol')">
+          <n-select v-model:value="form.protocol" :options="protoOpts" />
         </n-form-item>
         <n-form-item :label="t('nat.device')">
           <n-select v-model:value="form.device_id" :options="deviceOpts" filterable clearable
                     :placeholder="t('nat.device_placeholder')" />
         </n-form-item>
-        <n-form-item :label="t('nat.protocol')">
-          <n-select v-model:value="form.protocol" :options="protoOpts" />
+        <!-- 來源相關欄位放一起 -->
+        <n-form-item :label="t('nat.src_ip')">
+          <n-select v-model:value="form.src_ip_id" :options="addrOpts" filterable clearable
+                    :placeholder="t('nat.src_ip_placeholder')" />
+        </n-form-item>
+        <n-form-item :label="t('nat.src_interface')">
+          <n-input v-model:value="form.src_interface" placeholder="wan / lan / opt2 …" />
         </n-form-item>
         <n-form-item :label="t('nat.src_port')">
           <n-input-number v-model:value="form.src_port" :min="1" :max="65535" clearable />
+        </n-form-item>
+        <!-- 目的相關欄位放一起 -->
+        <n-form-item :label="t('nat.dst_ip')">
+          <n-select v-model:value="form.dst_ip_id" :options="addrOpts" filterable clearable
+                    :placeholder="t('nat.dst_ip_placeholder')" />
         </n-form-item>
         <n-form-item :label="t('nat.dst_port')">
           <n-input-number v-model:value="form.dst_port" :min="1" :max="65535" clearable />

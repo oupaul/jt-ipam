@@ -4,7 +4,7 @@
 
 ---
 
-## ✅ 提交前（commit / PR）
+##  提交前（commit / PR）
 
 ### 程式碼層
 
@@ -50,7 +50,7 @@
 
 ---
 
-## 🚀 發 Release（git tag）前
+##  發 Release（git tag）前
 
 - [ ] 上述全部打勾
 - [ ] `git log --oneline <last-tag>..HEAD` 看一遍 — 沒有遺漏的非必要 commit
@@ -64,7 +64,7 @@
 
 ---
 
-## 📦 部署到 Production 前
+##  部署到 Production 前
 
 - [ ] 目標機 OS 已 apt update + upgrade + reboot
 - [ ] **DB 備份完成**（不是依賴 03:30 cron — 手動再跑一次 `jt-ipam-backup.sh`）
@@ -75,7 +75,7 @@
 
 ---
 
-## ✔️ 部署到 Production 後（必跑）
+##  部署到 Production 後（必跑）
 
 - [ ] `systemctl is-active jt-ipam-backend nginx postgresql redis-server` 全 active
 - [ ] `systemctl is-enabled jt-ipam-sync.timer jt-ipam-backup.timer` 都 enabled
@@ -96,7 +96,7 @@
 
 ---
 
-## 🆘 出事 rollback SOP
+##  出事 rollback SOP
 
 ```bash
 # 1. 立刻退到上一個 tag（程式碼）
@@ -116,7 +116,7 @@ sudo systemctl start jt-ipam-backend
 
 ---
 
-## 📊 KPI（追蹤但不阻擋發版）
+##  KPI（追蹤但不阻擋發版）
 
 | 指標 | 目標 | 怎麼看 |
 |---|---|---|

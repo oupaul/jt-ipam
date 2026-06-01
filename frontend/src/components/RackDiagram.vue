@@ -13,6 +13,7 @@ import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import { NCard, NTag, NEmpty, NAlert, NSpace, NTooltip } from "naive-ui";
 import type { RackDiagram } from "@/api/racks";
+import { rackTypeColor as colorFor } from "@/utils/rackColors";
 
 const { t } = useI18n();
 const router = useRouter();
@@ -22,8 +23,9 @@ function goDevice(id: string) {
 
 interface Props {
   diagram: RackDiagram | null;
+  showLegend?: boolean;   // 多機櫃並排時可關掉，由頁面放一個共用圖例
 }
-const props = defineProps<Props>();
+const props = withDefaults(defineProps<Props>(), { showLegend: true });
 const hoveredId = ref<string | null>(null);   // hover 某 U → 整台裝置點亮+框線
 
 interface Cell {
@@ -82,27 +84,6 @@ const cells = computed<Cell[]>(() => {
   }
   return order;
 });
-
-function colorFor(type: string): string {
-  switch (type) {
-    case "router":
-      return "rgba(99, 102, 241, 0.85)"; // indigo
-    case "switch":
-      return "rgba(34, 197, 94, 0.85)";  // green
-    case "firewall":
-      return "rgba(239, 68, 68, 0.85)";  // red
-    case "ap":
-      return "rgba(59, 130, 246, 0.85)"; // blue
-    case "server":
-      return "rgba(107, 114, 128, 0.85)"; // grey
-    case "storage":
-      return "rgba(245, 158, 11, 0.85)"; // amber
-    case "ipmi":
-      return "rgba(236, 72, 153, 0.6)";  // pink
-    default:
-      return "rgba(107, 114, 128, 0.6)";
-  }
-}
 </script>
 
 <template>
@@ -116,8 +97,9 @@ function colorFor(type: string): string {
         <pre style="font-size: 11px; margin: 0">{{ JSON.stringify(diagram.conflicts, null, 2) }}</pre>
       </n-alert>
 
+      <!-- 只要機櫃有設定 U 數，即使沒有任何 device 也畫出空機櫃框 -->
       <n-empty
-        v-if="!diagram.devices.length"
+        v-if="!diagram.u_height"
         :description="t('rack_diagram.empty')"
       />
 
@@ -163,7 +145,7 @@ function colorFor(type: string): string {
         </div>
       </div>
 
-      <div class="legend">
+      <div v-if="showLegend" class="legend">
         <span class="legend-item" :style="{ background: colorFor('router') }">router</span>
         <span class="legend-item" :style="{ background: colorFor('switch') }">switch</span>
         <span class="legend-item" :style="{ background: colorFor('firewall') }">firewall</span>
@@ -182,24 +164,13 @@ function colorFor(type: string): string {
 .rack-wrap { display: flex; align-items: flex-start; gap: 6px; }
 .u-gutter { display: flex; flex-direction: column; padding-top: 6px; flex: 0 0 auto; }
 .u-num-out {
-  position: relative;
   height: 28px;
   line-height: 28px;
   width: 26px;
   text-align: right;
-  padding-right: 4px;
+  padding-right: 6px;
   font: bold 12px ui-monospace, SFMono-Regular, Menlo, monospace;
   color: rgba(127, 127, 127, 0.75);
-}
-/* 從數字拉一條短線對到該 U 列，方便對位 */
-.u-num-out::after {
-  content: "";
-  position: absolute;
-  right: -6px;
-  top: 50%;
-  width: 6px;
-  height: 1px;
-  background: rgba(127, 127, 127, 0.5);
 }
 .rack-frame {
   border: 2px solid rgba(127, 127, 127, 0.5);

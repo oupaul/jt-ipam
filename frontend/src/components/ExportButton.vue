@@ -56,7 +56,7 @@ function onSelect(key: ExportFormat) {
 
 <template>
   <n-dropdown trigger="click" :options="options" @select="onSelect">
-    <n-button :size="size ?? 'small'" quaternary>
+    <n-button :size="size" quaternary>
       <template #icon><n-icon><ExportIcon /></n-icon></template>
       {{ t("export.label") }}
     </n-button>

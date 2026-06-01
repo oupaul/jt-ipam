@@ -73,6 +73,21 @@ async def rack_diagram(
         for ip in ip_rows:
             ip_map[ip.id] = str(ip.ip).split("/")[0]
 
+    # 沒設 primary_ip 的裝置：退而求其次，抓任一掛在該裝置的 IP（tooltip 也能顯示 IP）
+    no_primary = [d.id for d in devices if not d.primary_ip_id]
+    fallback_ip: dict[uuid.UUID, str] = {}
+    if no_primary:
+        fb_rows = (
+            await session.execute(
+                select(IPAddress)
+                .where(IPAddress.device_id.in_(no_primary))
+                .order_by(IPAddress.ip)
+            )
+        ).scalars().all()
+        for ip in fb_rows:
+            if ip.device_id is not None and ip.device_id not in fallback_ip:
+                fallback_ip[ip.device_id] = str(ip.ip).split("/")[0]
+
     slots: list[RackDeviceSlot] = []
     occupied: dict[int, list[uuid.UUID]] = {}
     conflicts: list[dict[str, Any]] = []
@@ -112,7 +127,7 @@ async def rack_diagram(
                 model=d.model,
                 u_position=d.u_position,
                 u_size=d.u_size,
-                primary_ip=ip_map.get(d.primary_ip_id) if d.primary_ip_id else None,
+                primary_ip=ip_map.get(d.primary_ip_id) if d.primary_ip_id else fallback_ip.get(d.id),
             )
         )
 

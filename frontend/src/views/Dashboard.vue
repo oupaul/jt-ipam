@@ -261,9 +261,13 @@ onMounted(load);
 <style scoped>
 /* widget 標題列：加品牌色 tint 的標籤背景條（KPI 卡無 header，不受影響） */
 :deep(.n-card > .n-card-header) {
-  background: rgba(24, 160, 88, 0.07);
-  border-bottom: 1px solid var(--n-border-color, rgba(127, 127, 127, 0.16));
+  /* 中性灰底標題列：沉穩、有高級感，與頁面背景明顯區隔 */
+  background: rgba(100, 116, 139, 0.10);
   border-radius: 10px 10px 0 0;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  /* 關鍵：標題列與下方內容之間留白（用 margin，不會被各卡的 content-style 內距覆蓋） */
+  margin-bottom: 14px;
 }
 :deep(.n-card > .n-card-header .n-card-header__main) { font-weight: 600; }
 

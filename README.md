@@ -1,14 +1,14 @@
 # jt-ipam
 
-> A next-generation IPAM — phpIPAM-style workflow at its core, deeply integrated with multiple DNS servers, LibreNMS, OPNsense, Proxmox VE, Wazuh, and a local LLM.
+> A next-generation IPAM, independently developed with an operation flow familiar to phpIPAM users, deeply integrated with multiple DNS servers, LibreNMS, OPNsense, Proxmox VE, Wazuh, and a local LLM.
 >
-> By Jason Tools Co., Ltd. · License: AGPL-3.0 · 繁體中文: [README_zh-TW.md](README_zh-TW.md)
+> By Jason Tools Co., Ltd. · License: Apache-2.0 · 繁體中文: [README_zh-TW.md](README_zh-TW.md)
 
 ---
 
 ## Why jt-ipam?
 
-Zero learning curve for phpIPAM veterans, with a modern stack that fixes the performance / UI / API debt of the original. Deep integrations:
+Familiar to phpIPAM users so they are productive from day one, but built from scratch on a modern stack (not based on phpIPAM's codebase). Deep integrations:
 
 - **DNS** — PowerDNS, BIND 9, OPNsense Unbound, Univention UCS, Microsoft Windows DNS (two-way sync)
 - **LibreNMS** — device sync, ARP / FDB harvesting, online-status reconciliation, auto-onboarding to monitoring
@@ -62,7 +62,7 @@ Security is a day-one requirement; every module and PR is checked against **OWAS
 ```bash
 git clone https://github.com/jasoncheng7115/jt-ipam.git /opt/jt-ipam
 cd /opt/jt-ipam
-sudo bash scripts/jt-ipam.sh install    # one script: install / upgrade / uninstall
+sudo bash scripts/jt-ipam.sh install # one script: install / upgrade / uninstall
 ```
 
 The script installs `postgresql-16` / `python3.12` / `nginx`, creates the `jtipam` system account and PG role, generates keys into `/etc/jt-ipam/backend.env`, runs `alembic upgrade head`, builds the frontend, and enables `jt-ipam-backend.service`.
@@ -90,10 +90,10 @@ jt-ipam/
 
 ## Roadmap status
 
-- **Phase 1** ✅ — phpIPAM parity + improvements (Section/Subnet/IP/VLAN/VRF/NAT/Devices/Racks/Locations/IP-Requests, TOTP/API-Token/RBAC, phpIPAM import, CSV/RIPE/TWNIC, visual subnet grid, forced TLS)
-- **Phase 2** ✅ — multi-vendor DNS + deep LibreNMS integration (device/ARP/FDB/effective-status) + anomaly detection + SHA-256 audit chain + pgvector AI semantic search
-- **Phase 3** ✅ — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox sync + Cytoscape topology + OIDC/SAML SSO + OPNsense firewall sync + Wazuh agent inventory
-- **Phase 4** ✅ (scoped) — MCP server + local-LLM natural language (Ollama) + plugin mechanism
+- **Phase 1 (done)** — phpIPAM-equivalent features + improvements (Section/Subnet/IP/VLAN/VRF/NAT/Devices/Racks/Locations/IP-Requests, TOTP/API-Token/RBAC, phpIPAM import, CSV/RIPE/TWNIC, visual subnet grid, forced TLS)
+- **Phase 2 (done)** — multi-vendor DNS + deep LibreNMS integration (device/ARP/FDB/effective-status) + anomaly detection + SHA-256 audit chain + pgvector AI semantic search
+- **Phase 3 (done)** — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox sync + Cytoscape topology + OIDC/SAML SSO + OPNsense firewall sync + Wazuh agent inventory
+- **Phase 4 (done, scoped)** — MCP server + local-LLM natural language (Ollama) + plugin mechanism
 
 **Out of scope:** HA deployment, Ansible Collection, Terraform Provider, Zimbra/Odoo integration, Docker/Helm/K8s.
 
@@ -106,4 +106,4 @@ jt-ipam/
 
 ## License
 
-AGPL-3.0. Commercial support: contact Jason Tools.
+Apache-2.0. Commercial support: contact Jason Tools.

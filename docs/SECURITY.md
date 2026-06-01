@@ -88,7 +88,7 @@
   - `LockPersonality=true`、`MemoryDenyWriteExecute=true`
   - `SystemCallArchitectures=native`、`SystemCallFilter=@system-service` 並排除 `@privileged @resources @obsolete @debug`
   - `LimitNOFILE=65536` / `TasksMax=1024`
-  - 驗證：`systemd-analyze security jt-ipam-backend`（目標分數 ≤ 3.5；目前實測 1.3 🙂）
+  - 驗證：`systemd-analyze security jt-ipam-backend`（目標分數 ≤ 3.5；目前實測 1.3 ）
 - **預設帳密**：首次啟動強制 admin 改密碼；安裝程式產生隨機密碼而非寫死。
 - **健康檢查端點**：`/healthz`（liveness）只回 200，不洩漏內部資訊。
 

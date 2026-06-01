@@ -26,9 +26,9 @@ you.
 
 - TLS is mandatory (nginx reverse proxy or uvicorn self-signed).
 - Secrets (DNS credentials, SNMP, API tokens) are encrypted at the application
-  layer; passwords use argon2id; MFA via TOTP.
+ layer; passwords use argon2id; MFA via TOTP.
 - All outbound integration URLs are SSRF allow-listed (metadata / link-local
-  blocked).
+ blocked).
 - Audit events are chained with SHA-256.
 
 When in doubt about whether something is a security issue, report it privately

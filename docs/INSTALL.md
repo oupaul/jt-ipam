@@ -16,9 +16,9 @@
 | CPU | 2 vCPU | 4 vCPU | argon2id + pgvector embedding 吃 CPU |
 | RAM | 4 GB | 8 GB | 開 Ollama 還要再加 8 GB |
 | Disk | 20 GB | 50 GB | audit log 累積 |
-| Python | 3.11 | 3.12 | 24.04 預設就是 3.12 ✓ |
+| Python | 3.11 | 3.12 | 24.04 預設就是 3.12  |
 | PostgreSQL | 16 + pgvector | — | 22.04 需 PGDG repo（腳本會自動加）|
-| Redis | 7 | — | 24.04 預設 7.0.15 ✓ |
+| Redis | 7 | — | 24.04 預設 7.0.15  |
 | Node | 20 LTS | 22 LTS | 24.04 預設 18.19；vite 6 跑得動但有 warning |
 
 **虛擬化備註**：在 Proxmox VM / LXC 上跑時，剛開機 / 重開後 1-2 分鐘內 load avg 可能飆高（hypervisor 上其他 VM 在搶 CPU，看 `mpstat` 的 `%steal`）；這不是 VM 本身忙，可以直接跑 install。
@@ -97,7 +97,7 @@ curl -kfsS -X POST https://127.0.0.1/api/v1/audit/verify \
 
 # systemd 安全分數
 systemd-analyze security jt-ipam-backend | tail -3
-# 目標：≤ 3.5；目前實測 1.3 🙂
+# 目標：≤ 3.5；目前實測 1.3
 ```
 
 ### 2.5 換成正式 TLS 憑證（nginx 模式）
@@ -138,15 +138,15 @@ sudo certbot --nginx -d ipam.example.com
 
 | 變數 | 必填 | 說明 |
 |---|---|---|
-| `SECRET_KEY` | ✓ | JWT 簽章；安裝腳本自動產 64-byte hex |
-| `ENCRYPTION_KEY` | ✓ | AES-256-GCM key（DNS/SNMP/API 憑證加密）|
-| `AUDIT_CHAIN_GENESIS` | ✓ | SHA-256 鏈起始；**永不可改**（A08）|
-| `POSTGRES_*` | ✓ | DB 連線 |
-| `REDIS_PASSWORD` | ✓ | rate limiter / cache |
-| `BACKEND_TLS_MODE` | ✓ | `nginx` 或 `direct` |
-| `APP_PUBLIC_URL` | ✓ | 前端 base URL |
-| `API_PUBLIC_URL` | ✓ | OIDC/SAML callback 用 |
-| `CORS_ORIGINS` | ✓ | 多個用逗號分隔 |
+| `SECRET_KEY` |  | JWT 簽章；安裝腳本自動產 64-byte hex |
+| `ENCRYPTION_KEY` |  | AES-256-GCM key（DNS/SNMP/API 憑證加密）|
+| `AUDIT_CHAIN_GENESIS` |  | SHA-256 鏈起始；**永不可改**（A08）|
+| `POSTGRES_*` |  | DB 連線 |
+| `REDIS_PASSWORD` |  | rate limiter / cache |
+| `BACKEND_TLS_MODE` |  | `nginx` 或 `direct` |
+| `APP_PUBLIC_URL` |  | 前端 base URL |
+| `API_PUBLIC_URL` |  | OIDC/SAML callback 用 |
+| `CORS_ORIGINS` |  | 多個用逗號分隔 |
 | `OUTBOUND_ALLOW_CIDRS` | — | safe_http SSRF allowlist；空白 = 只允公網 |
 | `OIDC_*` | — | 啟用 OIDC SSO |
 | `SAML_*` | — | 啟用 SAML SSO |
@@ -265,7 +265,7 @@ curl -X POST https://ipam.example.com/api/v1/audit/verify \
     -H "Authorization: Bearer <admin token>"
 ```
 
-> ⚠️ 備份檔內含敏感資料（DB 含加密的 API 憑證；env 含 SECRET_KEY/ENCRYPTION_KEY）。
+>  備份檔內含敏感資料（DB 含加密的 API 憑證；env 含 SECRET_KEY/ENCRYPTION_KEY）。
 > 必須以 `0600` 權限儲存，並做加密傳輸（rsync over ssh / s3 server-side encryption）。
 
 ---

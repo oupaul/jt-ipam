@@ -23,6 +23,7 @@ import { NIcon } from "naive-ui";
 import { RacksIcon, DeleteIcon, PlusIcon, EditIcon, SaveIcon, CancelIcon } from "@/icons";
 import { apiClient } from "@/api/client";
 import RackDiagram from "@/components/RackDiagram.vue";
+import { RACK_DEVICE_TYPES, rackTypeColor } from "@/utils/rackColors";
 import RackFloorPlan from "@/components/RackFloorPlan.vue";
 import { getRackDiagram, type RackDiagram as RD } from "@/api/racks";
 import { bulkDeleteRacks, listLocations, type Location } from "@/api/basic";
@@ -295,7 +296,12 @@ onMounted(() => {
       <!-- 點選聚焦時隱藏整排總覽，避免同一機櫃顯示兩次 -->
       <n-spin v-if="!roomFocus" :show="roomLoading">
         <div v-if="roomDiagrams.length" class="rack-row">
-          <rack-diagram v-for="d in roomDiagrams" :key="d.rack_id" :diagram="d" />
+          <rack-diagram v-for="d in roomDiagrams" :key="d.rack_id" :diagram="d" :show-legend="false" />
+        </div>
+        <!-- 整排機櫃共用一個圖例（不用每櫃都重複） -->
+        <div v-if="roomDiagrams.length" class="rack-legend-shared">
+          <span v-for="ty in RACK_DEVICE_TYPES" :key="ty" class="legend-item"
+                :style="{ background: rackTypeColor(ty) }">{{ ty }}</span>
         </div>
         <n-card v-else-if="!roomLoading" :title="t('racks.diagram_title')">
           <p style="opacity: 0.7">{{ t("racks.room_empty") }}</p>
@@ -403,4 +409,18 @@ onMounted(() => {
 }
 .rack-row > * { flex: 0 0 auto; }
 .rack-row :deep(.n-card) { width: auto; }
+/* 整排機櫃共用的圖例 */
+.rack-legend-shared {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  margin-top: 4px;
+}
+.rack-legend-shared .legend-item {
+  padding: 2px 8px;
+  border-radius: 3px;
+  color: white;
+  font-family: monospace;
+}
 </style>

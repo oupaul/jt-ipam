@@ -176,9 +176,14 @@ async def build_topology(
                 if pair in seen_vpn_pairs:
                     continue
                 seen_vpn_pairs.add(pair)
+                # 對接邊上標出「中間經過的 WAN 端點」：a_endpoint ↔ b_endpoint
+                # （WireGuard/IPsec/OpenVPN 的對外公網 IP / FQDN）
+                wan = " ↔ ".join(x for x in (t.a_endpoint, t.b_endpoint) if x)
                 edges.append({"data": {
                     "id": f"vpn:{t.id}", "source": a_id, "target": b_id,
-                    "label": t.type, "kind": "vpn", "type": t.type, "status": t.status,
+                    "label": f"{t.type} · {wan}" if wan else t.type,
+                    "kind": "vpn", "type": t.type, "status": t.status,
+                    "a_endpoint": t.a_endpoint, "b_endpoint": t.b_endpoint,
                 }})
                 continue
 
