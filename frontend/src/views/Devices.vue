@@ -121,6 +121,20 @@ async function refresh() {
   finally { loading.value = false; }
 }
 
+// 匯出全部：分頁抓完整裝置清單（清單畫面預設只載前 200 筆）
+async function fetchAllForExport(): Promise<Device[]> {
+  const all: Device[] = [];
+  const big = 500;   // 後端 page_size 上限
+  let p = 1;
+  for (;;) {
+    const res = await listDevices({ page: p, pageSize: big });
+    all.push(...res.items);
+    if (res.items.length === 0 || all.length >= res.total) break;
+    p++;
+  }
+  return all;
+}
+
 function openCreate() {
   editing.value = null;
   form.value = {
@@ -388,7 +402,8 @@ onMounted(async () => {
       </n-button>
       <ColumnPicker :all="columnPickerItems" :visible="visibleKeys"
                     @update:visible="setVisible" @reset="reset" />
-      <ExportButton :columns="cols" :rows="rows" filename="devices" :title="t('nav.devices')" />
+      <ExportButton :columns="cols" :rows="rows" :fetch-all="fetchAllForExport"
+                    filename="devices" :title="t('nav.devices')" />
       <n-button type="primary" @click="openCreate">
         <template #icon><n-icon><PlusIcon /></n-icon></template>
         {{ t("common.create") }}

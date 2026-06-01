@@ -158,6 +158,24 @@ const columns = computed<DataTableColumns<AuditLog>>(() =>
   allColumns.value.filter((c: any) => auditVis.value.includes(c.key)),
 );
 
+// 匯出全部：用相同篩選分頁抓完整資料集
+async function fetchAllForExport(): Promise<AuditLog[]> {
+  const all: AuditLog[] = [];
+  const big = 500;   // 後端 limit 上限
+  let off = 0;
+  for (;;) {
+    const res = await listAudit({
+      object_type: filterObjType.value || undefined,
+      action: filterAction.value || undefined,
+      limit: big, offset: off,
+    });
+    all.push(...res.items);
+    if (res.items.length === 0 || all.length >= res.total) break;
+    off += big;
+  }
+  return all;
+}
+
 async function refresh() {
   loading.value = true;
   try {
@@ -247,7 +265,8 @@ onMounted(() => { void refresh(); });
       </n-button>
       <ColumnPicker :all="auditPickerItems" :visible="auditVis"
                     @update:visible="auditSet" @reset="auditReset" />
-      <ExportButton :columns="columns" :rows="rows" filename="audit" :title="t('audit.title')" />
+      <ExportButton :columns="columns" :rows="rows" :fetch-all="fetchAllForExport"
+                    filename="audit" :title="t('audit.title')" />
       <span style="opacity: 0.6">{{ t("common.total_n", { n: total }) }}</span>
     </n-space>
     <n-data-table

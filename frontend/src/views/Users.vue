@@ -102,6 +102,20 @@ const providerOptions = [
   { label: "saml", value: "saml" },
 ];
 
+// 匯出全部：用相同篩選分頁抓完整資料集
+async function fetchAllForExport(): Promise<User[]> {
+  const all: User[] = [];
+  const big = 500;   // 後端 limit 上限
+  let off = 0;
+  for (;;) {
+    const res = await listUsers(q.value, providerFilter.value || "", big, off);
+    all.push(...res.items);
+    if (res.items.length === 0 || all.length >= res.total) break;
+    off += big;
+  }
+  return all;
+}
+
 async function refresh() {
   loading.value = true;
   try {
@@ -284,7 +298,8 @@ onMounted(() => { void refresh(); });
       </n-button>
       <ColumnPicker :all="usrPicker" :visible="usrVis"
                     @update:visible="usrSet" @reset="usrReset" />
-      <ExportButton :columns="columns" :rows="rows" filename="users" :title="t('users.title')" />
+      <ExportButton :columns="columns" :rows="rows" :fetch-all="fetchAllForExport"
+                    filename="users" :title="t('users.title')" />
       <span style="opacity: 0.6">{{ t("common.total_n", { n: total }) }}</span>
     </n-space>
 

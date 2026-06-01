@@ -297,6 +297,30 @@ function handleSorter(s: { columnKey?: string | number; order?: "ascend" | "desc
   void refresh();
 }
 
+// 匯出全部：用相同篩選條件分頁抓完整資料集（非只當頁）
+async function fetchAllForExport(): Promise<IPAddress[]> {
+  const all: IPAddress[] = [];
+  const big = 500;   // 後端 page_size 上限
+  let p = 1;
+  for (;;) {
+    const res = await listAddresses({
+      q: q.value.trim() || undefined,
+      exact: exactMatch.value || undefined,
+      subnetId: subnetId.value || undefined,
+      sectionId: sectionId.value || undefined,
+      customerId: customerId.value || undefined,
+      sort: sortField.value || undefined,
+      order: sortDir.value,
+      page: p,
+      pageSize: big,
+    });
+    all.push(...res.items);
+    if (res.items.length === 0 || all.length >= res.total) break;
+    p++;
+  }
+  return all;
+}
+
 async function refresh() {
   loading.value = true;
   try {
@@ -385,7 +409,8 @@ onMounted(() => {
         @update:visible="setVisible"
         @reset="reset"
       />
-      <ExportButton :columns="columns" :rows="rows" filename="ip-addresses" :title="t('nav.addresses')" />
+      <ExportButton :columns="columns" :rows="rows" :fetch-all="fetchAllForExport"
+                    filename="ip-addresses" :title="t('nav.addresses')" />
     </n-space>
     <div v-if="subnetId && subnetUsage" style="margin-bottom: 12px; padding: 10px 14px; background: rgba(127,127,127,0.06); border-radius: 6px;">
       <n-space align="center" justify="space-between" :wrap-item="false" style="margin-bottom: 6px">

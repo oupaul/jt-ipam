@@ -117,9 +117,11 @@ export interface Device {
   customer_id: string | null;
   created_at: string; updated_at: string;
 }
-export async function listDevices(): Promise<Paginated<Device>> {
+export async function listDevices(
+  params?: { page?: number; pageSize?: number },
+): Promise<Paginated<Device>> {
   const { data } = await apiClient.get<Paginated<Device>>("/api/v1/devices", {
-    params: { page: 1, page_size: 200 },
+    params: { page: params?.page ?? 1, page_size: params?.pageSize ?? 200 },
   });
   return data;
 }
