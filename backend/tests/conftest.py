@@ -173,3 +173,23 @@ async def admin_user(db_session):  # type: ignore[no-untyped-def]
 async def auth_headers(admin_user):  # type: ignore[no-untyped-def]
     from app.services.auth import issue_access_token
     return {"Authorization": f"Bearer {issue_access_token(admin_user)}"}
+
+
+@pytest.fixture(autouse=True)
+def _reset_precedence_caches():
+    """清掉各 precedence 服務的 in-process 60s 快取，避免測試間互相污染：
+    DB 交易每測試 rollback，但模組級 `_cache` 不會，導致前一個測試設過的
+    順序/停用在 TTL 內被後面的測試讀到（CI 機器快、更容易踩到）。"""
+    import importlib
+    for _mod in (
+        "app.services.hostname",
+        "app.services.device_name_precedence",
+        "app.services.arp_precedence",
+        "app.services.model_precedence",
+    ):
+        try:
+            _m = importlib.import_module(_mod)
+            getattr(_m, "_cache", {}).clear()
+        except Exception:
+            pass
+    yield
