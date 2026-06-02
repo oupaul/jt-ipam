@@ -163,6 +163,9 @@ class VPNTunnel(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     encryption_algo: Mapped[str | None] = mapped_column(String(32))
     auth_algo: Mapped[str | None] = mapped_column(String(32))
+    # 對接是怎麼判定的：wireguard_pubkey（公鑰，可靠）/ ipsec_endpoint（端點比對，best-effort）。
+    # 給 UI 標示對接可信度用；None = 尚未自動對接到對端裝置。
+    pairing_method: Mapped[str | None] = mapped_column(String(24))
     description: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (

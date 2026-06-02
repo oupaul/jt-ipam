@@ -1181,7 +1181,9 @@
     "panels": "配電盤",
     "feeds": "饋線",
     "outlets": "插座",
-    "vpn_peer": "對接 / 對端"
+    "vpn_peer": "對接 / 對端",
+    "pair_reliable": "公鑰配對",
+    "pair_besteffort": "端點比對(best-effort)"
   },
   "migration": {
     "title": "phpIPAM 一鍵遷移",

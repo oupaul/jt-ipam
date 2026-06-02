@@ -348,9 +348,10 @@ class VPNTunnelRead(StrictModel):
     encryption_algo: str | None
     auth_algo: str | None
     description: str | None
+    pairing_method: str | None = None   # wireguard_pubkey（可靠）/ ipsec_endpoint（best-effort）
     a_device_name: str | None = None
     b_device_name: str | None = None
-    peered: bool = False   # 兩端 OPNsense WireGuard 公鑰對接成立
+    peered: bool = False   # 兩端對接成立（公鑰或端點比對）
 
 
 class VPNTunnelWrite(StrictModel):

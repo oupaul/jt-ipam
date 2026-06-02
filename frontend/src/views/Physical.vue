@@ -2,7 +2,7 @@
 import { computed, h, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
-  NCard, NDataTable, NSpace, NIcon, NButton,
+  NCard, NDataTable, NSpace, NIcon, NButton, NTag,
   useMessage, type DataTableColumns,
 } from "naive-ui";
 import { PhysicalIcon, PowerIcon, VpnIcon, RefreshIcon } from "@/icons";
@@ -67,10 +67,17 @@ const vpnCols = computed<DataTableColumns<any>>(() => autoSort([
   { title: t("cols.type"), key: "type" },
   { title: t("common.status"), key: "status" },
   {
-    title: t("physical.vpn_peer"), key: "peer", minWidth: 220,
+    title: t("physical.vpn_peer"), key: "peer", minWidth: 260,
     render: (r) => {
       if (r.peered && r.a_device_name && r.b_device_name) {
-        return h("span", { class: "vpn-peered" }, `${r.a_device_name} ⇄ ${r.b_device_name}`);
+        const reliable = r.pairing_method === "wireguard_pubkey";
+        const badge = h(NTag, {
+          size: "tiny", type: reliable ? "success" : "warning", bordered: false,
+          style: "margin-left:8px",
+        }, () => reliable ? t("physical.pair_reliable") : t("physical.pair_besteffort"));
+        return h("span", { class: "vpn-peered" }, [
+          `${r.a_device_name} ⇄ ${r.b_device_name}`, badge,
+        ]);
       }
       if (r.b_endpoint) return h("span", { style: "opacity:.7" }, `→ ${r.b_endpoint}`);
       return h("span", { style: "opacity:.4" }, "—");

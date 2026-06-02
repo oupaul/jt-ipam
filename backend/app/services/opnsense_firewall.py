@@ -1047,6 +1047,7 @@ async def link_wireguard_peers(session: AsyncSession) -> int:
         if peer_dev and peer_dev != t.a_device_id:
             if t.b_device_id != peer_dev:
                 t.b_device_id = peer_dev
+                t.pairing_method = "wireguard_pubkey"   # 公鑰配對 → 可靠
                 linked += 1
             # 本端 a_endpoint 常是 LAN/管理 IP；對端 tunnel 記錄的 b_endpoint
             # 正是「對端看到的我方位址」＝我方 WAN 公網 IP → 拿來補正
@@ -1056,6 +1057,7 @@ async def link_wireguard_peers(session: AsyncSession) -> int:
         elif peer_dev is None and t.b_device_id is not None:
             # 對端 fw 已不再宣告此公鑰 → 還原成遠端站點節點
             t.b_device_id = None
+            t.pairing_method = None
             linked += 1
     return linked
 
@@ -1072,7 +1074,9 @@ async def link_ipsec_peers(session: AsyncSession) -> int:
     from app.models.physical import VPNTunnel
 
     fws = list((await session.execute(select(OPNsenseFirewall))).scalars().all())
-    # 位址 → 防火牆 device_id（用 API host；可能是 mgmt 也可能是 WAN）
+    # 位址 → 防火牆 device_id。多訊號彙整以提高命中率：
+    #   1) 防火牆 API host（可能是 mgmt 或 WAN）
+    #   2) 各防火牆自己 VPN tunnel 的本地端點 a_endpoint（通常正是該台 WAN/閘道）
     addr_to_dev: dict[str, uuid.UUID] = {}
     for fw in fws:
         dev = await _resolve_fw_device_id(session, fw)
@@ -1080,9 +1084,15 @@ async def link_ipsec_peers(session: AsyncSession) -> int:
         if dev and host:
             addr_to_dev.setdefault(host, dev)
 
-    tunnels = list((await session.execute(
-        select(VPNTunnel).where(VPNTunnel.type.in_(("ipsec_ikev1", "ipsec_ikev2")))
-    )).scalars().all())
+    all_tunnels = list((await session.execute(select(VPNTunnel))).scalars().all())
+    for t in all_tunnels:
+        if t.a_device_id and t.a_endpoint:
+            for a in t.a_endpoint.replace(";", ",").split(","):
+                a = a.strip().lower()
+                if a:
+                    addr_to_dev.setdefault(a, t.a_device_id)
+
+    tunnels = [t for t in all_tunnels if t.type in ("ipsec_ikev1", "ipsec_ikev2")]
 
     linked = 0
     for t in tunnels:
@@ -1092,10 +1102,12 @@ async def link_ipsec_peers(session: AsyncSession) -> int:
         if peer_dev:
             if t.b_device_id != peer_dev:
                 t.b_device_id = peer_dev
+                t.pairing_method = "ipsec_endpoint"   # 端點比對 → best-effort（無加密身分）
                 linked += 1
         elif t.b_device_id is not None:
             # 之前連的對端位址已不再對應任何防火牆 → 還原
             t.b_device_id = None
+            t.pairing_method = None
             linked += 1
     return linked
 

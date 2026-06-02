@@ -1181,7 +1181,9 @@
     "panels": "Panels",
     "feeds": "Feeds",
     "outlets": "Outlets",
-    "vpn_peer": "Peer"
+    "vpn_peer": "Peer",
+    "pair_reliable": "pubkey pair",
+    "pair_besteffort": "endpoint match (best-effort)"
   },
   "migration": {
     "title": "phpIPAM migration",
