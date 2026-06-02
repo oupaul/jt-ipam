@@ -31,12 +31,13 @@ import { listSections } from "@/api/sections";
 import { listScanAgents } from "@/api/phase3";
 import { listVLANs, listVRFs, listLocations, type VLAN, type VRF } from "@/api/basic";
 import type { Subnet, SubnetUsage, Section } from "@/types";
-import { SubnetsIcon, RefreshIcon, DeleteIcon, PlusIcon, EditIcon, SaveIcon, CancelIcon, ArchiveIcon, RestoreIcon, ScanAgentsIcon } from "@/icons";
+import { SubnetsIcon, RefreshIcon, DeleteIcon, PlusIcon, EditIcon, SaveIcon, CancelIcon, ArchiveIcon, RestoreIcon, ScanAgentsIcon, PinIcon } from "@/icons";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { useCustomers } from "@/composables/useCustomers";
 import { useEntityLinks } from "@/composables/useEntityLinks";
+import { usePinnedSubnets } from "@/composables/usePinnedSubnets";
 import { computed } from "vue";
 
 const { labelFor: customerLabelFor, ensureLoaded: ensureCustomersLoaded } = useCustomers();
@@ -219,8 +220,21 @@ function cidrSortNum(c: string): number {
   return ((+m[1]) << 24 >>> 0) + ((+m[2]) << 16) + ((+m[3]) << 8) + (+m[4]);
 }
 
+const { isPinned: isSubnetPinned, toggle: toggleSubnetPin, ensureLoaded: ensurePinsLoaded } = usePinnedSubnets();
+function pinToggle(id: string) { void toggleSubnetPin(id); }
+
 const allColumns: DataTableColumns<Subnet> = [
   { type: "selection" },
+  {
+    title: () => t("cols.pinned"), key: "pinned", width: 64, align: "center",
+    render: (r) => h(NTooltip, null, {
+      trigger: () => h(NButton, {
+        size: "small", quaternary: true, type: isSubnetPinned(r.id) ? "warning" : "default",
+        onClick: (e: Event) => { e.stopPropagation(); pinToggle(r.id); },
+      }, { icon: () => h(NIcon, { color: isSubnetPinned(r.id) ? "#f0a020" : undefined }, () => h(PinIcon)) }),
+      default: () => t("common.pin"),
+    }),
+  },
   {
     title: () => t("subnets.cidr"), key: "cidr", minWidth: 160, ellipsis: { tooltip: true },
     render: (r) => links.subnet(r.id, r.cidr),
@@ -318,13 +332,14 @@ const allColumns: DataTableColumns<Subnet> = [
 
 const { visibleKeys, setVisible, reset } = useColumnPrefs(
   "subnets",
-  ["cidr", "description", "usage", "customer_id", "scan_enabled", "actions"],
-  ["cidr", "description", "usage", "customer_id", "scan_enabled", "actions"],
+  ["pinned", "cidr", "description", "usage", "customer_id", "scan_enabled", "actions"],
+  ["pinned", "cidr", "description", "usage", "customer_id", "scan_enabled", "actions"],
 );
 const columns = computed<DataTableColumns<Subnet>>(() =>
   allColumns.filter((c: any) => c.type === "selection" || visibleKeys.value.includes(c.key)),
 );
 const columnPickerItems = computed(() => [
+  { key: "pinned", label: t("cols.pinned") },
   { key: "cidr", label: "CIDR" },
   { key: "description", label: t("cols.description") },
   { key: "usage", label: t("cols.usage") },
@@ -402,6 +417,7 @@ onMounted(() => {
   void refresh();
   void ensureCustomersLoaded();
   void loadAuxOpts();
+  void ensurePinsLoaded();
 });
 </script>
 

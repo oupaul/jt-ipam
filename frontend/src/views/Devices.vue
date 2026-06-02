@@ -65,6 +65,7 @@ const form = ref<{
   rack_id: string | null;
   u_position: number | null;
   u_size: number | null;
+  rack_face: "front" | "rear" | null;
   customer_id: string | null;
   primary_ip_id: string | null;
 }>({
@@ -72,13 +73,17 @@ const form = ref<{
   vendor: "", model: "", serial: "",
   description: "",
   location_id: null, rack_id: null,
-  u_position: null, u_size: null,
+  u_position: null, u_size: null, rack_face: null,
   customer_id: null,
   primary_ip_id: null,
 });
 
 const typeOpts = ["server", "switch", "router", "firewall", "ap", "storage", "ipmi", "other"]
   .map((v) => ({ label: v, value: v }));
+const rackFaceOpts = computed(() => [
+  { label: t("devices.rack_face_front"), value: "front" },
+  { label: t("devices.rack_face_rear"), value: "rear" },
+]);
 
 // 主要 IP 選擇：載入位址清單供 device 綁定（設了會雙向連結，IP 清單/拓樸接得起來）
 const ipAddrs = ref<{ id: string; ip: string; hostname: string | null }[]>([]);
@@ -140,7 +145,7 @@ function openCreate() {
   form.value = {
     name: "", fqdn: "", type: "server", vendor: "", model: "", serial: "",
     description: "", location_id: null, rack_id: null,
-    u_position: null, u_size: null, customer_id: null, primary_ip_id: null,
+    u_position: null, u_size: null, rack_face: null, customer_id: null, primary_ip_id: null,
   };
   void ensureCustomersLoaded();
   void loadAddresses();
@@ -155,6 +160,7 @@ function openEdit(r: Device) {
     description: r.description ?? "",
     location_id: r.location_id, rack_id: r.rack_id,
     u_position: r.u_position, u_size: r.u_size,
+    rack_face: (r as any).rack_face ?? null,
     customer_id: r.customer_id ?? null,
     primary_ip_id: (r as any).primary_ip_id ?? null,
   };
@@ -225,6 +231,7 @@ async function submit() {
       rack_id: form.value.rack_id,
       u_position: form.value.u_position,
       u_size: form.value.u_size,
+      rack_face: form.value.rack_id ? form.value.rack_face : null,
       customer_id: form.value.customer_id,
       primary_ip_id: form.value.primary_ip_id,
     };
@@ -501,6 +508,11 @@ onMounted(async () => {
           <n-form-item :label="t('devices.u_size')">
             <n-input-number v-model:value="form.u_size" :min="1" :max="99" clearable
                             :disabled="!form.rack_id" style="width: 100%" />
+          </n-form-item>
+          <n-form-item :label="t('devices.rack_face')">
+            <n-select v-model:value="form.rack_face" :options="rackFaceOpts" clearable
+                      :disabled="!form.rack_id" :placeholder="t('devices.rack_face_front')"
+                      style="width: 100%" />
           </n-form-item>
         </div>
 

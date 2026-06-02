@@ -35,6 +35,7 @@ class Device(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     u_position: Mapped[int | None] = mapped_column(Integer)
     u_size: Mapped[int | None] = mapped_column(Integer)
+    rack_face: Mapped[str | None] = mapped_column(String(8))   # front / rear（裝在機櫃前面或後面）
     description: Mapped[str | None] = mapped_column(Text)
     customer_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

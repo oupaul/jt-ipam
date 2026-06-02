@@ -197,6 +197,9 @@
     "duration": "耗時",
     "result": "結果",
     "coords": "經緯度",
+    "rack_count": "機櫃數",
+    "device_count": "裝置數",
+    "pinned": "釘選",
     "admin": "管理者",
     "mode": "模式",
     "rack": "機櫃",
@@ -591,7 +594,8 @@
     "effective_offline": "離線",
     "effective_unknown": "未知",
     "effective_stale": "近期出現",
-    "exact_match": "完全符合"
+    "exact_match": "完全符合",
+    "link_matching_device": "關聯相符的裝置「{name}」"
   },
   "subnets": {
     "title": "子網路",
@@ -721,6 +725,9 @@
     "rack": "機櫃",
     "u_position": "U 位 (起始)",
     "u_size": "佔用 U 數",
+    "rack_face": "安裝方向",
+    "rack_face_front": "機櫃前面",
+    "rack_face_rear": "機櫃後面",
     "placement_section": "實體位置",
     "location_placeholder": "選擇所在地點",
     "rack_placeholder": "選擇機櫃",

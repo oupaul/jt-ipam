@@ -18,7 +18,7 @@ import type { IPAddress } from "@/types";
 import { updateAddress, deleteAddress, createAddress, type IPAddressUpdate } from "@/api/addresses";
 import { getAddressHistory, getAddressSwitchPort, type IPChangeLog, type SwitchPortInfo } from "@/api/ip_history";
 import { getHostnameSources, clearHostnameSource, type HostnameSources } from "@/api/hostname";
-import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon } from "@/icons";
+import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon } from "@/icons";
 import { fmtDateTime } from "@/utils/datetime";
 import { useCustomers } from "@/composables/useCustomers";
 import { useRouter } from "vue-router";
@@ -131,6 +131,20 @@ function emptyForm(): FormState {
     device_id: null,
     hostname_source_pin: "",
   };
+}
+
+// 目前編輯中的 IP（去 /prefix）；找名稱或管理 IP 等於本 IP、但尚未連結的裝置 → 一鍵關聯
+const currentIpHost = computed(() => (props.address?.ip ?? "").split("/")[0].trim());
+const matchingDevice = computed<Device | null>(() => {
+  if (form.value.device_id) return null;
+  const ip = currentIpHost.value;
+  if (!ip) return null;
+  return devices.value.find(
+    (d) => (d.ip && d.ip.split("/")[0].trim() === ip) || d.name === ip,
+  ) ?? null;
+});
+function linkMatchingDevice() {
+  if (matchingDevice.value) form.value.device_id = matchingDevice.value.id;
 }
 
 function fromAddress(a: IPAddress): FormState {
@@ -510,8 +524,15 @@ async function remove() {
                       :placeholder="t('common.not_specified')" clearable filterable />
           </n-form-item>
           <n-form-item :label="t('nav.devices')">
-            <n-select v-model:value="form.device_id" :options="deviceOptions"
-                      :placeholder="t('common.not_specified')" clearable filterable />
+            <n-space vertical :size="4" style="width: 100%">
+              <n-select v-model:value="form.device_id" :options="deviceOptions"
+                        :placeholder="t('common.not_specified')" clearable filterable />
+              <n-button v-if="matchingDevice" size="tiny" dashed type="primary"
+                        @click="linkMatchingDevice">
+                <template #icon><n-icon><LinkIcon /></n-icon></template>
+                {{ t("addresses.link_matching_device", { name: matchingDevice.name }) }}
+              </n-button>
+            </n-space>
           </n-form-item>
           <n-space :size="24">
             <n-form-item :label="t('addresses.exclude_from_ping')">

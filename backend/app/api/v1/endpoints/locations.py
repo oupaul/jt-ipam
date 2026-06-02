@@ -72,9 +72,29 @@ async def list_locations(
         )).scalars().all()
     )
     total = int(await session.scalar(cstmt) or 0)
+    # 本頁各機房的機櫃數 / 裝置數
+    loc_ids = [r.id for r in rows]
+    rack_counts: dict = {}
+    dev_counts: dict = {}
+    if loc_ids:
+        from app.models.device import Device
+        from app.models.location import Rack
+        rack_counts = dict((await session.execute(
+            select(Rack.location_id, func.count()).where(Rack.location_id.in_(loc_ids))
+            .group_by(Rack.location_id)
+        )).all())
+        dev_counts = dict((await session.execute(
+            select(Device.location_id, func.count()).where(Device.location_id.in_(loc_ids))
+            .group_by(Device.location_id)
+        )).all())
+    items = []
+    for r in rows:
+        m = LocationRead.model_validate(r)
+        m.rack_count = int(rack_counts.get(r.id, 0))
+        m.device_count = int(dev_counts.get(r.id, 0))
+        items.append(m)
     return Paginated[LocationRead](
-        items=[LocationRead.model_validate(r) for r in rows],
-        total=total, page=page, page_size=page_size,
+        items=items, total=total, page=page, page_size=page_size,
     )
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator
 
@@ -24,6 +24,7 @@ class DeviceBase(StrictModel):
     rack_id: uuid.UUID | None = None
     u_position: Annotated[int | None, Field(ge=1, le=99)] = None
     u_size: Annotated[int | None, Field(ge=1, le=99)] = None
+    rack_face: Literal["front", "rear"] | None = None
     description: Annotated[str | None, Field(max_length=1024)] = None
     customer_id: uuid.UUID | None = None
     custom_fields: dict[str, Any] | None = None
@@ -51,6 +52,7 @@ class DeviceUpdate(StrictModel):
     rack_id: uuid.UUID | None = None
     u_position: Annotated[int | None, Field(ge=1, le=99)] = None
     u_size: Annotated[int | None, Field(ge=1, le=99)] = None
+    rack_face: Literal["front", "rear"] | None = None
     description: Annotated[str | None, Field(max_length=1024)] = None
     primary_ip_id: uuid.UUID | None = None
     customer_id: uuid.UUID | None = None

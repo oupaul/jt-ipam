@@ -113,6 +113,7 @@ export interface Device {
   vendor: string | null; model: string | null; serial: string | null;
   location_id: string | null; rack_id: string | null;
   u_position: number | null; u_size: number | null;
+  rack_face?: "front" | "rear" | null;
   description: string | null;
   customer_id: string | null;
   created_at: string; updated_at: string;
@@ -184,6 +185,7 @@ export interface Location {
   address: string | null; latitude: number | null; longitude: number | null;
   description: string | null;
   floor_plan_path: string | null;
+  rack_count?: number; device_count?: number;
   created_at: string; updated_at: string;
 }
 export async function getMapProvider(): Promise<"osm" | "google"> {

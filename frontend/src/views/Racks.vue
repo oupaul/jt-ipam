@@ -14,6 +14,7 @@ import {
   NFormItem,
   NInput,
   NInputNumber,
+  NTag,
   NTooltip,
   useMessage,
   type DataTableColumns,
@@ -206,10 +207,10 @@ const numberingOpts = [
   { label: t("racks.numbering_top_down"), value: "top-down" },
   { label: t("racks.numbering_bottom_up"), value: "bottom-up" },
 ];
-const faceOpts = [
-  { label: t("racks.face_front"), value: "front" },
-  { label: t("racks.face_rear"), value: "rear" },
-];
+// 常見機櫃外寬 / 外深（mm）快捷
+const WIDTH_PRESETS = [600, 800];
+const DEPTH_PRESETS = [600, 800, 1000, 1100, 1200];
+
 async function submitRack() {
   if (!form.value.name.trim()) { msg.error(t("common.name_required")); return; }
   const payload = {
@@ -248,7 +249,8 @@ async function refresh() {
       params: { page: 1, page_size: 200 },
     });
     rows.value = data.items;
-    if (!selected.value && rows.value.length) {
+    // 只有在「沒有選機房（整排檢視）」時才預設第一個機櫃，否則會蓋掉機房自動選
+    if (!selected.value && !roomId.value && rows.value.length) {
       selected.value = rows.value[0].id;
     }
   } catch {
@@ -275,20 +277,22 @@ watch(selected, (v) => {
   else diagram.value = null;
 });
 
-onMounted(() => {
-  void refresh();
-  listLocations().then((r) => {
+onMounted(async () => {
+  // 先載機房並決定預設機房（watch(roomId) 會載入整排機櫃並清掉單櫃選取）：
+  //   1) 舊的單一釘選 PINNED_ROOM_KEY
+  //   2) 在「機房」頁釘選的常用機房（取第一個仍存在的）
+  // 必須在 refresh() 預設第一個機櫃「之前」決定，否則 selected 會先被設、跳過機房。
+  try {
+    const r = await listLocations();
     locations.value = r.items;
-    // 進來預設機房（watch(roomId) 會載入整排機櫃）：
-    //   1) 舊的單一釘選 PINNED_ROOM_KEY
-    //   2) 在「機房」頁釘選的常用機房（取第一個仍存在的）
     if (!roomId.value && !selected.value) {
       let def: string | null =
         (pinnedRoom.value && r.items.some((l) => l.id === pinnedRoom.value)) ? pinnedRoom.value : null;
       if (!def) def = locPin.ids.value.find((id) => r.items.some((l) => l.id === id)) ?? null;
       if (def) roomId.value = def;
     }
-  }).catch(() => { /* silent */ });
+  } catch { /* silent */ }
+  await refresh();
 });
 
 // ── 點空 U 位 → 挑裝置放入 ──
@@ -461,23 +465,36 @@ async function confirmPickDevice() {
         </n-form-item>
         <n-space :wrap="false">
           <n-form-item :label="t('racks.width_mm')" style="flex: 1">
-            <n-input-number v-model:value="form.width_mm" :min="100" :max="2000" :step="50"
-                            clearable placeholder="600" style="width: 100%">
-              <template #suffix>mm</template>
-            </n-input-number>
+            <n-space vertical :size="4" style="width: 100%">
+              <n-input-number v-model:value="form.width_mm" :min="100" :max="2000" :step="50"
+                              clearable placeholder="600" style="width: 100%">
+                <template #suffix>mm</template>
+              </n-input-number>
+              <n-space :size="4">
+                <n-tag v-for="w in WIDTH_PRESETS" :key="w" size="small" checkable
+                       :checked="form.width_mm === w" @click="form.width_mm = w">
+                  {{ w }}
+                </n-tag>
+              </n-space>
+            </n-space>
           </n-form-item>
           <n-form-item :label="t('racks.depth_mm')" style="flex: 1">
-            <n-input-number v-model:value="form.depth_mm" :min="100" :max="3000" :step="50"
-                            clearable placeholder="1000" style="width: 100%">
-              <template #suffix>mm</template>
-            </n-input-number>
+            <n-space vertical :size="4" style="width: 100%">
+              <n-input-number v-model:value="form.depth_mm" :min="100" :max="3000" :step="50"
+                              clearable placeholder="1000" style="width: 100%">
+                <template #suffix>mm</template>
+              </n-input-number>
+              <n-space :size="4">
+                <n-tag v-for="d in DEPTH_PRESETS" :key="d" size="small" checkable
+                       :checked="form.depth_mm === d" @click="form.depth_mm = d">
+                  {{ d }}
+                </n-tag>
+              </n-space>
+            </n-space>
           </n-form-item>
         </n-space>
         <n-form-item :label="t('racks.numbering')">
           <n-select v-model:value="form.numbering" :options="numberingOpts" />
-        </n-form-item>
-        <n-form-item :label="t('racks.face')">
-          <n-select v-model:value="form.face" :options="faceOpts" />
         </n-form-item>
         <n-form-item :label="t('nav.locations')">
           <n-select v-model:value="form.location_id" :options="locationOptions"

@@ -36,6 +36,8 @@ class LocationRead(LocationBase):
     floor_plan_path: str | None = None
     created_at: datetime
     updated_at: datetime
+    rack_count: int = 0      # 其下機櫃數（清單顯示用）
+    device_count: int = 0    # 其下裝置數（清單顯示用）
 
 
 RackNumbering = Literal["top-down", "bottom-up"]

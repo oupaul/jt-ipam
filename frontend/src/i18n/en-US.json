@@ -197,6 +197,9 @@
     "duration": "Duration",
     "result": "Result",
     "coords": "Lat/Lng",
+    "rack_count": "Racks",
+    "device_count": "Devices",
+    "pinned": "Pinned",
     "admin": "Admin",
     "mode": "Mode",
     "rack": "Rack",
@@ -591,7 +594,8 @@
     "effective_offline": "offline",
     "effective_unknown": "unknown",
     "effective_stale": "stale",
-    "exact_match": "Exact match"
+    "exact_match": "Exact match",
+    "link_matching_device": "Link matching device \"{name}\""
   },
   "subnets": {
     "title": "Subnets",
@@ -721,6 +725,9 @@
     "rack": "Rack",
     "u_position": "U position (start)",
     "u_size": "U occupied",
+    "rack_face": "Mount face",
+    "rack_face_front": "Rack front",
+    "rack_face_rear": "Rack rear",
     "placement_section": "Physical placement",
     "location_placeholder": "Pick a location",
     "rack_placeholder": "Pick a rack",

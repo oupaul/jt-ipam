@@ -148,6 +148,8 @@ const columnPickerItems = computed(() => [
   { key: "address", label: t("cols.address") },
   { key: "coords", label: t("cols.coords") },
   { key: "description", label: t("cols.description") },
+  { key: "rack_count", label: t("cols.rack_count") },
+  { key: "device_count", label: t("cols.device_count") },
   { key: "actions", label: t("cols.actions") },
 ]);
 function iconAction(icon: any, label: string, onClick: () => void, type?: any) {
@@ -167,6 +169,10 @@ const allCols = computed<DataTableColumns<Location>>(() => [
     sorter: (a, b) => (a.address ?? "").localeCompare(b.address ?? "") },
   { title: t("common.description"), key: "description", minWidth: 200, ellipsis: { tooltip: true }, render: (r) => r.description ?? "—",
     sorter: (a, b) => (a.description ?? "").localeCompare(b.description ?? "") },
+  { title: t("cols.rack_count"), key: "rack_count", width: 90, render: (r) => r.rack_count ?? 0,
+    sorter: (a, b) => (a.rack_count ?? 0) - (b.rack_count ?? 0) },
+  { title: t("cols.device_count"), key: "device_count", width: 90, render: (r) => r.device_count ?? 0,
+    sorter: (a, b) => (a.device_count ?? 0) - (b.device_count ?? 0) },
   {
     title: t("common.actions"), key: "actions", className: "col-actions", width: 128,
     render: (r) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
