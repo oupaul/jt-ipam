@@ -531,9 +531,10 @@ onMounted(() => { void load(); void loadPins(); });
   flex-direction: column;
   gap: 10px;
   padding: 12px 14px;
-  border: 1px solid var(--n-border-color, rgba(127, 127, 127, 0.16));
+  border: 1px solid rgba(127, 127, 127, 0.2);
   border-radius: 10px;
-  background: var(--n-card-color, #fff);
+  /* 不用 var(--n-card-color)（scoped 取不到 → 深色模式變白底）；用半透明中性色兩種主題皆相容 */
+  background: rgba(127, 127, 127, 0.07);
   cursor: pointer;
   transition: transform .12s, box-shadow .12s;
 }
