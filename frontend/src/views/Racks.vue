@@ -332,6 +332,11 @@ const pickRackId = ref<string | null>(null);
 const pickDeviceId = ref<string | null>(null);
 const pickDeviceSize = ref(1);
 const pickSide = ref<"full" | "left" | "right">("full");
+const pickSideOpts = computed(() => [
+  { label: t("devices.rack_side_full"), value: "full" },
+  { label: t("devices.rack_side_left"), value: "left" },
+  { label: t("devices.rack_side_right"), value: "right" },
+]);
 const pickableDevices = ref<Device[]>([]);
 const pickBusy = ref(false);
 const pickDeviceOpts = computed(() => pickableDevices.value.map((d) => ({
@@ -575,6 +580,9 @@ async function confirmPickDevice() {
       </n-form-item>
       <n-form-item :label="t('racks.u_size')">
         <n-input-number v-model:value="pickDeviceSize" :min="1" :max="20" style="width: 140px" />
+      </n-form-item>
+      <n-form-item :label="t('devices.rack_side')">
+        <n-select v-model:value="pickSide" :options="pickSideOpts" style="width: 200px" />
       </n-form-item>
       <p style="font-size:12px; opacity:.6; margin:0 0 8px">{{ t("racks.place_device_hint") }}</p>
       <n-space justify="end">

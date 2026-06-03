@@ -259,7 +259,7 @@ onMounted(() => {
         </n-descriptions>
           </div>
           <div v-if="rackDiagram" class="dev-head-rack">
-            <RackDiagram :diagram="rackDiagram" :show-legend="false" :highlight-id="device.id" />
+            <RackDiagram :diagram="rackDiagram" :show-legend="false" :highlight-id="device.id" :compact="true" />
           </div>
         </div>
       </n-card>

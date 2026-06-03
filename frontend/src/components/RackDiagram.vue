@@ -188,8 +188,9 @@ interface Props {
   editable?: boolean;     // admin：點空 U 位可挑裝置放入
   floorAlignTo?: number;  // 多機櫃並排時傳入該排最高 U 數 → 矮櫃頂端補空白，使底部(U1)靠下對齊
   highlightId?: string | null;  // 常駐高亮某裝置（裝置詳情頁標示本機在機櫃的位置）
+  compact?: boolean;            // 較小列高（嵌在裝置詳情等空間有限處）
 }
-const props = withDefaults(defineProps<Props>(), { showLegend: true, editable: false, floorAlignTo: 0, highlightId: null });
+const props = withDefaults(defineProps<Props>(), { showLegend: true, editable: false, floorAlignTo: 0, highlightId: null, compact: false });
 const U_PX = 28;   // 每個 U 列高度（與 .u-row / .u-num-out 一致）
 // 落地對齊：比該排最高櫃矮幾 U，就在頂端補幾 U 的空白
 const floorPad = computed(() => {
@@ -286,7 +287,7 @@ const cells = computed<Cell[]>(() => {
 </script>
 
 <template>
-  <n-card v-if="diagram" class="rack-diagram-card" :title="`Rack: ${diagram.name} (${diagram.u_height}U)`">
+  <n-card v-if="diagram" class="rack-diagram-card" :class="{ 'rd-compact': compact }" :title="`Rack: ${diagram.name} (${diagram.u_height}U)`">
     <template #header-extra>
       <n-dropdown trigger="click" :options="exportOptions" @select="onExport">
         <n-button size="tiny" quaternary :title="t('rack_diagram.export_svg_hint')">
@@ -324,7 +325,7 @@ const cells = computed<Cell[]>(() => {
               <template #trigger>
                 <div
                   class="u-row u-occupied"
-                  :class="{ 'u-top': cell.full.is_top, 'u-bottom': cell.full.is_bottom, 'u-hl': hoveredId === cell.full.id || highlightId === cell.full.id }"
+                  :class="{ 'u-top': cell.full.is_top, 'u-bottom': cell.full.is_bottom, 'u-hl': hoveredId === cell.full.id || highlightId === cell.full.id, 'u-dim': !!highlightId && highlightId !== cell.full.id }"
                   :style="{ background: colorFor(cell.full.type), justifyContent: nameJustify }"
                   @mouseenter="hoveredId = cell.full.id"
                   @mouseleave="hoveredId = null"
@@ -350,7 +351,7 @@ const cells = computed<Cell[]>(() => {
                   <template #trigger>
                     <div
                       class="u-half u-occupied"
-                      :class="{ 'u-top': cell[half]!.is_top, 'u-bottom': cell[half]!.is_bottom, 'u-hl': hoveredId === cell[half]!.id || highlightId === cell[half]!.id }"
+                      :class="{ 'u-top': cell[half]!.is_top, 'u-bottom': cell[half]!.is_bottom, 'u-hl': hoveredId === cell[half]!.id || highlightId === cell[half]!.id, 'u-dim': !!highlightId && highlightId !== cell[half]!.id }"
                       :style="{ background: colorFor(cell[half]!.type) }"
                       @mouseenter="hoveredId = cell[half]!.id"
                       @mouseleave="hoveredId = null"
@@ -516,6 +517,16 @@ const cells = computed<Cell[]>(() => {
   white-space: nowrap;
   max-width: 90px;
 }
+/* 聚焦模式：設了 highlightId 時，其他裝置淡化，只突顯本裝置 */
+.u-dim { opacity: 0.32; filter: grayscale(0.4); }
+.u-dim .d-name { opacity: 0.7; }
+/* compact：較小列高，給裝置詳情側欄用 */
+.rd-compact .u-row { height: 18px; font-size: 10px; }
+.rd-compact .u-num-out { height: 18px; font-size: 9px; }
+.rd-compact .d-name { font-size: 10px; max-width: 90px; }
+.rd-compact .d-name-half { font-size: 9px; }
+.rd-compact :deep(.n-card-header) { padding: 10px 14px; }
+.rd-compact :deep(.n-card-header__main) { font-size: 13px; }
 .rack-tip { font-size: 12px; line-height: 1.6; min-width: 150px; }
 .rack-tip .rt-name { font-weight: 700; margin-bottom: 4px; font-size: 13px; }
 .rack-tip .rt-row { display: flex; justify-content: space-between; gap: 16px; }
