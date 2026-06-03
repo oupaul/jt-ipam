@@ -49,6 +49,7 @@ async def list_nat(
     session: Annotated[AsyncSession, Depends(get_session)],
     type: str | None = Query(None),
     device_id: uuid.UUID | None = Query(None),
+    ip_id: uuid.UUID | None = Query(None, description="篩選 src 或 dst 指向此 IP 的規則"),
     source_kind: list[str] | None = Query(None, description="可複選：opnsense | phpipam | manual"),
     source_firewall_id: uuid.UUID | None = Query(None),
     page: int = Query(1, ge=1, le=10_000),
@@ -62,6 +63,11 @@ async def list_nat(
     if device_id is not None:
         stmt = stmt.where(NATTranslation.device_id == device_id)
         cstmt = cstmt.where(NATTranslation.device_id == device_id)
+    if ip_id is not None:
+        from sqlalchemy import or_ as _or_ip
+        ipc = _or_ip(NATTranslation.src_ip_id == ip_id, NATTranslation.dst_ip_id == ip_id)
+        stmt = stmt.where(ipc)
+        cstmt = cstmt.where(ipc)
     # 來源可複選：phpipam / manual / opnsense（OR）
     kinds = {k for k in (source_kind or []) if k in ("phpipam", "manual", "opnsense")}
     if kinds:

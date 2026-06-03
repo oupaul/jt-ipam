@@ -53,6 +53,23 @@ async function loadRelations() {
   try { relations.value = await getAddressRelations(props.address.id); } catch { /* silent */ }
 }
 
+// 此 IP 被哪些 NAT 規則引用（src/dst）
+const relatedNat = ref<{ id: string; name: string; type: string; src_interface: string | null;
+  src_port: number | null; dst_port: number | null; source_label: string | null }[]>([]);
+async function loadRelatedNat() {
+  relatedNat.value = [];
+  if (!props.address?.id) return;
+  try {
+    const { listNATs } = await import("@/api/phase3");
+    const res = await listNATs({ ipId: props.address.id });
+    relatedNat.value = res.items as any;
+  } catch { /* silent */ }
+}
+function goNat() {
+  emit("update:show", false);
+  void router.push({ name: "nat" });
+}
+
 function goDevice(id: string | null | undefined) {
   if (!id) return;
   void router.push({ name: "device-detail", params: { id } });
@@ -193,6 +210,7 @@ watch(
       void ensureCustomersLoaded();
       void loadDevices();
       void loadRelations();
+      void loadRelatedNat();
     }
   },
 );
@@ -470,6 +488,24 @@ async function remove() {
           <relation-chain :nodes="relations" :current-id="props.address?.id" />
         </div>
 
+        <!-- 關聯的 NAT 規則 -->
+        <div v-if="!editMode && relatedNat.length" style="margin-top: 14px">
+          <div style="font-size: 12px; opacity: 0.6; margin-bottom: 6px">
+            {{ t("addresses.related_nat", { n: relatedNat.length }) }}
+          </div>
+          <n-space vertical :size="6">
+            <div v-for="n in relatedNat" :key="n.id" class="nat-ref" @click="goNat">
+              <n-tag size="small" type="info" :bordered="false">{{ n.type }}</n-tag>
+              <span class="nat-ref-name">{{ n.name }}</span>
+              <span class="nat-ref-meta">
+                <template v-if="n.src_interface">{{ n.src_interface }}</template>
+                <template v-if="n.dst_port"> · :{{ n.dst_port }}</template>
+              </span>
+              <n-tag v-if="n.source_label" size="tiny" :bordered="false">{{ n.source_label }}</n-tag>
+            </div>
+          </n-space>
+        </div>
+
         <!-- 異動記錄 (feature B)，展開才載入 -->
         <n-collapse v-if="!editMode && props.address" style="margin-top: 12px" @update:expanded-names="onHistoryToggle">
           <n-collapse-item :title="t('ipChanges.history')" name="history">
@@ -603,3 +639,15 @@ async function remove() {
     </n-card>
   </n-modal>
 </template>
+
+<style scoped>
+.nat-ref {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 6px;
+  background: rgba(127, 127, 127, 0.06); cursor: pointer;
+  transition: background .15s;
+}
+.nat-ref:hover { background: rgba(24, 160, 88, 0.12); }
+.nat-ref-name { font-weight: 500; }
+.nat-ref-meta { font-size: 12px; opacity: 0.6; font-family: monospace; }
+</style>

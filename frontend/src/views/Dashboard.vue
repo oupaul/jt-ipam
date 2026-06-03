@@ -70,13 +70,13 @@ const kpiTiles = computed(() => [
 // ── 上下關係鏈：機房 → 機櫃 → 裝置 → IP 位址 → 子網路 → 區段 ──
 // 每層放本系統該層物件總數；即使是 0 也照列，讓人看出完整層級與關聯。
 const hierLayers = computed(() => [
-  { key: "locations", label: "nav.locations",     icon: LocationsIcon,      value: data.value?.locations ?? 0, route: "locations" },
-  { key: "racks",     label: "nav.racks",         icon: RacksIcon,          value: data.value?.racks ?? 0,     route: "racks" },
-  { key: "devices",   label: "nav.devices",       icon: DevicesIcon,        value: data.value?.devices ?? 0,   route: "devices" },
-  { key: "vms",       label: "nav.virtualization", icon: VirtualizationIcon, value: data.value?.vms ?? 0,       route: "virt" },
-  { key: "addresses", label: "nav.addresses",     icon: AddressesIcon,      value: data.value?.addresses ?? 0, route: "addresses" },
-  { key: "subnets",   label: "nav.subnets",       icon: SubnetsIcon,        value: data.value?.subnets ?? 0,   route: "subnets" },
-  { key: "sections",  label: "nav.sections",      icon: SectionsIcon,       value: data.value?.sections ?? 0,  route: "sections" },
+  { key: "locations", label: "nav.locations",     icon: LocationsIcon,      value: data.value?.locations ?? 0, route: "locations", color: "#0ea5e9" },
+  { key: "racks",     label: "nav.racks",         icon: RacksIcon,          value: data.value?.racks ?? 0,     route: "racks",     color: "#6366f1" },
+  { key: "devices",   label: "nav.devices",       icon: DevicesIcon,        value: data.value?.devices ?? 0,   route: "devices",   color: "#8b5cf6" },
+  { key: "vms",       label: "nav.virtualization", icon: VirtualizationIcon, value: data.value?.vms ?? 0,       route: "virt",      color: "#ec4899" },
+  { key: "addresses", label: "nav.addresses",     icon: AddressesIcon,      value: data.value?.addresses ?? 0, route: "addresses", color: "#18a058" },
+  { key: "subnets",   label: "nav.subnets",       icon: SubnetsIcon,        value: data.value?.subnets ?? 0,   route: "subnets",   color: "#f59e0b" },
+  { key: "sections",  label: "nav.sections",      icon: SectionsIcon,       value: data.value?.sections ?? 0,  route: "sections",  color: "#ef4444" },
 ]);
 
 const statusTotal = computed(() => {
@@ -150,12 +150,13 @@ onMounted(() => { void load(); void loadPins(); });
         <div class="hier-chain">
           <template v-for="(layer, i) in hierLayers" :key="layer.key">
             <span v-if="i > 0" class="hier-arrow">→</span>
-            <div class="hier-node" :title="t(layer.label)" @click="go(layer.route)">
-              <div class="hier-type">
-                <n-icon :size="14"><component :is="layer.icon" /></n-icon>
+            <div class="hier-node" :title="t(layer.label)" @click="go(layer.route)"
+                 :style="{ borderTopColor: layer.color, background: layer.color + '14' }">
+              <div class="hier-type" :style="{ color: layer.color }">
+                <n-icon :size="15"><component :is="layer.icon" /></n-icon>
                 <span>{{ t(layer.label) }}</span>
               </div>
-              <div class="hier-count">{{ layer.value.toLocaleString() }}</div>
+              <div class="hier-count" :style="{ color: layer.color }">{{ layer.value.toLocaleString() }}</div>
             </div>
           </template>
         </div>
@@ -363,16 +364,17 @@ onMounted(() => { void load(); void loadPins(); });
   flex-direction: column;
   gap: 4px;
   padding: 10px 14px;
-  border: 1px solid rgba(127, 127, 127, 0.28);
+  border: 1px solid rgba(127, 127, 127, 0.22);
+  border-top: 3px solid rgba(127, 127, 127, 0.4);
   border-radius: 8px;
   background: rgba(127, 127, 127, 0.05);
   cursor: pointer;
   transition: border-color .15s, background .15s, transform .1s;
 }
-.hier-node:hover { border-color: #18a058; transform: translateY(-1px); }
+.hier-node:hover { transform: translateY(-2px); filter: brightness(1.04); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
 .hier-type {
   display: flex; align-items: center; gap: 5px;
-  font-size: 12px; opacity: 0.65; white-space: nowrap;
+  font-size: 12px; font-weight: 500; white-space: nowrap;
 }
 .hier-count { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
 

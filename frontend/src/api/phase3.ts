@@ -183,6 +183,7 @@ export async function listNATs(
   params: {
     page?: number;
     deviceId?: string;
+    ipId?: string;
     sourceKind?: string | string[];
     sourceFirewallId?: string;
   } = {},
@@ -192,6 +193,7 @@ export async function listNATs(
       page: params.page ?? 1,
       page_size: 200,
       device_id: params.deviceId,
+      ip_id: params.ipId,
       source_kind: params.sourceKind,
       source_firewall_id: params.sourceFirewallId,
     },
