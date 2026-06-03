@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Annotated, Any
 
@@ -264,8 +265,9 @@ async def import_device_ports(
                 if nm and nm.lower() not in ("null", "unrouted vlan 1"):
                     names.add(nm)
                     sources.add("librenms")
-        except Exception:
-            pass
+        except Exception as exc:
+            # LibreNMS 不可達/回應異常：略過此來源，改用 FDB
+            logging.getLogger(__name__).debug("librenms ports fetch failed: %s", exc)
 
     # 2) 退回 FDB（交換器學到的 port）
     if not names and lns_devs:
