@@ -158,12 +158,27 @@ function onMarkerDown(r: Rack, ev: PointerEvent) {
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
 }
+const SNAP = 0.018;   // 拖動時與其它機櫃同軸對齊的容差（比例）
+function snapAxis(val: number, others: (number | null | undefined)[]): number {
+  let best = val, bestDist = SNAP;
+  for (const o of others) {
+    if (o == null) continue;
+    const dd = Math.abs(o - val);
+    if (dd < bestDist) { best = o; bestDist = dd; }
+  }
+  return best;
+}
 function onMove(ev: PointerEvent) {
   if (!dragId) return;
   const f = fracFromEvent(ev);
   if (!f) return;
   const r = racks.value.find((x) => x.id === dragId);
-  if (r) { r.pos_x = +f.x.toFixed(5); r.pos_y = +f.y.toFixed(5); dirty.value = true; }
+  if (!r) return;
+  // 自動貼齊其它機櫃（同 x 或同 y 軸對齊），不用對到完全一樣的像素
+  const others = racks.value.filter((x) => x.id !== dragId && x.pos_x != null && x.pos_y != null);
+  const sx = snapAxis(f.x, others.map((o) => o.pos_x as number));
+  const sy = snapAxis(f.y, others.map((o) => o.pos_y as number));
+  r.pos_x = +sx.toFixed(5); r.pos_y = +sy.toFixed(5); dirty.value = true;
 }
 function onUp() {
   dragId = null;
