@@ -52,6 +52,8 @@ class OPNsenseFirewall(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     sync_openvpn: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     sync_rules: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     sync_nat: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    sync_aliases: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="true", nullable=False)
 
     description: Mapped[str | None] = mapped_column(Text)
 

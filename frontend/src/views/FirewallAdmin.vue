@@ -26,6 +26,8 @@ import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { useRoute } from "vue-router";
 const { t } = useI18n();
 const route = useRoute();
+// 管理區：OPNsense 連線 + 別名對應；功能/進階區：防火牆規則 + 別名
+const adminMode = computed(() => route.name === "firewall_admin");
 
 const fwPrefs = useColumnPrefs("opnsense_fws",
   ["name", "api_url", "enabled", "verify_tls", "sync_dhcp", "sync_arp", "sync_openvpn", "sync_rules", "sync_nat", "last_sync_at", "actions"],
@@ -389,6 +391,8 @@ const ruleCols = computed<DataTableColumns<OPNsenseRule>>(() =>
   allRuleCols.value.filter((c: any) => rulePrefs.visibleKeys.value.includes(c.key)));
 
 onMounted(() => {
+  // 預設分頁：管理區從 firewalls 起、進階區從 rules 起
+  tab.value = adminMode.value ? "firewalls" : "rules";
   // 支援 ?tab=aliases&q=<alias> 直接帶到對應分頁並預填篩選（NAT 規則的 alias chip 連過來）
   const qt = route.query.tab;
   if (typeof qt === "string" && ["firewalls", "mappings", "rules", "aliases"].includes(qt)) {
@@ -396,8 +400,8 @@ onMounted(() => {
   }
   const qq = route.query.q;
   if (typeof qq === "string" && qq) {
-    if (tab.value === "aliases") aliasFilterQ.value = qq;
-    else if (tab.value === "rules") ruleFilterQ.value = qq;
+    if (qt === "aliases") aliasFilterQ.value = qq;
+    else if (qt === "rules") ruleFilterQ.value = qq;
   }
   void refresh();
 });
@@ -408,11 +412,11 @@ onMounted(() => {
     <template #header>
       <n-space align="center" :wrap-item="false">
         <n-icon :size="22"><FirewallIcon /></n-icon>
-        <span>{{ t("firewall_admin.title") }}</span>
+        <span>{{ adminMode ? t("firewall_admin.title") : t("firewall_admin.func_title") }}</span>
       </n-space>
     </template>
     <n-tabs v-model:value="tab" type="line">
-      <n-tab-pane name="firewalls">
+      <n-tab-pane v-if="adminMode" name="firewalls">
         <template #tab>
           <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><FirewallIcon /></n-icon>{{ t('firewall_admin.title') }}</span>
         </template>
@@ -436,7 +440,7 @@ onMounted(() => {
         </n-space>
         <n-data-table :columns="fwCols" :data="fws" :loading="loading" :bordered="false" :scroll-x="986" />
       </n-tab-pane>
-      <n-tab-pane name="mappings">
+      <n-tab-pane v-if="adminMode" name="mappings">
         <template #tab>
           <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><VrfsIcon /></n-icon>{{ t('firewall_admin.alias_mappings') }}</span>
         </template>
@@ -455,7 +459,7 @@ onMounted(() => {
         </n-space>
         <n-data-table :columns="mapCols" :data="mappings" :loading="loading" :bordered="false" :scroll-x="946" />
       </n-tab-pane>
-      <n-tab-pane name="rules">
+      <n-tab-pane v-if="!adminMode" name="rules">
         <template #tab>
           <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><ListIcon /></n-icon>{{ t("firewall_admin.rules") }}</span>
         </template>
@@ -491,7 +495,7 @@ onMounted(() => {
         <n-empty v-else :description="t('firewall_admin.pick_firewall_to_view')" />
       </n-tab-pane>
 
-      <n-tab-pane name="aliases">
+      <n-tab-pane v-if="!adminMode" name="aliases">
         <template #tab>
           <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><ListIcon /></n-icon>{{ t("firewall_admin.aliases") }}</span>
         </template>

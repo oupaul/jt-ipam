@@ -44,7 +44,7 @@
     "dns": "DNS 服務",
     "adguard": "AdGuard",
     "librenms": "LibreNMS",
-    "firewall": "OPNsense",
+    "firewall": "防火牆規則 / 別名",
     "wazuh": "Wazuh",
     "plugins": "Plugin",
     "settings": "系統設定",
@@ -64,7 +64,8 @@
     "migration": "phpIPAM 匯入",
     "import": "RIPE/TWNIC",
     "system_settings": "系統設定",
-    "version": "版本資訊"
+    "version": "版本資訊",
+    "firewall_admin": "OPNsense 連線"
   },
   "topbar": {
     "search": "搜尋…",
@@ -999,7 +1000,8 @@
     "aliases": "別名",
     "aliases_hint": "從 OPNsense 同步回來的別名定義（唯讀）；按防火牆的「立即同步」會一併更新。",
     "members": "成員數",
-    "content": "內容"
+    "content": "內容",
+    "func_title": "防火牆規則 / 別名"
   },
   "wazuh_admin": {
     "title": "Wazuh 整合",
@@ -1484,7 +1486,9 @@
     "pin": "釘選",
     "unpin": "取消釘選",
     "scan_agent": "掃描代理",
-    "scan_agent_ph": "跨網段時指定；留空＝由 jt-ipam 主機直接掃"
+    "scan_agent_ph": "跨網段時指定；留空＝由 jt-ipam 主機直接掃",
+    "add_child": "新增下層子網路",
+    "add_address": "新增位址"
   },
   "device_detail": {
     "hardware": "硬體",

@@ -453,6 +453,15 @@ onMounted(() => {
   void ensureCustomersLoaded();
   void loadAuxOpts();
   void ensurePinsLoaded();
+  // 從子網路詳情「新增下層子網路」帶 ?create=1&section= 過來 → 開新增、預選區段
+  if (route.query.create === "1") {
+    void (async () => {
+      await loadAuxOpts();
+      openCreate();
+      const sec = route.query.section;
+      if (typeof sec === "string" && sec) form.value.section_id = sec;
+    })();
+  }
 });
 </script>
 

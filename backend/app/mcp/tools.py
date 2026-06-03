@@ -327,12 +327,19 @@ async def list_racks(
     )).all()
     out = []
     for rack, loc_name in rows:
-        dev_count = int(await session.scalar(
-            select(func.count()).select_from(Device).where(Device.rack_id == rack.id)
-        ) or 0)
+        devs = list((await session.execute(
+            select(Device.name, Device.type, Device.u_position, Device.u_size, Device.rack_face)
+            .where(Device.rack_id == rack.id).order_by(Device.u_position)
+        )).all())
+        used_u = sum(int(sz or 1) for (_n, _t, pos, sz, _f) in devs if pos is not None)
         out.append({
             "id": str(rack.id), "name": rack.name, "u_height": rack.u_height,
-            "location": loc_name, "device_count": dev_count,
+            "location": loc_name, "device_count": len(devs),
+            "used_u": used_u, "free_u": max(rack.u_height - used_u, 0),
+            "devices": [
+                {"name": n, "type": t, "u_position": pos, "u_size": sz, "rack_face": f}
+                for (n, t, pos, sz, f) in devs
+            ],
             "description": rack.description,
         })
     return {"racks": out, "count": len(out)}
@@ -378,6 +385,8 @@ async def list_devices(
         out.append({
             "id": str(d.id), "name": d.name, "type": d.type,
             "vendor": d.vendor, "model": d.model, "ip_count": ip_count,
+            "u_position": d.u_position, "u_size": d.u_size, "rack_face": d.rack_face,
+            "rack_id": str(d.rack_id) if d.rack_id else None,
         })
     return {"devices": out, "count": len(out)}
 
@@ -408,9 +417,17 @@ async def get_device(
         .where(LibreNMSDevice.jt_ipam_device_id == dev.id)
         .distinct()
     )).all())
+    rack_info = None
+    if dev.rack_id:
+        rk = await session.get(Rack, dev.rack_id)
+        if rk is not None:
+            rack_info = {"id": str(rk.id), "name": rk.name, "u_height": rk.u_height}
     return {
         "id": str(dev.id), "name": dev.name, "type": dev.type,
         "vendor": dev.vendor, "model": dev.model, "serial": dev.serial,
+        # 機櫃 U 位資訊（讓 AI 能判斷占位 / 剩餘空間）
+        "u_position": dev.u_position, "u_size": dev.u_size, "rack_face": dev.rack_face,
+        "rack": rack_info,
         "ips": [{"ip": str(ip), "hostname": hn, "mac": str(m) if m else None}
                 for ip, hn, m in ips],
         "vlans": [{"number": n, "name": nm} for n, nm in vlans],
@@ -1387,7 +1404,11 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
     "list_racks": {
         "fn": list_racks,
-        "description": "List racks (機櫃) with their location and mounted device count.",
+        "description": (
+            "List racks (機櫃) with location, device count, total/used/free U, and each "
+            "mounted device's U position & size (u_position/u_size/rack_face). Use this to "
+            "answer how many more devices/U fit in a rack — free_u is the free U count."
+        ),
         "parameters": {
             "type": "object",
             "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500}},
@@ -1405,7 +1426,8 @@ TOOLS: dict[str, dict[str, Any]] = {
         "fn": list_devices,
         "description": (
             "List or search devices (裝置). Optional name substring or type filter "
-            "(server/switch/router/firewall/ap/storage/ipmi/other)."
+            "(server/switch/router/firewall/ap/storage/ipmi/other). Includes each device's "
+            "rack U position/size (u_position, u_size, rack_face) and rack_id."
         ),
         "parameters": {
             "type": "object",
@@ -1418,7 +1440,10 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
     "get_device": {
         "fn": get_device,
-        "description": "Device details by id or name: IPs, and (via LibreNMS) VLANs.",
+        "description": (
+            "Device details by id or name: IPs, VLANs (via LibreNMS), and its rack U "
+            "position/size (u_position, u_size, rack_face) + the rack it's mounted in."
+        ),
         "parameters": {
             "type": "object",
             "properties": {

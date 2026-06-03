@@ -19,6 +19,12 @@ class Location(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     latitude: Mapped[float | None] = mapped_column(Numeric(10, 7))
     longitude: Mapped[float | None] = mapped_column(Numeric(10, 7))
     description: Mapped[str | None] = mapped_column(Text)
+    # 所屬單位 / 客戶（管理單位）
+    customer_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("customers.id", ondelete="SET NULL"),
+        index=True,
+    )
     # 機房平面圖底圖（上傳檔相對 upload_dir 的路徑）。Location 同時當「機房」用。
     floor_plan_path: Mapped[str | None] = mapped_column(Text)
 

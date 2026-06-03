@@ -44,7 +44,7 @@
     "dns": "DNS Servers",
     "adguard": "AdGuard",
     "librenms": "LibreNMS",
-    "firewall": "OPNsense",
+    "firewall": "Firewall rules / aliases",
     "wazuh": "Wazuh",
     "plugins": "Plugins",
     "settings": "Settings",
@@ -64,7 +64,8 @@
     "migration": "phpIPAM Migration",
     "import": "RIPE / TWNIC Import",
     "system_settings": "System Settings",
-    "version": "Version Info"
+    "version": "Version Info",
+    "firewall_admin": "OPNsense connections"
   },
   "topbar": {
     "search": "Search…",
@@ -999,7 +1000,8 @@
     "aliases": "Aliases",
     "aliases_hint": "Alias definitions pulled from OPNsense (read-only); refreshed when you sync the firewall.",
     "members": "Members",
-    "content": "Content"
+    "content": "Content",
+    "func_title": "Firewall rules / aliases"
   },
   "wazuh_admin": {
     "title": "Wazuh",
@@ -1484,7 +1486,9 @@
     "pin": "Pin",
     "unpin": "Unpin",
     "scan_agent": "Scan agent",
-    "scan_agent_ph": "Specify for cross-subnet scanning; blank = scan from the jt-ipam host directly"
+    "scan_agent_ph": "Specify for cross-subnet scanning; blank = scan from the jt-ipam host directly",
+    "add_child": "Add child subnet",
+    "add_address": "Add address"
   },
   "device_detail": {
     "hardware": "Hardware",

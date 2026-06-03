@@ -294,6 +294,13 @@ async def get_address_relations(
                 select(VirtualMachine)
                 .where(func.lower(VirtualMachine.name) == obj.hostname.lower()).limit(1)
             )).scalar_one_or_none()
+        # 只連「同單位」的 VM：IP 所屬單位（取自子網路）與 VM 叢集所屬單位都有設定且不同 → 不連
+        if vm is not None and subnet is not None and subnet.customer_id is not None:
+            from app.models.virt import VirtCluster
+            cluster = await session.get(VirtCluster, vm.cluster_id)
+            if cluster is not None and cluster.customer_id is not None \
+                    and cluster.customer_id != subnet.customer_id:
+                vm = None
         if vm is not None:
             chain.append({"type": "vm", "id": str(vm.id), "label": vm.name, "sub": vm.node})
             node_dev: Device | None = None

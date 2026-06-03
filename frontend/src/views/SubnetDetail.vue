@@ -130,7 +130,7 @@ const ipColumnPickerItems = [
   { key: "last_seen", label: t("cols.last_seen") },
   { key: "note", label: t("cols.note") },
 ];
-import { SubnetsIcon, RefreshIcon, UsageIcon, GridIcon, ListIcon, PinIcon } from "@/icons";
+import { SubnetsIcon, RefreshIcon, UsageIcon, GridIcon, ListIcon, PinIcon, PlusIcon } from "@/icons";
 import { ArrowLeft as ArrowLeftIcon } from "@iconoir/vue";
 import { apiClient } from "@/api/client";
 import { listAddresses } from "@/api/addresses";
@@ -207,6 +207,20 @@ function onGridCreate(ip: string) {
   selected.value = null;
   createCtx.value = { subnet_id: subnet.value.id, ip };
   modalShow.value = true;
+}
+
+// 新增位址（IP 清單右上）：開新增 modal，IP 留空讓使用者填或取第一個空位
+function onAddAddress() {
+  if (!subnet.value) return;
+  selected.value = null;
+  createCtx.value = { subnet_id: subnet.value.id, ip: "" };
+  modalShow.value = true;
+}
+
+// 新增下層子網路：帶著本網段的區段去子網路頁開新增（CIDR 落在本網段內會自動歸為下層）
+function addChildSubnet() {
+  if (!subnet.value) return;
+  router.push({ name: "subnets", query: { create: "1", section: subnet.value.section_id } });
 }
 
 function onCreated(created: IPAddress) {
@@ -507,6 +521,10 @@ onMounted(() => {
               <template #icon><n-icon><EditIcon /></n-icon></template>
               {{ t("common.edit") }}
             </n-button>
+            <n-button v-if="subnet" size="small" @click="addChildSubnet">
+              <template #icon><n-icon><SubnetsIcon /></n-icon></template>
+              {{ t("subnet_detail.add_child") }}
+            </n-button>
             <n-button
               v-if="subnet"
               size="small"
@@ -654,6 +672,10 @@ onMounted(() => {
         </template>
         <template #header-extra>
           <n-space align="center">
+            <n-button v-if="subnet" type="primary" size="small" @click="onAddAddress">
+              <template #icon><n-icon><PlusIcon /></n-icon></template>
+              {{ t("subnet_detail.add_address") }}
+            </n-button>
             <ColumnPicker :all="ipColumnPickerItems" :visible="ipVisibleKeys"
                           @update:visible="setIpVisible" @reset="resetIpVisible" />
             <n-button @click="load(subnet.id)" :loading="loading">

@@ -1258,11 +1258,12 @@ async def sync_all_for_firewall(
             out.append({"task": "nat", **(await sync_nat_rules(session, fw))})
         except OPNsenseError as exc:
             out.append({"task": "nat", "error": str(exc)})
-    # alias 定義一律拉回（唯讀檢視）；失敗只記錄
-    try:
-        out.append({"task": "aliases", **(await sync_aliases(session, fw))})
-    except OPNsenseError as exc:
-        out.append({"task": "aliases", "error": str(exc)})
+    # alias 定義（唯讀檢視）；可由 sync_aliases 開關控制；失敗只記錄
+    if fw.sync_aliases:
+        try:
+            out.append({"task": "aliases", **(await sync_aliases(session, fw))})
+        except OPNsenseError as exc:
+            out.append({"task": "aliases", "error": str(exc)})
     # DHCP 發放範圍（Kea pools，多段都抓）；失敗只記錄
     try:
         out.append({"task": "dhcp_ranges", **(await sync_dhcp_ranges(session, fw))})

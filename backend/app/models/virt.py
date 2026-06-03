@@ -41,6 +41,12 @@ class VirtCluster(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         UUID(as_uuid=True),
         ForeignKey("tenants.id", ondelete="SET NULL"),
     )
+    # 所屬單位 / 客戶（決定 VM 屬於哪個單位；IP 關係鏈只連同單位的 VM）
+    customer_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("customers.id", ondelete="SET NULL"),
+        index=True,
+    )
 
     __table_args__ = (
         CheckConstraint(
