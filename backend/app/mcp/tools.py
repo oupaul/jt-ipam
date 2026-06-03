@@ -199,6 +199,8 @@ async def list_subnets(
             "section_id": str(r.section_id),
             "vlan_id": str(r.vlan_id) if r.vlan_id else None,
             "vrf_id": str(r.vrf_id) if r.vrf_id else None,
+            "customer_id": str(r.customer_id) if r.customer_id else None,
+            "gateway": r.gateway, "scan_enabled": r.scan_enabled,
             "used": used, "total": total, "free": free, "used_pct": pct,
         })
     return {"subnets": items, "count": len(items)}
@@ -358,9 +360,14 @@ async def list_locations(
         rack_count = int(await session.scalar(
             select(func.count()).select_from(Rack).where(Rack.location_id == loc.id)
         ) or 0)
+        device_count = int(await session.scalar(
+            select(func.count()).select_from(Device).where(Device.location_id == loc.id)
+        ) or 0)
         out.append({
             "id": str(loc.id), "name": loc.name, "address": loc.address,
-            "rack_count": rack_count, "description": loc.description,
+            "rack_count": rack_count, "device_count": device_count,
+            "customer_id": str(loc.customer_id) if loc.customer_id else None,
+            "description": loc.description,
         })
     return {"locations": out, "count": len(out)}
 
