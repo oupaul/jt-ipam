@@ -49,6 +49,11 @@
   .hero h1{font-size:clamp(34px,5.6vw,56px);margin:0 auto 22px;max-width:13em;
     line-height:1.14;letter-spacing:-0.5px}
   .hero .lead{font-size:clamp(15.5px,1.9vw,18.5px);color:var(--muted);max-width:600px;margin:0 auto;line-height:1.85}
+  .hero-points{list-style:none;padding:0;margin:26px auto 0;max-width:540px;display:flex;
+    flex-direction:column;gap:12px;text-align:left}
+  .hero-points li{display:flex;align-items:flex-start;gap:11px;font-size:16px;color:var(--body);line-height:1.5}
+  .hero-points li svg{flex:0 0 auto;margin-top:2px;color:var(--green)}
+  .hero-points b{color:var(--ink);font-weight:700}
   .hero .cta{display:flex;gap:12px;margin-top:38px;flex-wrap:wrap;justify-content:center}
   .pills{display:flex;gap:9px;flex-wrap:wrap;margin-top:36px;justify-content:center;max-width:720px;margin-left:auto;margin-right:auto}
   .pill{display:inline-flex;align-items:center;gap:7px;background:#fff;border:1px solid var(--line);
@@ -198,9 +203,17 @@
       <span class="en">Stop tracking your IPs in spreadsheets</span>
     </h1>
     <p class="lead">
-      <span class="zh">團隊共用一份 Excel 檔案登錄公司 IP，最後總是拿錯版本、蓋掉別人剛改的內容……想必這種痛苦您肯定經歷過。jt-ipam 用一套有權限控管、有稽核軌跡、會自動同步的系統取代它；並整合 DNS、LibreNMS、OPNsense、Proxmox 等既有系統，把 IP 與網路狀態集中在同一處。</span>
-      <span class="en">A shared Excel file for company IPs always ends in wrong versions and overwritten edits — you've surely felt that pain. jt-ipam replaces it with one permissioned, audited, auto-syncing system, and ties in your existing DNS, LibreNMS, OPNsense and Proxmox so IP and network state live in one place.</span>
+      <span class="zh">團隊共用一份 Excel 登錄公司 IP，最後總是拿錯版本、蓋掉別人剛改的內容——這種痛苦，您肯定經歷過。</span>
+      <span class="en">A shared Excel file for company IPs always ends in wrong versions and overwritten edits — you've surely been there.</span>
     </p>
+    <ul class="hero-points">
+      <li><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        <span><span class="zh"><b>權限控管、稽核軌跡、自動同步</b>——用一套系統取代試算表</span><span class="en"><b>Permissions, an audit trail and auto-sync</b> — one system replaces the spreadsheet</span></span></li>
+      <li><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        <span><span class="zh">整合 <b>DNS、LibreNMS、OPNsense、Proxmox</b> 等既有系統</span><span class="en">Integrates your existing <b>DNS, LibreNMS, OPNsense, Proxmox</b></span></span></li>
+      <li><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        <span><span class="zh">IP 與網路狀態<b>集中在同一處</b></span><span class="en">IP and network state, <b>all in one place</b></span></span></li>
+    </ul>
     <div class="cta">
       <a class="btn btn-primary" href="#install"><span class="zh">一行指令安裝</span><span class="en">Install in one line</span></a>
       <a class="btn btn-ghost" href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener"><span class="zh">前往 GitHub 專案</span><span class="en">Go to GitHub project</span></a>
