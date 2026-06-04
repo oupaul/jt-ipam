@@ -389,6 +389,15 @@
         <p><span class="zh">內建一站式的網路規劃小工具：子網路切割 / CIDR 計算、IP 範圍展開、OUI 廠商查詢等，規劃網段或查 MAC 廠商時不必再開好幾個線上計算器、在分頁間切來切去。</span><span class="en">A one-stop set of network-planning utilities: subnet splitting / CIDR math, IP-range expansion, OUI vendor lookup and more — plan segments or look up a MAC vendor without juggling separate online calculators across tabs.</span></p>
       </div>
     </div>
+
+    <div class="screen-row">
+      <img class="shot" src="shots/hostname-arp-sort.png" loading="lazy" alt="主機名稱 / ARP 來源優先序" />
+      <div class="screen-txt">
+        <span class="num">11</span>
+        <h3><span class="zh">主機名稱 / ARP 來源優先序</span><span class="en">Source precedence</span></h3>
+        <p><span class="zh">同一個 IP 可能同時被掃描代理、DNS、LibreNMS、OPNsense、Proxmox、Wazuh、AdGuard 回報主機名稱與 MAC，到底以誰為準？這裡用拖拉排序自訂每種來源的優先順序、可個別停用，系統就依此自動解析出最可信的值，不再每次同步互相蓋來蓋去。</span><span class="en">The same IP may be reported by the scan agent, DNS, LibreNMS, OPNsense, Proxmox, Wazuh and AdGuard at once — which one wins? Drag to set the precedence of each source (and disable any), and jt-ipam resolves the most trustworthy hostname/MAC accordingly, so syncs stop overwriting each other.</span></p>
+      </div>
+    </div>
   </div>
 </section>
 
