@@ -148,7 +148,8 @@
     "pin": "釘選/取消釘選",
     "load_more": "載入更多",
     "confirm": "確定",
-    "select": "選擇"
+    "select": "選擇",
+    "download": "下載"
   },
   "cols": {
     "name": "名稱",

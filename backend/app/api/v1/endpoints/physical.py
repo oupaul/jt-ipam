@@ -415,76 +415,76 @@ async def trace_port(
             ).limit(1)
         )).scalar_one_or_none()
 
+    def _internal_hop(to_node: dict[str, Any]) -> dict[str, Any]:
+        return {"cable_id": None, "cable_label": None, "cable_type": "internal",
+                "cable_color": None, "internal": True, "to": to_node}
+
     hops: list[dict[str, Any]] = []
     visited: set[uuid.UUID] = set()
-    current = start
+    current: DevicePort | None = start
     nodes = [await _port_node(current)]
 
+    # 每一輪最多前進一段（纜線或內部 peer），且每多一個 node 就配一個 hop（保持對齊）。
+    # visited 同時防迴圈：雙向 peer（bridge↔NIC）不會來回繞。
     while current is not None and current.id not in visited:
         visited.add(current.id)
-        term = await _term_for_port(current.id)
-        if term is None:
-            # 無纜線，但有穿透對應（橋接/跳接面板）→ 沿內部連結續走並繪出
-            if current.peer_port_id and current.peer_port_id not in visited:
-                peer = await session.get(DevicePort, current.peer_port_id)
-                if peer is not None:
-                    peer_node = await _port_node(peer)
-                    hops.append({
-                        "cable_id": None, "cable_label": None,
-                        "cable_type": "internal", "cable_color": None,
-                        "internal": True, "to": peer_node,
-                    })
-                    nodes.append(peer_node)
-                    current = peer
-                    continue
-            break
-        # bridge 雖把纜線掛在自己身上，實體上行其實是對應 NIC（peer）：
-        # 先插入「bridge →(橋接) NIC」內部跳，再走纜線到外部裝置
+
+        # bridge：實體上行其實是對應 NIC(peer)。插入「bridge →(橋接) NIC」內部跳，
+        # NIC 標記已訪、但 current 仍是 bridge（纜線掛在 bridge 上，由下方續走）。
         if (current.type == "bridge" and current.peer_port_id
                 and current.peer_port_id not in visited):
             nic = await session.get(DevicePort, current.peer_port_id)
             if nic is not None and nic.device_id == current.device_id:
                 visited.add(nic.id)
                 nic_node = await _port_node(nic)
-                hops.append({
-                    "cable_id": None, "cable_label": None,
-                    "cable_type": "internal", "cable_color": None,
-                    "internal": True, "to": nic_node,
-                })
+                hops.append(_internal_hop(nic_node))
                 nodes.append(nic_node)
-        cable = await session.get(Cable, term.cable_id)
-        other = (await session.execute(
-            select(CableTermination).where(
-                CableTermination.cable_id == term.cable_id,
-                CableTermination.id != term.id,
-            ).limit(1)
-        )).scalar_one_or_none()
-        hop: dict[str, Any] = {
-            "cable_id": str(cable.id) if cable else None,
-            "cable_label": cable.label if cable else None,
-            "cable_type": cable.type if cable else None,
-            "cable_color": cable.color if cable else None,
-            "to": None,
-        }
-        far_port: DevicePort | None = None
-        if other is not None:
-            if other.object_type == "device_port":
-                far_port = await session.get(DevicePort, other.object_id)
-                hop["to"] = await _port_node(far_port) if far_port else None
-            else:
-                hop["to"] = {"object_type": other.object_type,
-                             "object_id": str(other.object_id),
-                             "port_name": other.port_label}
-        hops.append(hop)
-        if far_port is not None:
-            nodes.append(hop["to"])
-            # 跳接面板穿透：到達 front/rear 且有對應 peer → 從 peer 續走
-            if far_port.peer_port_id and far_port.peer_port_id not in visited:
-                peer = await session.get(DevicePort, far_port.peer_port_id)
-                if peer is not None:
-                    nodes.append(await _port_node(peer))
-                    current = peer
-                    continue
+
+        # 1) 沿纜線到對端（對端未訪過才前進，避免回繞）
+        term = await _term_for_port(current.id)
+        if term is not None:
+            cable = await session.get(Cable, term.cable_id)
+            other = (await session.execute(
+                select(CableTermination).where(
+                    CableTermination.cable_id == term.cable_id,
+                    CableTermination.id != term.id,
+                ).limit(1)
+            )).scalar_one_or_none()
+            if other is not None:
+                cable_hop: dict[str, Any] = {
+                    "cable_id": str(cable.id) if cable else None,
+                    "cable_label": cable.label if cable else None,
+                    "cable_type": cable.type if cable else None,
+                    "cable_color": cable.color if cable else None,
+                    "to": None,
+                }
+                if other.object_type == "device_port":
+                    far = await session.get(DevicePort, other.object_id)
+                    if far is not None and far.id not in visited:
+                        cable_hop["to"] = await _port_node(far)
+                        hops.append(cable_hop)
+                        nodes.append(cable_hop["to"])
+                        current = far
+                        continue
+                    # 對端已訪過 → 此纜線不再前進
+                else:
+                    # 非 device_port 對端（外部標籤）→ 視為終點
+                    cable_hop["to"] = {"object_type": other.object_type,
+                                       "object_id": str(other.object_id),
+                                       "port_name": other.port_label}
+                    hops.append(cable_hop)
+                    nodes.append(cable_hop["to"])
+                    break
+
+        # 2) 沒有可走的纜線 → 內部 peer 穿透（跳接面板 front/rear，或從 NIC 端）
+        if current.peer_port_id and current.peer_port_id not in visited:
+            pp = await session.get(DevicePort, current.peer_port_id)
+            if pp is not None:
+                pp_node = await _port_node(pp)
+                hops.append(_internal_hop(pp_node))
+                nodes.append(pp_node)
+                current = pp
+                continue
         break
 
     return {"start": nodes[0], "nodes": nodes, "hops": hops}

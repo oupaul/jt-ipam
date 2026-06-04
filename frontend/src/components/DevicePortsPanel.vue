@@ -3,11 +3,11 @@ import { computed, h, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NCard, NSpace, NButton, NIcon, NDataTable, NModal, NForm, NFormItem, NInput,
-  NSelect, NPopconfirm, NTag, NTooltip, useMessage, type DataTableColumns,
+  NSelect, NPopconfirm, NTag, NTooltip, NDropdown, useMessage, type DataTableColumns,
 } from "naive-ui";
 import { Physical, type DevicePort, type PortTrace } from "@/api/phase3";
 import { listDevices } from "@/api/basic";
-import { PlusIcon, EditIcon, DeleteIcon, LinkIcon, RefreshIcon, PhysicalIcon } from "@/icons";
+import { PlusIcon, EditIcon, DeleteIcon, LinkIcon, RefreshIcon, PhysicalIcon, ExportIcon } from "@/icons";
 
 const props = defineProps<{ deviceId: string; deviceName: string; admin: boolean }>();
 const { t } = useI18n();
@@ -141,11 +141,26 @@ async function openTrace(p: DevicePort) {
 }
 const traceConnected = computed(() => (trace.value?.hops.length ?? 0) > 0);
 
-function downloadSvg() {
-  if (!trace.value) return;
+function escapeXml(s: string): string {
+  return s.replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c] as string));
+}
+function traceFilename(): string {
+  return `cable-trace-${traceTitle.value.replace(/[^\w.-]+/g, "_")}`;
+}
+function dl(blob: Blob, name: string) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+// 共用幾何，SVG / PNG 都用
+const TRACE_GEO = { W: 420, boxH: 46, gap: 40, padY: 16 };
+function buildTraceSvg(): { svg: string; W: number; H: number } | null {
+  if (!trace.value) return null;
   const nodes = trace.value.nodes;
   const hops = trace.value.hops;
-  const W = 420, boxH = 46, gap = 40, padY = 16;
+  const { W, boxH, gap, padY } = TRACE_GEO;
   const rows = nodes.length;
   const H = padY * 2 + rows * boxH + (rows - 1) * gap;
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="sans-serif">`;
@@ -168,21 +183,69 @@ function downloadSvg() {
     svg += `<text x="${cx}" y="${y + 36}" font-size="11" text-anchor="middle" fill="#64748b">${escapeXml(n.port_name || n.object_id?.slice(0, 8) || "")}</text>`;
   }
   svg += `</svg>`;
-  const blob = new Blob([svg], { type: "image/svg+xml" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `cable-trace-${traceTitle.value.replace(/[^\w.-]+/g, "_")}.svg`;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  return { svg, W, H };
 }
-function escapeXml(s: string): string {
-  return s.replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" }[c] as string));
+function exportTraceSvg() {
+  const r = buildTraceSvg();
+  if (r) dl(new Blob([r.svg], { type: "image/svg+xml" }), `${traceFilename()}.svg`);
+}
+function exportTracePng() {
+  const r = buildTraceSvg();
+  if (!r) return;
+  const scale = 2;
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = r.W * scale; canvas.height = r.H * scale;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(scale, scale);
+    ctx.drawImage(img, 0, 0);
+    canvas.toBlob((blob) => { if (blob) dl(blob, `${traceFilename()}.png`); }, "image/png");
+  };
+  img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(r.svg)));
+}
+// draw.io：每個節點一個方塊、節點之間用箭頭連起來(內部穿透為虛線)
+function exportTraceDrawio() {
+  if (!trace.value) return;
+  const nodes = trace.value.nodes;
+  const hops = trace.value.hops;
+  const cells: string[] = ['<mxCell id="0"/>', '<mxCell id="1" parent="0"/>'];
+  nodes.forEach((n, i) => {
+    const label = `${n.device_name || n.object_type || "—"}\n${n.port_name || (n.object_id ? n.object_id.slice(0, 8) : "")}`;
+    cells.push(`<mxCell id="n${i}" value="${escapeXml(label)}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eef2ff;strokeColor=#6366f1;" vertex="1" parent="1"><mxGeometry x="120" y="${40 + i * 110}" width="240" height="56" as="geometry"/></mxCell>`);
+    if (i > 0) {
+      const hop = hops[i - 1];
+      const lbl = hop?.internal ? t("ports.internal_link") : `${hop?.cable_type || "cable"}${hop?.cable_label ? " · " + hop.cable_label : ""}`;
+      const style = hop?.internal ? "dashed=1;strokeColor=#f0a020;" : `strokeColor=${hop?.cable_color || "#888888"};`;
+      cells.push(`<mxCell id="e${i}" value="${escapeXml(lbl)}" style="endArrow=none;html=1;${style}" edge="1" parent="1" source="n${i - 1}" target="n${i}"><mxGeometry relative="1" as="geometry"/></mxCell>`);
+    }
+  });
+  const xml =
+    `<mxfile host="jt-ipam"><diagram name="${escapeXml(traceTitle.value)}">` +
+    `<mxGraphModel dx="800" dy="600" grid="1" gridSize="10" guides="1" connect="1" arrows="1" page="1" pageScale="1">` +
+    `<root>${cells.join("")}</root></mxGraphModel></diagram></mxfile>`;
+  dl(new Blob([xml], { type: "application/xml" }), `${traceFilename()}.drawio`);
+}
+const traceExportOptions = [
+  { label: "SVG", key: "svg" },
+  { label: "PNG", key: "png" },
+  { label: "draw.io", key: "drawio" },
+];
+function onTraceExport(key: string) {
+  if (key === "svg") exportTraceSvg();
+  else if (key === "png") exportTracePng();
+  else if (key === "drawio") exportTraceDrawio();
 }
 
 const cols = computed<DataTableColumns<DevicePort>>(() => [
-  { title: t("ports.col_name"), key: "name", minWidth: 120 },
-  { title: t("ports.col_type"), key: "type", width: 90, render: (r) => h(NTag, { size: "small", type: TYPE_TAG[r.type] ?? "info", bordered: false }, () => t("ports.type_" + r.type)) },
+  { title: t("ports.col_name"), key: "name", minWidth: 120,
+    sorter: (a, b) => natCompare(a.name, b.name) },
+  { title: t("ports.col_type"), key: "type", width: 90,
+    sorter: (a, b) => t("ports.type_" + a.type).localeCompare(t("ports.type_" + b.type)),
+    render: (r) => h(NTag, { size: "small", type: TYPE_TAG[r.type] ?? "info", bordered: false }, () => t("ports.type_" + r.type)) },
   { title: t("ports.col_link"), key: "link", minWidth: 150,
+    sorter: (a, b) => natCompare(a.link ?? "", b.link ?? ""),
     render: (r) => r.link
       // 純文字 tooltip：避免把綠色 tag 放進深色 tooltip 造成淺色主題配色錯
       ? h(NTooltip, null, {
@@ -192,9 +255,14 @@ const cols = computed<DataTableColumns<DevicePort>>(() => [
         })
       : "—" },
   { title: t("ports.col_mac"), key: "mac_address", minWidth: 140, ellipsis: { tooltip: true },
+    sorter: (a, b) => natCompare(a.mac_address ?? "", b.mac_address ?? ""),
     render: (r) => r.mac_address || "—" },
-  { title: t("ports.col_peer"), key: "peer_port_id", width: 100, render: (r) => peerName(r.peer_port_id) },
-  { title: t("common.description"), key: "description", minWidth: 110, ellipsis: { tooltip: true }, render: (r) => r.description ?? "—" },
+  { title: t("ports.col_peer"), key: "peer_port_id", width: 100,
+    sorter: (a, b) => natCompare(peerName(a.peer_port_id), peerName(b.peer_port_id)),
+    render: (r) => peerName(r.peer_port_id) },
+  { title: t("common.description"), key: "description", minWidth: 110, ellipsis: { tooltip: true },
+    sorter: (a, b) => natCompare(a.description ?? "", b.description ?? ""),
+    render: (r) => r.description ?? "—" },
   {
     title: t("common.actions"), key: "actions", width: 150,
     render: (r) => h(NSpace, { size: 2, wrapItem: false }, () => {
@@ -280,7 +348,12 @@ onMounted(() => { void refresh(); });
     <!-- trace -->
     <n-modal v-model:show="showTrace" preset="card" style="width:520px" :title="t('ports.trace_title', { p: traceTitle })">
       <template #header-extra>
-        <n-button v-if="traceConnected" size="tiny" @click="downloadSvg">{{ t("ports.download_svg") }}</n-button>
+        <n-dropdown v-if="traceConnected" trigger="click" :options="traceExportOptions" @select="onTraceExport">
+          <n-button size="tiny">
+            <template #icon><n-icon><ExportIcon /></n-icon></template>
+            {{ t("common.download") }}
+          </n-button>
+        </n-dropdown>
       </template>
       <div v-if="!trace" style="text-align:center;padding:20px;opacity:.6">…</div>
       <div v-else-if="!traceConnected" style="text-align:center;padding:20px;opacity:.6">{{ t("ports.not_connected") }}</div>

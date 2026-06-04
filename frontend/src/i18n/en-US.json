@@ -148,7 +148,8 @@
     "pin": "Pin / unpin",
     "load_more": "Load more",
     "confirm": "Confirm",
-    "select": "Select"
+    "select": "Select",
+    "download": "Download"
   },
   "cols": {
     "name": "Name",
