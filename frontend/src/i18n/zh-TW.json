@@ -220,6 +220,7 @@
     "manual": "手動",
     "member_count": "成員數",
     "username": "帳號",
+    "username_external": "外部帳號（由領域管理，不可改名）",
     "diff": "差異",
     "failed_login": "失敗次數",
     "model": "型號",

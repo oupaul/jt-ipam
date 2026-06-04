@@ -220,6 +220,7 @@
     "manual": "Manual",
     "member_count": "Members",
     "username": "Username",
+    "username_external": "External account (managed by its realm)",
     "diff": "Diff",
     "failed_login": "Failed logins",
     "model": "Model",
