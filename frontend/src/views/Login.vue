@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute } from "vue-router";
 import { useI18n } from "vue-i18n";
 import {
   NCard,
@@ -20,7 +20,6 @@ import { ShieldCheck, Globe } from "@iconoir/vue";
 
 const { t } = useI18n();
 const route = useRoute();
-const router = useRouter();
 const auth = useAuthStore();
 const { mfaToken } = storeToRefs(auth);
 
@@ -42,7 +41,9 @@ async function submitLogin() {
   try {
     const res = await auth.login(username.value, password.value);
     if (!res.mfa_required) {
-      router.push(targetAfterLogin());
+      // 整頁載入(非 SPA 導向)：以新 token 全新啟動，清掉前一個 session 殘留的
+      // 模組級快取 / loading 旗標，避免登入後某些功能因舊狀態出錯、要切頁才好。
+      window.location.assign(targetAfterLogin());
     }
   } catch (err: unknown) {
     errorMsg.value = t("login.failed");
@@ -56,7 +57,7 @@ async function submitMfa() {
   loading.value = true;
   try {
     await auth.verifyMfa(code.value);
-    router.push(targetAfterLogin());
+    window.location.assign(targetAfterLogin());
   } catch (err: unknown) {
     errorMsg.value = t("login.mfa_failed");
   } finally {
