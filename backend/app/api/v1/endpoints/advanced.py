@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, forbid_zero_visibility, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.advanced import (
@@ -34,7 +34,7 @@ from app.models.advanced import (
 )
 from app.schemas.base import Paginated, StrictModel
 
-router = APIRouter(tags=["advanced"])
+router = APIRouter(tags=["advanced"], dependencies=[Depends(forbid_zero_visibility)])
 
 
 # ─────────────────── 共用 helper ───────────────────
