@@ -211,27 +211,28 @@ async def _search_text_trgm(
 ) -> list[SearchHit]:
     """跨多表 trigram 搜尋 + 排序。"""
     qlike = f"%{q}%"
-    qprefix = f"{q}%"  # IP/CIDR 首碼匹配用
-    # 看起來像不完整的 IPv4（純數字 + 點，e.g. "192.168" / "10.1." / "172.16.1"）
-    looks_like_ip_prefix = bool(re.match(r"^\d+(\.\d+){0,3}\.?$", q))
-    # IP/CIDR/MAC 查詢時不要用 trigram 模糊比對（否則 .200 會誤中 .201/.208 這種相似字串）
-    fuzzy = not (looks_like_ip_prefix or _detect_query_kind(q) in ("ip", "cidr", "mac"))
+    # 看起來像「IP 片段」：只含數字與點且至少有一個點
+    #   e.g. "192.168"（首碼）/ ".1.189"（結尾）/ "1.189"（中段）/ "10.1."
+    looks_like_ip_fragment = bool(re.match(r"^[0-9.]*\.[0-9.]*$", q)) and any(ch.isdigit() for ch in q)
+    ipfrag = f"%{q}%"  # IP 片段一律走子字串比對（首碼/結尾/中段都能撞到）
+    # IP 片段 / IP / CIDR / MAC 查詢時不要用 trigram 模糊比對（否則 .200 會誤中 .201/.208）
+    fuzzy = not (looks_like_ip_fragment or _detect_query_kind(q) in ("ip", "cidr", "mac"))
     out: list[SearchHit] = []
 
-    # IP / CIDR 首碼匹配（user 打 "192.168" 應該找得到 192.168.* IP 與含此首碼的 subnet）
-    if looks_like_ip_prefix:
-        # subnets where host(cidr) starts with q  (e.g. "192.168" → "192.168.1.0")
+    # IP 片段比對（子字串）：打 "192.168" 找 192.168.*；打 ".1.189" 找 *.1.189
+    if looks_like_ip_fragment:
+        # subnets whose cidr text contains the fragment
         sub_pref_sql = text(
             """
             SELECT id, cidr::text AS cidr, description
               FROM subnets
-             WHERE host(cidr) LIKE :qprefix
+             WHERE host(cidr) LIKE :ipfrag OR cidr::text LIKE :ipfrag
              ORDER BY masklen(cidr)
              LIMIT :limit
             """
         )
         sub_pref_rows = (
-            await session.execute(sub_pref_sql, {"qprefix": qprefix, "limit": limit})
+            await session.execute(sub_pref_sql, {"ipfrag": ipfrag, "limit": limit})
         ).all()
         if sub_pref_rows:
             visible = set(
@@ -247,18 +248,18 @@ async def _search_text_trgm(
                         sublabel=r.description, score=0.9,
                     ))
 
-        # ip_addresses where host(ip) starts with q
+        # ip_addresses whose textual form contains the fragment
         ip_pref_sql = text(
             """
             SELECT a.id, host(a.ip) AS ip, a.hostname, a.subnet_id
               FROM ip_addresses a
-             WHERE host(a.ip) LIKE :qprefix
+             WHERE host(a.ip) LIKE :ipfrag
              ORDER BY a.ip
              LIMIT :limit
             """
         )
         ip_pref_rows = (
-            await session.execute(ip_pref_sql, {"qprefix": qprefix, "limit": limit})
+            await session.execute(ip_pref_sql, {"ipfrag": ipfrag, "limit": limit})
         ).all()
         if ip_pref_rows:
             visible_ip_subs = set(
