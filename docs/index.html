@@ -84,6 +84,10 @@
   .card:hover{box-shadow:0 8px 24px rgba(15,23,42,.09);transform:translateY(-2px)}
   .card h3{font-size:18px;margin:0 0 8px;display:flex;align-items:center;gap:9px}
   .card p{margin:0;font-size:14.5px;color:var(--body)}
+  /* 物件關係圖 */
+  .model-wrap{max-width:900px;margin:6px auto 0}
+  .model-svg{width:100%;height:auto;display:block}
+  .model-cap{text-align:center;font-size:13px;color:var(--muted);margin:14px auto 0;max-width:760px}
   /* 多單位 / MSP 強調帶 */
   .callout-sec{background:linear-gradient(135deg,#0c7a43,#18a058,#36ad6a)}
   .callout{display:flex;align-items:center;gap:26px}
@@ -123,11 +127,17 @@
   .screen-txt h3{margin:0 0 10px;font-size:25px}
   .screen-txt p{margin:0;color:var(--body);line-height:1.7}
   @media(max-width:820px){.screen-row,.screen-row:nth-child(even){flex-direction:column}.screen-row > .shot-ph,.screen-row > .shot{flex-basis:auto;width:100%}}
-  /* 畫面導覽：淺綠色帶，白底擷圖靠邊框 + 陰影即可跳出，不用深底 */
-  #screens{background:linear-gradient(180deg,#eaf4ed,#dceadf);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  /* 畫面導覽：深綠色帶 + 淺色字，白底擷圖更跳 */
+  #screens{background:linear-gradient(180deg,#1d4a38,#143527);border-top:1px solid #0e2a1f;border-bottom:1px solid #0e2a1f}
   .eyebrow{display:inline-block;font-size:13px;font-weight:700;letter-spacing:2px;
     color:var(--green-d);text-transform:uppercase;margin-bottom:10px}
-  #screens .shot{box-shadow:0 14px 40px rgba(15,23,42,0.16);cursor:zoom-in}
+  #screens .eyebrow{color:#6ee7a8}
+  #screens .sec-head h2{color:#fff}
+  #screens .sec-head p{color:rgba(255,255,255,0.62)}
+  #screens .screen-txt h3{color:#fff}
+  #screens .screen-txt p{color:rgba(255,255,255,0.82)}
+  #screens .num{background:rgba(110,231,168,0.18);color:#aaf0c8}
+  #screens .shot{box-shadow:0 16px 44px rgba(0,0,0,0.42);cursor:zoom-in;border-color:rgba(255,255,255,0.10)}
   /* 點圖放大(lightbox) */
   #lightbox{position:fixed;inset:0;z-index:2000;display:none;align-items:center;justify-content:center;
     padding:24px;background:rgba(8,14,10,0.88);cursor:zoom-out;backdrop-filter:blur(2px)}
@@ -141,10 +151,15 @@
   .chip{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);
     border-radius:10px;padding:9px 14px;font-weight:600;color:var(--ink);font-size:14px}
   .chip i{width:9px;height:9px;border-radius:50%;background:var(--green);display:inline-block}
-  pre{background:#0f1825;color:#e8f0fb;border-radius:12px;padding:18px 20px;overflow:auto;
+  pre{position:relative;background:#0f1825;color:#e8f0fb;border-radius:12px;padding:18px 20px;overflow:auto;
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13.5px;line-height:1.6}
   pre .c{color:#7585a0}
   pre .g{color:#34d399}
+  .copy-btn{position:absolute;top:9px;right:9px;background:rgba(255,255,255,.10);color:#cbd5e1;
+    border:1px solid rgba(255,255,255,.2);border-radius:8px;padding:4px 11px;font-size:12px;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif;cursor:pointer;transition:.15s}
+  .copy-btn:hover{background:rgba(255,255,255,.2);color:#fff}
+  .copy-btn.ok{color:#34d399;border-color:#34d399;background:rgba(52,211,153,.12)}
   footer{background:#0a1019;color:#aab8cc;padding:40px 0;font-size:14px}
   footer a{color:#67e8f9}
   .foot-in{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center}
@@ -254,6 +269,48 @@
       <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span><span class="zh">全域搜尋</span><span class="en">Global search</span></h3><p><span class="zh">hostname / IP / CIDR / MAC 一處搜尋，OUI 廠商比對每月自動更新。</span><span class="en">Search hostname / IP / CIDR / MAC in one place; monthly OUI vendor refresh.</span></p></div>
       <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 8v8M8 6h6a2 2 0 0 1 2 2v2M8 18h6a2 2 0 0 0 2-2v-2"/></svg></span><span class="zh">NAT / VLAN / VRF</span><span class="en">NAT / VLAN / VRF</span></h3><p><span class="zh">對齊 OPNsense 的 NAT 規則、Circuit 頻寬、VLAN/VRF 與客戶/單位歸屬。</span><span class="en">OPNsense-aligned NAT, circuit bandwidth, VLAN/VRF and customer/tenant ownership.</span></p></div>
       <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="zh">IP 異動記錄</span><span class="en">IP change log</span></h3><p><span class="zh">hostname 多來源優先序、逐欄人為編輯記錄、上線/離線判定、失聯 IP 篩選與批次回收。</span><span class="en">Multi-source hostname precedence, per-field edit log, liveness classification, stale-IP filtering &amp; bulk reclaim.</span></p></div>
+    </div>
+  </div>
+</section>
+
+<section id="model" class="alt">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow"><span class="zh">物件關係</span><span class="en">Object model</span></span>
+      <h2><span class="zh">所有東西，關係清清楚楚</span><span class="en">Everything connected, clearly</span></h2>
+      <p><span class="zh">不是一堆孤立的清單——每個物件都有明確的上下層與關聯。</span><span class="en">Not a pile of disconnected lists — every object has a clear hierarchy and links.</span></p>
+    </div>
+    <div class="model-wrap">
+      <svg class="model-svg" viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif" role="img" aria-label="jt-ipam object model">
+        <defs>
+          <marker id="mh" markerWidth="9" markerHeight="9" refX="6" refY="4" orient="auto">
+            <path d="M0 1 L6 4 L0 7" fill="none" stroke="#9fb0c0" stroke-width="1.5"/>
+          </marker>
+        </defs>
+        <!-- 連線 -->
+        <g stroke="#cbd5e1" stroke-width="2" fill="none">
+          <line x1="190" y1="74"  x2="231" y2="74"  marker-end="url(#mh)"/>
+          <line x1="385" y1="74"  x2="426" y2="74"  marker-end="url(#mh)"/>
+          <line x1="190" y1="204" x2="231" y2="204" marker-end="url(#mh)"/>
+          <line x1="385" y1="204" x2="426" y2="204" marker-end="url(#mh)"/>
+          <line x1="580" y1="74"  x2="656" y2="128" stroke="#e2b8d0"/>
+          <line x1="580" y1="204" x2="656" y2="150" stroke="#e2b8d0"/>
+        </g>
+        <line x1="505" y1="102" x2="505" y2="174" stroke="#94a3b8" stroke-width="2" stroke-dasharray="5,4"/>
+        <text x="515" y="142" font-size="11.5" fill="#64748b" class="zh">指派</text>
+        <text x="515" y="142" font-size="11.5" fill="#64748b" class="en">assigned</text>
+        <!-- 節點 -->
+        <g font-size="14.5" font-weight="700" text-anchor="middle">
+          <g transform="translate(40,46)"><rect width="150" height="56" rx="12" fill="#fdecec"/><text x="75" y="33" fill="#c0392b" class="zh">區段</text><text x="75" y="33" fill="#c0392b" class="en">Section</text></g>
+          <g transform="translate(235,46)"><rect width="150" height="56" rx="12" fill="#fef3e2"/><text x="75" y="33" fill="#b45309" class="zh">子網路</text><text x="75" y="33" fill="#b45309" class="en">Subnet</text></g>
+          <g transform="translate(430,46)"><rect width="150" height="56" rx="12" fill="#e7f6ee"/><text x="75" y="33" fill="#0c7a43" class="zh">IP 位址</text><text x="75" y="33" fill="#0c7a43" class="en">IP address</text></g>
+          <g transform="translate(40,176)"><rect width="150" height="56" rx="12" fill="#e6f4fb"/><text x="75" y="33" fill="#0369a1" class="zh">機房 / 地點</text><text x="75" y="33" fill="#0369a1" class="en">Room / Site</text></g>
+          <g transform="translate(235,176)"><rect width="150" height="56" rx="12" fill="#efeafe"/><text x="75" y="33" fill="#6d28d9" class="zh">機櫃</text><text x="75" y="33" fill="#6d28d9" class="en">Rack</text></g>
+          <g transform="translate(430,176)"><rect width="150" height="56" rx="12" fill="#eaecfe"/><text x="75" y="33" fill="#4338ca" class="zh">裝置</text><text x="75" y="33" fill="#4338ca" class="en">Device</text></g>
+          <g transform="translate(660,111)"><rect width="150" height="56" rx="12" fill="#fdeaf3"/><text x="75" y="33" fill="#be185d" class="zh">虛擬化 (VM)</text><text x="75" y="33" fill="#be185d" class="en">Virtualization</text></g>
+        </g>
+      </svg>
+      <p class="model-cap"><span class="zh">區段 → 子網路 → IP 位址（邏輯定址）；機房 / 地點 → 機櫃 → 裝置（實體資產）。一個 IP 指派給一台裝置，虛擬化叢集的 VM 也對應裝置並佔用 IP。儀表板一眼看出各層級數量，點任一節點即可深入；全部還能再歸屬到單位 / 客戶。</span><span class="en">Section → Subnet → IP address (logical) and Room/Site → Rack → Device (physical). An IP is assigned to a device, and virtualization VMs map to devices and consume IPs. The dashboard shows counts at each level — click any node to drill in; everything can also be owned by a tenant / client.</span></p>
     </div>
   </div>
 </section>
@@ -464,7 +521,7 @@
     <div class="grid g3">
       <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 20l1-4.5A8 8 0 1 1 21 12z"/></svg></span><span class="zh">智慧助理</span><span class="en">Smart assistant</span></h3><p><span class="zh">用自然語言查 IP / 子網路 / 裝置，透過 jt-ipam 內建的 MCP 工具直接讀取你的 IPAM 資料。</span><span class="en">Ask about IPs / subnets / devices in natural language; jt-ipam's built-in MCP tools read your live IPAM data.</span></p></div>
       <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16M7 15l3-4 3 2 5-7"/></svg></span><span class="zh">異常偵測</span><span class="en">Anomaly detection</span></h3><p><span class="zh">標記異常使用模式與失聯 IP，協助提前發現問題。</span><span class="en">Flags unusual usage patterns and unreachable IPs to surface issues early.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M11 8v6M8 11h6"/></svg></span><span class="zh">語意搜尋</span><span class="en">Semantic search</span></h3><p><span class="zh">以 embedding 向量 (qwen3-embedding + pgvector) 找相關物件，不只關鍵字比對。</span><span class="en">Vector search over embeddings (qwen3-embedding + pgvector) finds related objects, beyond keyword matching.</span></p></div>
+      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M11 8v6M8 11h6"/></svg></span><span class="zh">語意搜尋</span><span class="en">Semantic search</span></h3><p><span class="zh">以 embedding 向量 (Ollama 嵌入模型 + pgvector) 找相關物件，不只關鍵字比對；要用哪個模型由你自選。</span><span class="en">Vector search over embeddings (your chosen Ollama model + pgvector) finds related objects, beyond keyword matching.</span></p></div>
       <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span><span class="zh">MCP 伺服器</span><span class="en">MCP server</span></h3><p><span class="zh">內建 MCP 伺服器 (stdio 與 Streamable HTTP)，讓外部 LLM 客戶端也能直接操作 IPAM。</span><span class="en">Built-in MCP server (stdio &amp; Streamable HTTP) lets external LLM clients drive the IPAM too.</span></p></div>
       <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span><span class="zh">對話歷程</span><span class="en">Chat history</span></h3><p><span class="zh">助理對話自動持久化，可回溯、管理與稽核歷次問答。</span><span class="en">Assistant conversations are persisted — review, manage and audit past Q&amp;A.</span></p></div>
       <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a7 7 0 0 0-1.7-1L14.5 2h-5l-.3 2.5a7 7 0 0 0-1.7 1l-2.4-1-2 3.5L3 11a7 7 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a7 7 0 0 0 1.7 1l.3 2.5h5l.3-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.5-2-1.5a7 7 0 0 0 .1-1z"/></svg></span><span class="zh">全域 LLM 設定</span><span class="en">Global LLM settings</span></h3><p><span class="zh">自由切換 chat / embedding 模型，直接列出 Ollama 已安裝標籤，全域一處設定。</span><span class="en">Switch chat / embedding models freely, list installed Ollama tags, configured in one place.</span></p></div>
@@ -533,6 +590,26 @@ sudo <span class="g">bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade</span></pre>
     function close(){ lb.classList.remove('on'); lbImg.src=''; }
     lb.addEventListener('click', close);
     document.addEventListener('keydown', function(e){ if (e.key === 'Escape') close(); });
+  })();
+  // 指令區塊：複製按鈕（只複製指令本身，去掉註解）
+  (function(){
+    var en = function(){ return document.body.classList.contains('lang-en'); };
+    document.querySelectorAll('pre').forEach(function(pre){
+      var btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'copy-btn';
+      var setLabel = function(){ btn.textContent = en() ? 'Copy' : '複製'; };
+      setLabel();
+      btn.addEventListener('click', function(){
+        var clone = pre.cloneNode(true);
+        clone.querySelectorAll('.c, .copy-btn').forEach(function(n){ n.remove(); });
+        var cmd = clone.textContent.replace(/\n{2,}/g, '\n').trim();
+        navigator.clipboard.writeText(cmd).then(function(){
+          btn.textContent = en() ? 'Copied' : '已複製'; btn.classList.add('ok');
+          setTimeout(function(){ setLabel(); btn.classList.remove('ok'); }, 1500);
+        });
+      });
+      pre.appendChild(btn);
+    });
   })();
 </script>
 <div id="lightbox"><img id="lightbox-img" alt="" /></div>
