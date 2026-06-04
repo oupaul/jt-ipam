@@ -20,6 +20,7 @@ export interface LdapConfig {
   search_base: string | null; user_filter: string;
   attr_email: string; attr_display_name: string; attr_member_of: string;
   admin_groups: string[];
+  default_group_id: string | null;
 }
 export type LdapPatch = Omit<LdapConfig, "password_set"> & { bind_password?: string | null };
 

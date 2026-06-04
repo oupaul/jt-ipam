@@ -207,6 +207,7 @@ class LdapConfig:
     attr_member_of: str
     admin_groups: list[str]
     timeout: float
+    default_group_id: str | None = None   # 自動建立帳號時加入的群組（預設角色）
 
 
 def _enc_pw(pw: str) -> str:
@@ -257,6 +258,8 @@ async def get_ldap_config(session: AsyncSession) -> LdapConfig:
             cfg.port = v["port"]
         if isinstance(v.get("admin_groups"), list):
             cfg.admin_groups = [str(x) for x in v["admin_groups"]]
+        if isinstance(v.get("default_group_id"), str) and v["default_group_id"]:
+            cfg.default_group_id = v["default_group_id"]
         if isinstance(v.get("bind_password_enc"), str) and v["bind_password_enc"]:
             pw = _dec_pw(v["bind_password_enc"])
             if pw is not None:
@@ -266,7 +269,7 @@ async def get_ldap_config(session: AsyncSession) -> LdapConfig:
 
 _LDAP_SCALARS = ("enabled", "server", "port", "use_ssl", "use_starttls", "bind_dn",
                  "search_base", "user_filter", "attr_email", "attr_display_name",
-                 "attr_member_of", "admin_groups")
+                 "attr_member_of", "admin_groups", "default_group_id")
 
 
 async def set_ldap_config(

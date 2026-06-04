@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +32,22 @@ from app.services.auth import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+@router.get("/realms")
+async def list_realms(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """登入頁可選的領域（本機一律有；LDAP/AD 啟用時才列出）。"""
+    from app.services.system_config import get_ldap_config
+    realms: list[dict[str, str]] = [{"value": "local", "label": "本機"}]
+    try:
+        cfg = await get_ldap_config(session)
+        if cfg.enabled:
+            realms.append({"value": "ldap", "label": "LDAP / AD"})
+    except Exception:
+        pass
+    return {"realms": realms}
+
+
 @router.post("/login", response_model=TokenResponse)
 async def login(
     payload: LoginRequest,
@@ -46,6 +62,7 @@ async def login(
             session,
             username=payload.username,
             password=payload.password,
+            realm=payload.realm,
             actor_ip=request.client.host if request.client else None,
             actor_user_agent=request.headers.get("user-agent"),
             request_id=getattr(request.state, "request_id", None),

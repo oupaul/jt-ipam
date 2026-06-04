@@ -44,6 +44,7 @@ class LdapOut(StrictModel):
     attr_display_name: str
     attr_member_of: str
     admin_groups: list[str]
+    default_group_id: str | None = None
 
 
 class LdapPatch(StrictModel):
@@ -60,6 +61,7 @@ class LdapPatch(StrictModel):
     attr_display_name: str = "displayName"
     attr_member_of: str = "memberOf"
     admin_groups: list[str] = []
+    default_group_id: str | None = None
 
 
 async def _password_set(session: AsyncSession) -> bool:
@@ -76,6 +78,7 @@ async def _as_out(session: AsyncSession) -> dict:  # type: ignore[type-arg]
         "search_base": cfg.search_base, "user_filter": cfg.user_filter,
         "attr_email": cfg.attr_email, "attr_display_name": cfg.attr_display_name,
         "attr_member_of": cfg.attr_member_of, "admin_groups": cfg.admin_groups,
+        "default_group_id": str(cfg.default_group_id) if cfg.default_group_id else None,
     }
 
 

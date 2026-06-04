@@ -10,6 +10,7 @@ import {
 } from "naive-ui";
 import { AdminIcon, SaveIcon, RefreshIcon, CopyIcon } from "@/icons";
 import { getGraylogDsv, putGraylogDsv, getLdap, putLdap, testLdap, type LdapConfig } from "@/api/system";
+import { listGroups } from "@/api/admin";
 import { fmtDateTime, fmtRelative } from "@/utils/datetime";
 import {
   getMapProvider, setMapProvider, getRackNameAlign, setRackNameAlign,
@@ -127,7 +128,17 @@ const ldap = ref<LdapConfig>({
   bind_dn: null, password_set: false, search_base: null,
   user_filter: "(sAMAccountName={username})", attr_email: "mail",
   attr_display_name: "displayName", attr_member_of: "memberOf", admin_groups: [],
+  default_group_id: null,
 });
+const ldapGroups = ref<{ label: string; value: string }[]>([]);
+const ldapGroupOpts = computed(() => [{ label: t("settings.system.ldap_no_default_role"), value: "" }, ...ldapGroups.value]);
+const ldapDefaultGroup = computed<string>({
+  get: () => ldap.value.default_group_id ?? "",
+  set: (v) => { ldap.value.default_group_id = v || null; },
+});
+async function loadLdapGroups() {
+  try { const r = await listGroups(200, 0); ldapGroups.value = r.items.map((g) => ({ label: g.name, value: g.id })); } catch { /* ignore */ }
+}
 const ldapPw = ref("");           // 留空＝不變更；輸入＝更新
 const ldapSaving = ref(false);
 const ldapTesting = ref(false);
@@ -179,6 +190,7 @@ onMounted(() => {
   void loadGeoip();
   void loadDsv();
   void loadLdap();
+  void loadLdapGroups();
 });
 </script>
 
@@ -384,6 +396,11 @@ onMounted(() => {
           <n-input v-model:value="ldapGroupsText" type="textarea" :autosize="{ minRows: 2, maxRows: 5 }"
                    placeholder="CN=IPAM-Admins,OU=Groups,DC=example,DC=com" />
           <div class="hint" style="margin-top:4px">{{ t("settings.system.ldap_admin_groups_hint") }}</div>
+        </div>
+        <div class="fld">
+          <label>{{ t("settings.system.ldap_default_role") }}</label>
+          <n-select v-model:value="ldapDefaultGroup" :options="ldapGroupOpts" />
+          <div class="hint" style="margin-top:4px">{{ t("settings.system.ldap_default_role_hint") }}</div>
         </div>
         <n-space style="margin-top:6px">
           <n-button type="primary" :loading="ldapSaving" @click="saveLdap">
