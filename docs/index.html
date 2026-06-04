@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>jt-ipam — 可自架的整合型 IPAM</title>
+<title>jt-ipam — 資訊整合型 IPAM</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <meta name="description" content="jt-ipam：可自架、以整合為核心的 IP 位址管理系統，整合 DNS / LibreNMS / OPNsense / Wazuh / Proxmox VE / Ollama LLM，並可從 phpIPAM 匯入資料、無痛遷移。systemd 部署、強制 HTTPS、OWASP Top 10:2025。" />
 <style>
@@ -289,6 +289,7 @@
       <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span><span class="zh">全域搜尋</span><span class="en">Global search</span></h3><p><span class="zh">主機名稱 / IP / CIDR / MAC 一處搜尋，OUI 廠商比對每月自動更新。</span><span class="en">Search hostname / IP / CIDR / MAC in one place; monthly OUI vendor refresh.</span></p></div>
       <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 8v8M8 6h6a2 2 0 0 1 2 2v2M8 18h6a2 2 0 0 0 2-2v-2"/></svg></span><span class="zh">NAT / VLAN / VRF</span><span class="en">NAT / VLAN / VRF</span></h3><p><span class="zh">對齊 OPNsense 的 NAT 規則、電路頻寬、VLAN/VRF 與客戶/單位歸屬。</span><span class="en">OPNsense-aligned NAT, circuit bandwidth, VLAN/VRF and customer/tenant ownership.</span></p></div>
       <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="zh">IP 異動記錄</span><span class="en">IP change log</span></h3><p><span class="zh">主機名稱多來源優先序、逐欄人為編輯記錄、上線/離線判定、失聯 IP 篩選與批次回收。</span><span class="en">Multi-source hostname precedence, per-field edit log, liveness classification, stale-IP filtering &amp; bulk reclaim.</span></p></div>
+      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2"/><path d="M4 12h16"/></svg></span><span class="zh">內建掃描代理</span><span class="en">Built-in scan agent</span></h3><p><span class="zh">內建主機探活與 ARP / 鄰居掃描，可直接在主機上跑；也能把掃描代理部署到其他網段或站點，透過金鑰安全回報，集中發現新上線與失聯 IP，不必每段網路各裝一套工具。</span><span class="en">Built-in host liveness and ARP / neighbor scanning runs on the server itself — or deploy remote agents to other segments and sites that report back securely over a key, so new and stale IPs are discovered centrally without a separate tool per network.</span></p></div>
     </div>
   </div>
 </section>
@@ -569,7 +570,7 @@ sudo <span class="g">bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade</span></pre>
 <footer>
   <div class="wrap foot-in">
     <div>
-      <strong style="color:#e8f0fb">jt-ipam</strong> · <span class="zh">可自架的整合型 IPAM</span><span class="en">self-hosted, integration-focused IPAM</span><br>
+      <strong style="color:#e8f0fb">jt-ipam</strong> · <span class="zh">資訊整合型 IPAM</span><span class="en">self-hosted, integration-focused IPAM</span><br>
       <span style="opacity:.7">Apache-2.0 · © Jason Cheng</span>
     </div>
     <div>
@@ -579,6 +580,7 @@ sudo <span class="g">bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade</span></pre>
   </div>
 </footer>
 
+<div id="lightbox"><img id="lightbox-img" alt="" /></div>
 <script>
   (function(){
     var btn = document.getElementById('langBtn');
@@ -630,6 +632,5 @@ sudo <span class="g">bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade</span></pre>
     });
   })();
 </script>
-<div id="lightbox"><img id="lightbox-img" alt="" /></div>
 </body>
 </html>
