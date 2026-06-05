@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useAuthStore } from "@/stores/auth";
+const _authBtn = useAuthStore();
 import { computed, h, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
@@ -759,7 +761,7 @@ onMounted(() => {
         </template>
         <template #header-extra>
           <n-space align="center">
-            <n-button v-if="subnet" type="primary" size="small" @click="onAddAddress">
+            <n-button v-if="subnet" type="primary" size="small" :disabled="_authBtn.me?.can_edit === false" @click="onAddAddress">
               <template #icon><n-icon><PlusIcon /></n-icon></template>
               {{ t("subnet_detail.add_address") }}
             </n-button>

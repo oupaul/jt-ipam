@@ -191,21 +191,21 @@ watch(mode, () => { void refresh(); });
     <template v-else-if="mode === 'power'">
       <n-space align="center" style="margin-bottom:6px">
         <h3 style="margin:0">{{ t("physical.panels") }} ({{ panels.length }})</h3>
-        <n-button size="tiny" @click="openPower('panel')">
+        <n-button type="primary" size="small" @click="openPower('panel')">
           <template #icon><n-icon><PlusIcon /></n-icon></template>{{ t("common.add") }}
         </n-button>
       </n-space>
       <n-data-table :columns="panelCols" :data="panels" :loading="loading" :bordered="false" />
       <n-space align="center" style="margin:16px 0 6px">
         <h3 style="margin:0">{{ t("physical.feeds") }} ({{ feeds.length }})</h3>
-        <n-button size="tiny" :disabled="!panels.length" @click="openPower('feed')">
+        <n-button type="primary" size="small" :disabled="!panels.length" @click="openPower('feed')">
           <template #icon><n-icon><PlusIcon /></n-icon></template>{{ t("common.add") }}
         </n-button>
       </n-space>
       <n-data-table :columns="feedCols" :data="feeds" :loading="loading" :bordered="false" />
       <n-space align="center" style="margin:16px 0 6px">
         <h3 style="margin:0">{{ t("physical.outlets") }} ({{ outlets.length }})</h3>
-        <n-button size="tiny" @click="openPower('outlet')">
+        <n-button type="primary" size="small" @click="openPower('outlet')">
           <template #icon><n-icon><PlusIcon /></n-icon></template>{{ t("common.add") }}
         </n-button>
       </n-space>

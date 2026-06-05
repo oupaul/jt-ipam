@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useAuthStore } from "@/stores/auth";
+const _authBtn = useAuthStore();
 import { computed, h, onMounted, ref } from "vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
@@ -293,7 +295,7 @@ onMounted(() => {
         <template #icon><n-icon><RefreshIcon /></n-icon></template>
         {{ t("common.refresh") }}
       </n-button>
-      <n-button v-if="tab === 'proxmox'" type="primary" @click="openPxCreate">
+      <n-button v-if="tab === 'proxmox'" type="primary" :disabled="_authBtn.me?.can_edit === false" @click="openPxCreate">
         <template #icon><n-icon><PlusIcon /></n-icon></template>
         {{ t("virt.add_proxmox") }}
       </n-button>
@@ -304,7 +306,7 @@ onMounted(() => {
           <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><AdvancedIcon /></n-icon>{{ `${t('virt.clusters')} (${clusters.length})` }}</span>
         </template>
         <n-space style="margin-bottom: 10px">
-          <n-button type="primary" size="small" @click="openClusterCreate">
+          <n-button type="primary" size="small" :disabled="_authBtn.me?.can_edit === false" @click="openClusterCreate">
             <template #icon><n-icon><PlusIcon /></n-icon></template>
             {{ t("virt.add_cluster") }}
           </n-button>

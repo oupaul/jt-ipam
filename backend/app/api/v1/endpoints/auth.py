@@ -264,8 +264,9 @@ async def me(
     if user.is_admin:
         out.has_visibility = True
         out.has_global_read = True
+        out.can_edit = True
     else:
-        from app.services.permission import visible_ids
+        from app.services.permission import has_any_write, visible_ids
         has_vis = False
         has_global = False
         for ot in ("subnet", "device", "customer", "section", "rack", "location"):
@@ -277,6 +278,7 @@ async def me(
                 has_vis = True
         out.has_visibility = has_vis
         out.has_global_read = has_global
+        out.can_edit = await has_any_write(session, user=user)
     return out
 
 
