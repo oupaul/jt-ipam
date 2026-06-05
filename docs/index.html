@@ -497,7 +497,7 @@
     </div>
 
     <div class="screen-row">
-      <img class="shot" src="shots/aichat-multiget.png" loading="lazy" alt="AI 對話：在子網路頁直接多筆查詢 IP" />
+      <img class="shot" src="shots/aichat-ip-rack.png" loading="lazy" alt="AI 對話：機櫃 U 與 IP 問答" />
       <div class="screen-txt">
         <span class="num">09</span>
         <h3><span class="zh">AI 也懂你的機房</span><span class="en">AI that knows your infra</span></h3>
@@ -506,9 +506,18 @@
     </div>
 
     <div class="screen-row">
-      <img class="shot" src="shots/tools-cidr.png" loading="lazy" alt="工具 — 子網路 / CIDR 規劃" />
+      <img class="shot" src="shots/aichat-multiget.png" loading="lazy" alt="AI 對話：在子網路頁一次查多筆 IP" />
       <div class="screen-txt">
         <span class="num">10</span>
+        <h3><span class="zh">在頁面上直接問，多筆一次到位</span><span class="en">Ask in context, get many answers at once</span></h3>
+        <p><span class="zh">AI 對話會帶入你目前所在的頁面：在某個子網路頁打開助手，直接問「這幾個 IP 各是誰、接在哪台交換器」，它一次把多筆查清楚並逐筆引用實際資料，不必一個一個點開。需要改資料時還會先列出待確認動作，按下確認才執行。</span><span class="en">The assistant picks up the page you're on: open it on a subnet and ask “who owns these IPs and which switch are they on” — it answers several at once, citing real data per entry, instead of opening each one. For changes it lists a confirm-first action and only runs it after you approve.</span></p>
+      </div>
+    </div>
+
+    <div class="screen-row">
+      <img class="shot" src="shots/tools-cidr.png" loading="lazy" alt="工具 — 子網路 / CIDR 規劃" />
+      <div class="screen-txt">
+        <span class="num">11</span>
         <h3><span class="zh">實用工具</span><span class="en">Tools</span></h3>
         <p><span class="zh">內建一站式的網路規劃小工具：子網路切割 / CIDR 計算、IP 範圍展開、OUI 廠商查詢等，規劃網段或查 MAC 廠商時不必再開好幾個線上計算器、在分頁間切來切去。</span><span class="en">A one-stop set of network-planning utilities: subnet splitting / CIDR math, IP-range expansion, OUI vendor lookup and more — plan segments or look up a MAC vendor without juggling separate online calculators across tabs.</span></p>
       </div>
@@ -517,7 +526,7 @@
     <div class="screen-row">
       <img class="shot" src="shots/hostname-arp-sort.png" loading="lazy" alt="主機名稱 / ARP 來源優先順序" />
       <div class="screen-txt">
-        <span class="num">11</span>
+        <span class="num">12</span>
         <h3><span class="zh">主機名稱 / ARP 來源優先順序</span><span class="en">Source precedence</span></h3>
         <p><span class="zh">同一個 IP 或裝置，可能同時被掃描代理、DNS、LibreNMS、OPNsense、Proxmox VE、Wazuh、AdGuard 回報不同的值，到底以誰為準？<b>主機名稱、ARP / MAC、裝置名稱、裝置型號</b>各自都有一份來源優先順序，用拖拉排序自訂、可個別停用；系統據此自動解析出最可信的結果，不再每次同步互相蓋來蓋去。</span><span class="en">The same IP or device may be reported with different values by the scan agent, DNS, LibreNMS, OPNsense, Proxmox VE, Wazuh and AdGuard — which one wins? <b>Hostname, ARP / MAC, device name and device model</b> each have their own source-precedence list you reorder by drag (and can disable individually); jt-ipam resolves the most trustworthy value accordingly, so syncs stop overwriting one another.</span></p>
       </div>
