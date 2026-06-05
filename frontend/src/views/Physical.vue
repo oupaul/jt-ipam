@@ -131,14 +131,17 @@ const cableCols = computed<DataTableColumns<any>>(() =>
 const panelCols = computed<DataTableColumns<any>>(() => autoSort([
   { title: t("common.name"), key: "name" },
   { title: t("nav.locations"), key: "location_id", render: (r: any) => locations.value.find((l) => l.id === r.location_id)?.name ?? "—" },
+  powerActionsCol("panel"),
 ]));
 const feedCols = computed<DataTableColumns<any>>(() => autoSort([
   { title: t("common.name"), key: "name" },
   { title: t("cols.panel"), key: "panel_id", render: (r: any) => panels.value.find((p) => p.id === r.panel_id)?.name ?? r.panel_id },
+  powerActionsCol("feed"),
 ]));
 const outletCols = computed<DataTableColumns<any>>(() => autoSort([
   { title: t("common.name"), key: "label", render: (r: any) => r.label ?? r.name ?? "—" },
   { title: t("cols.feed"), key: "feed_id", render: (r: any) => feeds.value.find((f) => f.id === r.feed_id)?.name ?? "—" },
+  powerActionsCol("outlet"),
 ]));
 const vpnCols = computed<DataTableColumns<any>>(() => autoSort([
   { title: t("common.name"), key: "name" },
@@ -227,9 +230,23 @@ const powerForm = ref<{ name: string; location_id: string | null; panel_id: stri
 const panelOpts = computed(() => panels.value.map((p) => ({ label: p.name, value: p.id })));
 const feedOpts = computed(() => feeds.value.map((f) => ({ label: f.name, value: f.id })));
 const powerTitle = computed(() => powerKind.value === "panel" ? t("physical.panels") : powerKind.value === "feed" ? t("physical.feeds") : t("physical.outlets"));
+const powerEditId = ref<string | null>(null);
 async function openPower(kind: "panel" | "feed" | "outlet") {
   powerKind.value = kind;
+  powerEditId.value = null;
   powerForm.value = { name: "", location_id: null, panel_id: panels.value[0]?.id ?? null, feed_id: feeds.value[0]?.id ?? null };
+  if (kind === "panel") await ensureLocations();
+  showPower.value = true;
+}
+async function openPowerEdit(kind: "panel" | "feed" | "outlet", r: any) {
+  powerKind.value = kind;
+  powerEditId.value = r.id;
+  powerForm.value = {
+    name: r.name ?? r.label ?? "",
+    location_id: r.location_id ?? null,
+    panel_id: r.panel_id ?? null,
+    feed_id: r.feed_id ?? null,
+  };
   if (kind === "panel") await ensureLocations();
   showPower.value = true;
 }
@@ -238,12 +255,43 @@ async function savePower() {
   if (!f.name.trim()) { msg.warning(t("physical.need_name")); return; }
   if (powerKind.value === "feed" && !f.panel_id) { msg.warning(t("physical.need_panel")); return; }
   savingPower.value = true;
+  const id = powerEditId.value;
   try {
-    if (powerKind.value === "panel") await Physical.createPanel({ name: f.name.trim(), location_id: f.location_id });
-    else if (powerKind.value === "feed") await Physical.createFeed({ panel_id: f.panel_id!, name: f.name.trim() });
-    else await Physical.createOutlet({ feed_id: f.feed_id, label: f.name.trim() });
+    if (powerKind.value === "panel") {
+      if (id) await Physical.updatePanel(id, { name: f.name.trim(), location_id: f.location_id });
+      else await Physical.createPanel({ name: f.name.trim(), location_id: f.location_id });
+    } else if (powerKind.value === "feed") {
+      if (id) await Physical.updateFeed(id, { panel_id: f.panel_id!, name: f.name.trim() });
+      else await Physical.createFeed({ panel_id: f.panel_id!, name: f.name.trim() });
+    } else if (id) {
+      await Physical.updateOutlet(id, { feed_id: f.feed_id, label: f.name.trim() });
+    } else {
+      await Physical.createOutlet({ feed_id: f.feed_id, label: f.name.trim() });
+    }
     msg.success(t("common.ok")); showPower.value = false; await refresh();
   } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.network")); } finally { savingPower.value = false; }
+}
+async function delPower(kind: "panel" | "feed" | "outlet", r: any) {
+  try {
+    if (kind === "panel") await Physical.deletePanel(r.id);
+    else if (kind === "feed") await Physical.deleteFeed(r.id);
+    else await Physical.deleteOutlet(r.id);
+    msg.success(t("common.ok")); await refresh();
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.network")); }
+}
+function powerActionsCol(kind: "panel" | "feed" | "outlet") {
+  return {
+    title: t("common.actions"), key: "actions", width: 96,
+    render: (r: any) => h(NSpace, { size: 4 }, () => [
+      h(NButton, { size: "tiny", quaternary: true, disabled: !canEdit.value, onClick: () => openPowerEdit(kind, r) },
+        { icon: () => h(NIcon, null, () => h(EditIcon)) }),
+      h(NPopconfirm, { onPositiveClick: () => delPower(kind, r) }, {
+        trigger: () => h(NButton, { size: "tiny", quaternary: true, type: "error", disabled: !canEdit.value },
+          { icon: () => h(NIcon, null, () => h(DeleteIcon)) }),
+        default: () => t("common.confirm_delete"),
+      }),
+    ]),
+  };
 }
 
 onMounted(() => { void refresh(); if (mode.value === "cabling") void ensureDevices(); });
@@ -384,7 +432,13 @@ watch(mode, () => { void refresh(); if (mode.value === "cabling") void ensureDev
     </n-modal>
 
     <!-- 新增電力 -->
-    <n-modal v-model:show="showPower" preset="card" :title="`${t('common.add')} — ${powerTitle}`" style="max-width:460px">
+    <n-modal v-model:show="showPower" preset="card" style="max-width:460px">
+      <template #header>
+        <n-space align="center" :size="8" :wrap-item="false">
+          <n-icon :size="18"><component :is="powerEditId ? EditIcon : PlusIcon" /></n-icon>
+          {{ (powerEditId ? t('common.edit') : t('common.add')) }} — {{ powerTitle }}
+        </n-space>
+      </template>
       <n-form label-placement="top">
         <n-form-item :label="t('common.name')">
           <n-input v-model:value="powerForm.name" />

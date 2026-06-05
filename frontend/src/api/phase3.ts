@@ -414,6 +414,12 @@ export const Physical = {
     const { data } = await apiClient.post<PowerOutlet>("/api/v1/power-outlets", p);
     return data;
   },
+  async updatePanel(id: string, p: Record<string, any>): Promise<void> { await apiClient.patch(`/api/v1/power-panels/${id}`, p); },
+  async deletePanel(id: string): Promise<void> { await apiClient.delete(`/api/v1/power-panels/${id}`); },
+  async updateFeed(id: string, p: Record<string, any>): Promise<void> { await apiClient.patch(`/api/v1/power-feeds/${id}`, p); },
+  async deleteFeed(id: string): Promise<void> { await apiClient.delete(`/api/v1/power-feeds/${id}`); },
+  async updateOutlet(id: string, p: Record<string, any>): Promise<void> { await apiClient.patch(`/api/v1/power-outlets/${id}`, p); },
+  async deleteOutlet(id: string): Promise<void> { await apiClient.delete(`/api/v1/power-outlets/${id}`); },
   // 連線：建一條 cable + 兩端 termination（都接到 device_port）
   async connectPorts(aPortId: string, bPortId: string, opts: { type?: string; color?: string; label?: string; length_m?: number } = {}): Promise<void> {
     const { data: cable } = await apiClient.post<Cable>("/api/v1/cables", {

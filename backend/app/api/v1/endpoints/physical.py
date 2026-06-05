@@ -744,6 +744,68 @@ async def create_power_outlet(
     return PowerOutletRead.model_validate(obj)
 
 
+# ── 電力資源 編輯 / 刪除（admin）──
+async def _power_update(session, model, obj_id, payload, otype, user, request):  # type: ignore[no-untyped-def]
+    obj = await session.get(model, obj_id)
+    if obj is None:
+        raise HTTPException(404, detail="Not found")
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, k, v)
+    await session.flush()
+    await _audit(session, user=user, request=request, object_type=otype,
+                 object_id=str(obj_id), action="update",
+                 diff=payload.model_dump(mode="json", exclude_unset=True))
+    await session.commit()
+    await session.refresh(obj)
+    return obj
+
+
+async def _power_delete(session, model, obj_id, otype, user, request):  # type: ignore[no-untyped-def]
+    obj = await session.get(model, obj_id)
+    if obj is None:
+        raise HTTPException(404, detail="Not found")
+    await session.delete(obj)
+    await _audit(session, user=user, request=request, object_type=otype,
+                 object_id=str(obj_id), action="delete", diff=None)
+    await session.commit()
+
+
+@router.patch("/power-panels/{pid}", response_model=PowerPanelRead, dependencies=[Depends(require_admin)])
+async def update_power_panel(pid: uuid.UUID, payload: PowerPanelWrite, user: CurrentUser, request: Request,
+                             session: Annotated[AsyncSession, Depends(get_session)]) -> PowerPanelRead:
+    return PowerPanelRead.model_validate(await _power_update(session, PowerPanel, pid, payload, "power_panel", user, request))
+
+
+@router.delete("/power-panels/{pid}", status_code=204, dependencies=[Depends(require_admin)])
+async def delete_power_panel(pid: uuid.UUID, user: CurrentUser, request: Request,
+                             session: Annotated[AsyncSession, Depends(get_session)]) -> None:
+    await _power_delete(session, PowerPanel, pid, "power_panel", user, request)
+
+
+@router.patch("/power-feeds/{fid}", response_model=PowerFeedRead, dependencies=[Depends(require_admin)])
+async def update_power_feed(fid: uuid.UUID, payload: PowerFeedWrite, user: CurrentUser, request: Request,
+                            session: Annotated[AsyncSession, Depends(get_session)]) -> PowerFeedRead:
+    return PowerFeedRead.model_validate(await _power_update(session, PowerFeed, fid, payload, "power_feed", user, request))
+
+
+@router.delete("/power-feeds/{fid}", status_code=204, dependencies=[Depends(require_admin)])
+async def delete_power_feed(fid: uuid.UUID, user: CurrentUser, request: Request,
+                            session: Annotated[AsyncSession, Depends(get_session)]) -> None:
+    await _power_delete(session, PowerFeed, fid, "power_feed", user, request)
+
+
+@router.patch("/power-outlets/{oid}", response_model=PowerOutletRead, dependencies=[Depends(require_admin)])
+async def update_power_outlet(oid: uuid.UUID, payload: PowerOutletWrite, user: CurrentUser, request: Request,
+                              session: Annotated[AsyncSession, Depends(get_session)]) -> PowerOutletRead:
+    return PowerOutletRead.model_validate(await _power_update(session, PowerOutlet, oid, payload, "power_outlet", user, request))
+
+
+@router.delete("/power-outlets/{oid}", status_code=204, dependencies=[Depends(require_admin)])
+async def delete_power_outlet(oid: uuid.UUID, user: CurrentUser, request: Request,
+                              session: Annotated[AsyncSession, Depends(get_session)]) -> None:
+    await _power_delete(session, PowerOutlet, oid, "power_outlet", user, request)
+
+
 # ─────────────────── VPN ───────────────────
 
 

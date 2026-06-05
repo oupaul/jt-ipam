@@ -84,7 +84,7 @@ const form = ref<Record<string, any>>({});
 function openCreate(kind: Resource) {
   createKind.value = kind;
   switch (kind) {
-    case "tenant":        form.value = { name: "", tenant_group_id: null, description: "" }; break;
+    case "tenant":        form.value = { name: "", group_id: null, description: "" }; break;
     case "tenant_group":  form.value = { name: "", description: "" }; break;
     case "asn":           form.value = { number: 65000, rir: "", description: "", tenant_id: null }; break;
     case "provider":      form.value = { name: "", account_number: "", description: "" }; break;
@@ -155,8 +155,8 @@ const delBtn = (resource: string, id: string) => h(NSpace, { size: 2, wrapItem: 
 
 const tenantCols = computed<DataTableColumns<any>>(() => autoSort([
   { title: t("common.name"), key: "name", minWidth: 180, ellipsis: { tooltip: true } },
-  { title: t("advanced.tenant_group"), key: "tenant_group_id", width: 160, ellipsis: { tooltip: true },
-    render: (r) => tenantGroups.value.find((g) => g.id === r.tenant_group_id)?.name ?? "—" },
+  { title: t("advanced.tenant_group"), key: "group_id", width: 160, ellipsis: { tooltip: true },
+    render: (r) => tenantGroups.value.find((g) => g.id === r.group_id)?.name ?? "—" },
   { title: t("sections.description"), key: "description", minWidth: 200, ellipsis: { tooltip: true }, render: (r) => r.description ?? "—" },
   { title: t("common.actions"), key: "_", className: "col-actions", width: 56, render: (r) => delBtn("tenants", r.id) },
 ]));
@@ -330,7 +330,7 @@ onMounted(() => { void loadAll(); });
             <n-input v-model:value="form.name" placeholder="ACME Corp" />
           </n-form-item>
           <n-form-item :label="t('advanced.tenant_group')">
-            <n-select v-model:value="form.tenant_group_id" :options="tenantGroupOpts" clearable
+            <n-select v-model:value="form.group_id" :options="tenantGroupOpts" clearable
                       :placeholder="t('advanced.tenant_group_placeholder')" />
           </n-form-item>
           <n-form-item :label="t('sections.description')">
