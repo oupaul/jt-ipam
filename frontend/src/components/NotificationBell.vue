@@ -13,9 +13,12 @@ import {
 } from "naive-ui";
 import { listNotifications, markAllRead, markRead, type Notification } from "@/api/notifications";
 import { BellIcon } from "@/icons";
+import { fmtDateTime, fmtRelative } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
+import { useRouter } from "vue-router";
 
 const { t } = useI18n();
+const router = useRouter();
 
 const items = ref<Notification[]>([]);
 const unread = ref(0);
@@ -46,6 +49,10 @@ async function clickItem(n: Notification) {
 async function clearAll() {
   await markAllRead();
   await refresh();
+}
+
+function goAll() {
+  void router.push({ name: "notifications" });
 }
 
 onMounted(() => {
@@ -86,11 +93,14 @@ onUnmounted(() => {
           <n-space vertical :size="2">
             <strong>{{ n.title }}</strong>
             <n-text v-if="n.body" depth="3" style="font-size: 12px">{{ n.body }}</n-text>
-            <n-text depth="3" style="font-size: 11px">{{ n.created_at }}</n-text>
+            <n-text depth="3" style="font-size: 11px" :title="fmtDateTime(n.created_at)">{{ fmtRelative(n.created_at) }}</n-text>
           </n-space>
         </n-list-item>
       </n-list>
       <n-empty v-else size="small" :description="t('notifications.empty')" />
+      <div style="text-align: center; border-top: 1px solid var(--n-divider-color); padding-top: 6px">
+        <n-button text size="small" @click="goAll">{{ t("notifications.view_all") }}</n-button>
+      </div>
     </n-space>
   </n-popover>
 </template>

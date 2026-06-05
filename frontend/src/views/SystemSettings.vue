@@ -6,11 +6,14 @@
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
-  NCard, NSpace, NIcon, NSelect, NInput, NInputNumber, NSwitch, NButton, NTag, useMessage,
+  NCard, NSpace, NIcon, NSelect, NInput, NInputNumber, NSwitch, NCheckbox, NButton, NTag, useMessage,
 } from "naive-ui";
+const origin = window.location.origin;
 import { AdminIcon, SaveIcon, RefreshIcon, CopyIcon } from "@/icons";
 import { getGraylogDsv, putGraylogDsv, getLdap, putLdap, testLdap, testLdapAuth, type LdapConfig,
-  getAuditForward, putAuditForward, testAuditForward, type AuditForward } from "@/api/system";
+  getAuditForward, putAuditForward, testAuditForward, type AuditForward,
+  getOidcConfig, putOidcConfig, testOidc, type OidcConfig,
+  getSamlConfig, putSamlConfig, testSaml, type SamlConfig } from "@/api/system";
 import { listGroups } from "@/api/admin";
 import { fmtDateTime, fmtRelative } from "@/utils/datetime";
 import {
@@ -183,6 +186,80 @@ async function doTestLdap() {
   } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("settings.system.ldap_test_fail")); }
   finally { ldapTesting.value = false; }
 }
+
+// ── OIDC SSO ──
+const oidc = ref<OidcConfig>({
+  enabled: false, issuer: null, client_id: null, client_secret_set: false,
+  redirect_uri: null, scope: "openid profile email",
+  groups_claim: "groups", username_claim: "preferred_username",
+  admin_groups: [], default_group_id: null,
+});
+const oidcSecret = ref("");        // 留空＝不變更；輸入＝更新
+const oidcSaving = ref(false);
+const oidcTesting = ref(false);
+const oidcAdminGroupsText = computed<string>({
+  get: () => (oidc.value.admin_groups || []).join(", "),
+  set: (v) => { oidc.value.admin_groups = v.split(",").map((x) => x.trim()).filter(Boolean); },
+});
+async function loadOidc() { try { oidc.value = await getOidcConfig(); oidcSecret.value = ""; } catch { /* ignore */ } }
+async function saveOidc() {
+  oidcSaving.value = true;
+  try {
+    const { client_secret_set: _s, ...rest } = oidc.value;
+    const patch: any = { ...rest };
+    if (oidcSecret.value) patch.client_secret = oidcSecret.value;  // 只在輸入時更新
+    oidc.value = await putOidcConfig(patch);
+    oidcSecret.value = "";
+    msg.success(t("common.saved"));
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.network")); }
+  finally { oidcSaving.value = false; }
+}
+async function doTestOidc() {
+  oidcTesting.value = true;
+  try {
+    const r = await testOidc();   // 成功會回 discovery 資訊；失敗會丟錯
+    msg.success(`${t("settings.system.oidc_test_ok")} — ${r.issuer || ""}`);
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("settings.system.oidc_test_fail")); }
+  finally { oidcTesting.value = false; }
+}
+
+// ── SAML SSO ──
+const saml = ref<SamlConfig>({
+  enabled: false, idp_metadata_url: null, idp_metadata_xml: null,
+  sp_entity_id: null, sp_acs_url: null, sp_sls_url: null, sp_x509_cert: null,
+  sp_private_key_set: false, want_assertions_signed: true, want_assertions_encrypted: false,
+  want_name_id_encrypted: false, authn_requests_signed: false,
+  attr_username: "uid", attr_email: "email", attr_displayname: "displayName",
+  attr_groups: "groups", admin_groups: [], default_group_id: null,
+});
+const samlKey = ref("");           // SP 私鑰，留空＝不變更
+const samlSaving = ref(false);
+const samlTesting = ref(false);
+const samlAdminGroupsText = computed<string>({
+  get: () => (saml.value.admin_groups || []).join(", "),
+  set: (v) => { saml.value.admin_groups = v.split(",").map((x) => x.trim()).filter(Boolean); },
+});
+async function loadSaml() { try { saml.value = await getSamlConfig(); samlKey.value = ""; } catch { /* ignore */ } }
+async function saveSaml() {
+  samlSaving.value = true;
+  try {
+    const { sp_private_key_set: _s, ...rest } = saml.value;
+    const patch: any = { ...rest };
+    if (samlKey.value) patch.sp_private_key = samlKey.value;
+    saml.value = await putSamlConfig(patch);
+    samlKey.value = "";
+    msg.success(t("common.saved"));
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.network")); }
+  finally { samlSaving.value = false; }
+}
+async function doTestSaml() {
+  samlTesting.value = true;
+  try {
+    const r = await testSaml();
+    msg.success(`${t("settings.system.saml_test_ok")} — ${r.entity_id || ""}`);
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("settings.system.saml_test_fail")); }
+  finally { samlTesting.value = false; }
+}
 // 用真實帳密測試完整驗證流程
 const ldapTestUser = ref("");
 const ldapTestPw = ref("");
@@ -225,6 +302,8 @@ onMounted(() => {
   void loadDsv();
   void loadLdap();
   void loadLdapGroups();
+  void loadOidc();
+  void loadSaml();
   void loadAf();
 });
 </script>
@@ -457,6 +536,127 @@ onMounted(() => {
           <div class="hint" style="margin-top:4px">{{ t("settings.system.ldap_authtest_hint") }}</div>
         </div>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.ldap_hint") }}</div>
+      </section>
+
+      <!-- 單一登入 (OIDC) -->
+      <section class="ss-group">
+        <h3 class="ss-h">{{ t("settings.system.oidc_title") }}</h3>
+        <div class="fld">
+          <n-space align="center">
+            <n-switch v-model:value="oidc.enabled" />
+            <span style="font-size:13px">{{ t("settings.system.oidc_enable") }}</span>
+          </n-space>
+        </div>
+        <div class="fld">
+          <label>{{ t("settings.system.oidc_issuer") }}</label>
+          <n-input v-model:value="oidc.issuer" placeholder="https://idp.example.com/realms/main" />
+        </div>
+        <div class="fld" style="display:flex; gap:12px; flex-wrap:wrap">
+          <div style="flex:1; min-width:200px">
+            <label>{{ t("settings.system.oidc_client_id") }}</label>
+            <n-input v-model:value="oidc.client_id" />
+          </div>
+          <div style="flex:1; min-width:200px">
+            <label>{{ t("settings.system.oidc_client_secret") }}</label>
+            <n-input v-model:value="oidcSecret" type="password" show-password-on="click"
+                     :placeholder="oidc.client_secret_set ? t('settings.system.oidc_secret_keep') : ''" />
+          </div>
+        </div>
+        <div class="fld">
+          <label>{{ t("settings.system.oidc_redirect_uri") }}</label>
+          <n-input v-model:value="oidc.redirect_uri" placeholder="https://ipam.example.com/api/v1/auth/oidc/callback" />
+        </div>
+        <div class="fld" style="display:flex; gap:12px; flex-wrap:wrap">
+          <div style="flex:1; min-width:160px">
+            <label>{{ t("settings.system.oidc_scope") }}</label>
+            <n-input v-model:value="oidc.scope" />
+          </div>
+          <div style="flex:1; min-width:140px">
+            <label>{{ t("settings.system.oidc_username_claim") }}</label>
+            <n-input v-model:value="oidc.username_claim" />
+          </div>
+          <div style="flex:1; min-width:140px">
+            <label>{{ t("settings.system.oidc_groups_claim") }}</label>
+            <n-input v-model:value="oidc.groups_claim" />
+          </div>
+        </div>
+        <div class="fld">
+          <label>{{ t("settings.system.oidc_admin_groups") }}</label>
+          <n-input v-model:value="oidcAdminGroupsText" :placeholder="t('settings.system.oidc_admin_groups_ph')" />
+        </div>
+        <n-space style="margin-top:8px">
+          <n-button type="primary" :loading="oidcSaving" @click="saveOidc">
+            <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
+          </n-button>
+          <n-button :loading="oidcTesting" @click="doTestOidc">
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("settings.system.oidc_test") }}
+          </n-button>
+        </n-space>
+        <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.oidc_hint") }}</div>
+      </section>
+
+      <!-- 單一登入 (SAML 2.0) -->
+      <section class="ss-group">
+        <h3 class="ss-h">{{ t("settings.system.saml_title") }}</h3>
+        <div class="fld">
+          <n-space align="center">
+            <n-switch v-model:value="saml.enabled" />
+            <span style="font-size:13px">{{ t("settings.system.saml_enable") }}</span>
+          </n-space>
+        </div>
+        <div class="fld">
+          <label>{{ t("settings.system.saml_idp_metadata_url") }}</label>
+          <n-input v-model:value="saml.idp_metadata_url" placeholder="https://idp.example.com/metadata" />
+        </div>
+        <div class="fld">
+          <label>{{ t("settings.system.saml_idp_metadata_xml") }}</label>
+          <n-input v-model:value="saml.idp_metadata_xml" type="textarea" :rows="3"
+                   :placeholder="t('settings.system.saml_idp_metadata_xml_ph')" />
+        </div>
+        <div class="fld" style="display:flex; gap:12px; flex-wrap:wrap">
+          <div style="flex:1; min-width:200px">
+            <label>{{ t("settings.system.saml_sp_entity_id") }}</label>
+            <n-input v-model:value="saml.sp_entity_id" :placeholder="t('settings.system.saml_auto_ph')" />
+          </div>
+          <div style="flex:1; min-width:200px">
+            <label>{{ t("settings.system.saml_sp_acs_url") }}</label>
+            <n-input v-model:value="saml.sp_acs_url" :placeholder="t('settings.system.saml_auto_ph')" />
+          </div>
+        </div>
+        <div class="fld" style="display:flex; gap:12px; flex-wrap:wrap">
+          <div style="flex:1; min-width:160px">
+            <label>{{ t("settings.system.oidc_username_claim") }}</label>
+            <n-input v-model:value="saml.attr_username" />
+          </div>
+          <div style="flex:1; min-width:160px">
+            <label>{{ t("cols.email") }}</label>
+            <n-input v-model:value="saml.attr_email" />
+          </div>
+          <div style="flex:1; min-width:160px">
+            <label>{{ t("settings.system.oidc_groups_claim") }}</label>
+            <n-input v-model:value="saml.attr_groups" />
+          </div>
+        </div>
+        <div class="fld">
+          <label>{{ t("settings.system.oidc_admin_groups") }}</label>
+          <n-input v-model:value="samlAdminGroupsText" :placeholder="t('settings.system.oidc_admin_groups_ph')" />
+        </div>
+        <n-space align="center" style="margin-bottom:10px">
+          <n-checkbox v-model:checked="saml.want_assertions_signed">{{ t("settings.system.saml_want_signed") }}</n-checkbox>
+          <n-checkbox v-model:checked="saml.authn_requests_signed">{{ t("settings.system.saml_authn_signed") }}</n-checkbox>
+          <n-checkbox v-model:checked="saml.want_assertions_encrypted">{{ t("settings.system.saml_want_encrypted") }}</n-checkbox>
+        </n-space>
+        <n-space>
+          <n-button type="primary" :loading="samlSaving" @click="saveSaml">
+            <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
+          </n-button>
+          <n-button :loading="samlTesting" @click="doTestSaml">
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("settings.system.saml_test") }}
+          </n-button>
+          <a :href="`${origin}/api/v1/auth/saml/metadata`" target="_blank" rel="noopener"
+             style="font-size:13px; align-self:center">{{ t("settings.system.saml_sp_metadata") }}</a>
+        </n-space>
+        <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.saml_hint") }}</div>
       </section>
 
       <!-- 稽核轉送到 Graylog -->

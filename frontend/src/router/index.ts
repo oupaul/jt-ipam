@@ -28,6 +28,7 @@ const routes: RouteRecordRaw[] = [
       { path: "tasks", name: "tasks", component: () => import("@/views/Tasks.vue") },
       { path: "topology", name: "topology", component: () => import("@/views/Topology.vue") },
       { path: "settings", name: "settings", component: () => import("@/views/Settings.vue") },
+      { path: "notifications", name: "notifications", component: () => import("@/views/Notifications.vue") },
       // Admin
       { path: "audit", name: "audit", component: () => import("@/views/Audit.vue"), meta: { admin: true } },
       { path: "users", name: "users", component: () => import("@/views/Users.vue"), meta: { admin: true } },

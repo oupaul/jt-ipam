@@ -118,7 +118,7 @@ const { isPinned, toggle: togglePinned, ensureLoaded: ensurePinsLoaded } = usePi
 
 const { visibleKeys: ipVisibleKeys, setVisible: setIpVisible, reset: resetIpVisible } = useColumnPrefs(
   "subnet_detail_ips",
-  ["live", "ip", "hostname", "state", "dhcp", "mac", "mac_vendor", "owner", "switch_port", "description", "last_seen", "stale_days", "note"],
+  ["live", "ip", "hostname", "state", "dhcp", "mac", "mac_vendor", "owner", "switch_port", "device", "description", "last_seen", "stale_days", "note"],
   ["live", "ip", "hostname", "state", "dhcp", "mac", "mac_vendor", "switch_port", "description", "last_seen"],
 );
 const ipColumnPickerItems = [
@@ -131,12 +131,13 @@ const ipColumnPickerItems = [
   { key: "mac_vendor", label: t("cols.vendor") },
   { key: "owner", label: t("cols.owner") },
   { key: "switch_port", label: t("cols.switch_port") },
+  { key: "device", label: t("cols.device") },
   { key: "description", label: t("cols.description") },
   { key: "last_seen", label: t("cols.last_seen") },
   { key: "stale_days", label: t("stale.col_stale") },
   { key: "note", label: t("cols.note") },
 ];
-import { SubnetsIcon, RefreshIcon, UsageIcon, GridIcon, ListIcon, PinIcon, PlusIcon } from "@/icons";
+import { SubnetsIcon, RefreshIcon, UsageIcon, GridIcon, ListIcon, PinIcon, PlusIcon, MissingIcon, SearchIcon } from "@/icons";
 import { ArrowLeft as ArrowLeftIcon } from "@iconoir/vue";
 import { apiClient } from "@/api/client";
 import { listAddresses } from "@/api/addresses";
@@ -159,7 +160,8 @@ const addresses = ref<IPAddress[]>([]);
 const loading = ref(false);
 
 // ── DHCP 發放範圍：標示落在 pool 內的 IP（多段都涵蓋）──
-const dhcpRanges = ref<[number, number][]>([]);
+interface DhcpRangeInfo { a: number; b: number; server: string; source: string; start: string; end: string; }
+const dhcpRanges = ref<DhcpRangeInfo[]>([]);
 function ipv4ToInt(ip: string): number | null {
   const m = ip.trim().split(".");
   if (m.length !== 4) return null;
@@ -174,19 +176,29 @@ function ipv4ToInt(ip: string): number | null {
 async function loadDhcpRanges() {
   try {
     const rows = await listDhcpRanges();
-    const out: [number, number][] = [];
+    const out: DhcpRangeInfo[] = [];
     for (const r of rows) {
       const a = ipv4ToInt(r.start_ip), b = ipv4ToInt(r.end_ip);
-      if (a != null && b != null) out.push([Math.min(a, b), Math.max(a, b)]);
+      if (a != null && b != null) {
+        out.push({
+          a: Math.min(a, b), b: Math.max(a, b),
+          server: r.firewall_name || "—",
+          source: (r.source || "").toUpperCase(),
+          start: r.start_ip, end: r.end_ip,
+        });
+      }
     }
     dhcpRanges.value = out;
   } catch { dhcpRanges.value = []; }
 }
-function isDhcpIp(ip: string | null | undefined): boolean {
-  if (!ip) return false;
+function dhcpInfoForIp(ip: string | null | undefined): DhcpRangeInfo | null {
+  if (!ip) return null;
   const n = ipv4ToInt(String(ip).split("/")[0]);
-  if (n == null) return false;
-  return dhcpRanges.value.some(([a, b]) => n >= a && n <= b);
+  if (n == null) return null;
+  return dhcpRanges.value.find((r) => n >= r.a && n <= r.b) ?? null;
+}
+function isDhcpIp(ip: string | null | undefined): boolean {
+  return dhcpInfoForIp(ip) != null;
 }
 
 const section = ref<Section | null>(null);
@@ -356,7 +368,7 @@ function stateTag(state: string) {
 
 // 閒置區間列：IP 欄要橫跨「ip 之後的所有可見欄位」，文字才不會被切在一欄裡。
 const IP_COL_ORDER = ["live", "ip", "hostname", "state", "dhcp", "mac", "mac_vendor",
-  "owner", "switch_port", "description", "last_seen", "stale_days", "note"];
+  "owner", "switch_port", "device", "description", "last_seen", "stale_days", "note"];
 const gapSpan = computed(() => {
   const vis = IP_COL_ORDER.filter((k) => ipVisibleKeys.value.includes(k));
   const i = vis.indexOf("ip");
@@ -376,9 +388,22 @@ const allIpColumns = computed<DataTableColumns<IPAddress>>(() => autoSort([
   { title: t("common.status"), key: "state", width: 100,
     render: (r) => (r as any).__gap ? "" : stateTag(r.state) },
   { title: "DHCP", key: "dhcp", width: 80,
-    render: (r) => (r as any).__gap || !isDhcpIp(r.ip)
-      ? ""
-      : h(NTag, { size: "tiny", type: "warning", bordered: false }, { default: () => "DHCP" }) },
+    render: (r) => {
+      if ((r as any).__gap) return "";
+      const info = dhcpInfoForIp(r.ip);
+      if (!info) return "";
+      return h(NTooltip, { delay: 0 }, {
+        trigger: () => h(NTag, { size: "tiny", type: "warning", bordered: false }, { default: () => "DHCP" }),
+        default: () => h("div", { style: "max-width:260px;line-height:1.5" }, [
+          h("div", t("addresses.dhcp_pool_hint")),
+          h("div", { style: "margin-top:4px" }, [
+            h("strong", `${t("addresses.dhcp_server")}：`),
+            `${info.server}${info.source ? ` (${info.source})` : ""}`,
+          ]),
+          h("div", `${t("addresses.dhcp_range")}：${info.start} – ${info.end}`),
+        ]),
+      });
+    } },
   { title: t("addresses.mac"), key: "mac", width: 150, render: (r) => r.mac ?? "" },
   { title: t("cols.vendor"), key: "mac_vendor", width: 140,
     ellipsis: { tooltip: true }, render: (r) => r.mac_vendor ?? "—" },
@@ -392,6 +417,15 @@ const allIpColumns = computed<DataTableColumns<IPAddress>>(() => autoSort([
           default: () => r.switch_port_confident === false
             ? t("addresses.switch_port_uncertain")
             : r.switch_port }) },
+  { title: t("cols.device"), key: "device", width: 150, ellipsis: { tooltip: true },
+    render: (r) => {
+      if ((r as any).__gap || !r.device_id) return "—";
+      return h("a", {
+        href: "#",
+        style: "color: var(--primary-color, #18a058); text-decoration: none;",
+        onClick: (e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); router.push({ name: "device-detail", params: { id: r.device_id } }); },
+      }, r.device_name || (r.device_id.slice(0, 8) + "…"));
+    } },
   { title: t("common.description"), key: "description", width: 200,
     ellipsis: { tooltip: true }, render: (r) => r.description ?? "" },
   { title: t("addresses.last_seen"), key: "last_seen", width: 170, render: (r) => lastSeen(r) },
@@ -532,9 +566,19 @@ function _intToIp(n: number): string {
 function _gapRow(gs: number, ge: number): any {
   return { __gap: true, id: `gap:${gs}`, ip: _intToIp(gs), _gapEnd: _intToIp(ge), _gapCount: ge - gs + 1 };
 }
+const ipFilterText = ref("");
+function ipMatchesFilter(a: IPAddress): boolean {
+  const q = ipFilterText.value.trim().toLowerCase();
+  if (!q) return true;
+  return [a.ip, a.hostname, a.mac, a.mac_vendor, a.owner, a.description, a.note, a.device_name]
+    .some((v) => !!v && String(v).toLowerCase().includes(q));
+}
+
 const ipRows = computed<any[]>(() => {
   // 失聯篩選開啟時：只列符合的已登記 IP，不插入閒置區間列
-  if (staleFilterOn.value) return [...staleMatches.value];
+  if (staleFilterOn.value) return staleMatches.value.filter(ipMatchesFilter);
+  // 有搜尋字時：只列符合的已登記 IP，不插入閒置區間列
+  if (ipFilterText.value.trim()) return addresses.value.filter(ipMatchesFilter);
   const cidr = subnet.value?.cidr;
   const list = [...addresses.value];
   if (!cidr || cidr.includes(":")) return list;   // IPv6 暫不算閒置區間
@@ -762,12 +806,17 @@ onMounted(() => {
         </template>
         <template #header-extra>
           <n-space align="center">
+            <n-input v-model:value="ipFilterText" size="small" clearable
+                     :placeholder="t('common.filter')" style="width: 200px">
+              <template #prefix><n-icon><SearchIcon /></n-icon></template>
+            </n-input>
             <n-button v-if="subnet" type="primary" size="small" :disabled="_authBtn.me?.can_edit === false" @click="onAddAddress">
               <template #icon><n-icon><PlusIcon /></n-icon></template>
               {{ t("subnet_detail.add_address") }}
             </n-button>
             <n-button size="small" :type="staleFilterOn ? 'warning' : 'default'"
                       @click="staleFilterOn = !staleFilterOn">
+              <template #icon><n-icon><MissingIcon /></n-icon></template>
               {{ t("stale.filter_label") }}
             </n-button>
             <ColumnPicker :all="ipColumnPickerItems" :visible="ipVisibleKeys"

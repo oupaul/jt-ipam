@@ -20,7 +20,9 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import require_admin
+from pydantic import BaseModel, Field
+
+from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.config import get_settings
 from app.core.db import get_session
@@ -28,9 +30,185 @@ from app.core.security import create_access_token, decode_access_token
 from app.services import oidc as oidc_service
 from app.services import saml as saml_service
 from app.services.auth import issue_access_token, issue_refresh_token
-from app.services.system_config import get_oidc_config
+from app.services.system_config import (
+    get_oidc_config,
+    get_saml_config,
+    set_oidc_config,
+    set_saml_config,
+)
 
 router = APIRouter(prefix="/auth", tags=["sso"])
+
+
+# ─────────────────── OIDC 設定（webui 管理；admin only）───────────────────
+class OidcConfigOut(BaseModel):
+    enabled: bool
+    issuer: str | None
+    client_id: str | None
+    client_secret_set: bool   # 不回傳明文，只說有沒有設
+    redirect_uri: str | None
+    scope: str
+    groups_claim: str
+    username_claim: str
+    admin_groups: list[str]
+    default_group_id: str | None
+
+
+class OidcConfigIn(BaseModel):
+    enabled: bool = False
+    issuer: str | None = None
+    client_id: str | None = None
+    # 留空 = 不變更既有密鑰；明確傳空字串需用獨立旗標，這裡語意：None/不送=不動，有值=更新
+    client_secret: str | None = None
+    redirect_uri: str | None = None
+    scope: str = "openid profile email"
+    groups_claim: str = "groups"
+    username_claim: str = "preferred_username"
+    admin_groups: list[str] = Field(default_factory=list)
+    default_group_id: str | None = None
+
+
+@router.get("/oidc/config", response_model=OidcConfigOut,
+            dependencies=[Depends(require_admin)])
+async def get_oidc_config_endpoint(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> OidcConfigOut:
+    cfg = await get_oidc_config(session)
+    return OidcConfigOut(
+        enabled=cfg.enabled, issuer=cfg.issuer, client_id=cfg.client_id,
+        client_secret_set=bool(cfg.client_secret),
+        redirect_uri=cfg.redirect_uri, scope=cfg.scope,
+        groups_claim=cfg.groups_claim, username_claim=cfg.username_claim,
+        admin_groups=cfg.admin_groups, default_group_id=cfg.default_group_id,
+    )
+
+
+@router.put("/oidc/config", response_model=OidcConfigOut,
+            dependencies=[Depends(require_admin)])
+async def put_oidc_config_endpoint(
+    payload: OidcConfigIn, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> OidcConfigOut:
+    data: dict[str, Any] = {
+        "enabled": payload.enabled,
+        "issuer": payload.issuer,
+        "client_id": payload.client_id,
+        "redirect_uri": payload.redirect_uri,
+        "scope": payload.scope,
+        "groups_claim": payload.groups_claim,
+        "username_claim": payload.username_claim,
+        "admin_groups": payload.admin_groups,
+        "default_group_id": payload.default_group_id,
+    }
+    # 只有實際送了 client_secret(非 None) 才更新；空字串=清除
+    if payload.client_secret is not None:
+        data["client_secret"] = payload.client_secret
+    await set_oidc_config(session, data=data, updated_by_user_id=user.id)
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system_setting", object_id=None, action="update",
+        diff={"oidc": {k: v for k, v in data.items() if k != "client_secret"}},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    cfg = await get_oidc_config(session)
+    return OidcConfigOut(
+        enabled=cfg.enabled, issuer=cfg.issuer, client_id=cfg.client_id,
+        client_secret_set=bool(cfg.client_secret),
+        redirect_uri=cfg.redirect_uri, scope=cfg.scope,
+        groups_claim=cfg.groups_claim, username_claim=cfg.username_claim,
+        admin_groups=cfg.admin_groups, default_group_id=cfg.default_group_id,
+    )
+
+
+# ─────────────────── SAML 設定（webui 管理；admin only）───────────────────
+class SamlConfigOut(BaseModel):
+    enabled: bool
+    idp_metadata_url: str | None
+    idp_metadata_xml: str | None
+    sp_entity_id: str | None
+    sp_acs_url: str | None
+    sp_sls_url: str | None
+    sp_x509_cert: str | None
+    sp_private_key_set: bool
+    want_assertions_signed: bool
+    want_assertions_encrypted: bool
+    want_name_id_encrypted: bool
+    authn_requests_signed: bool
+    attr_username: str
+    attr_email: str
+    attr_displayname: str
+    attr_groups: str
+    admin_groups: list[str]
+    default_group_id: str | None
+
+
+class SamlConfigIn(BaseModel):
+    enabled: bool = False
+    idp_metadata_url: str | None = None
+    idp_metadata_xml: str | None = None
+    sp_entity_id: str | None = None
+    sp_acs_url: str | None = None
+    sp_sls_url: str | None = None
+    sp_x509_cert: str | None = None
+    sp_private_key: str | None = None   # None/不送=不變更；空字串=清除
+    want_assertions_signed: bool = True
+    want_assertions_encrypted: bool = False
+    want_name_id_encrypted: bool = False
+    authn_requests_signed: bool = False
+    attr_username: str = "uid"
+    attr_email: str = "email"
+    attr_displayname: str = "displayName"
+    attr_groups: str = "groups"
+    admin_groups: list[str] = Field(default_factory=list)
+    default_group_id: str | None = None
+
+
+def _saml_out(cfg: Any) -> SamlConfigOut:
+    return SamlConfigOut(
+        enabled=cfg.enabled, idp_metadata_url=cfg.idp_metadata_url,
+        idp_metadata_xml=cfg.idp_metadata_xml, sp_entity_id=cfg.sp_entity_id,
+        sp_acs_url=cfg.sp_acs_url, sp_sls_url=cfg.sp_sls_url, sp_x509_cert=cfg.sp_x509_cert,
+        sp_private_key_set=bool(cfg.sp_private_key),
+        want_assertions_signed=cfg.want_assertions_signed,
+        want_assertions_encrypted=cfg.want_assertions_encrypted,
+        want_name_id_encrypted=cfg.want_name_id_encrypted,
+        authn_requests_signed=cfg.authn_requests_signed,
+        attr_username=cfg.attr_username, attr_email=cfg.attr_email,
+        attr_displayname=cfg.attr_displayname, attr_groups=cfg.attr_groups,
+        admin_groups=cfg.admin_groups, default_group_id=cfg.default_group_id,
+    )
+
+
+@router.get("/saml/config", response_model=SamlConfigOut,
+            dependencies=[Depends(require_admin)])
+async def get_saml_config_endpoint(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SamlConfigOut:
+    return _saml_out(await get_saml_config(session))
+
+
+@router.put("/saml/config", response_model=SamlConfigOut,
+            dependencies=[Depends(require_admin)])
+async def put_saml_config_endpoint(
+    payload: SamlConfigIn, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SamlConfigOut:
+    data: dict[str, Any] = payload.model_dump(exclude={"sp_private_key"})
+    if payload.sp_private_key is not None:
+        data["sp_private_key"] = payload.sp_private_key
+    await set_saml_config(session, data=data, updated_by_user_id=user.id)
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system_setting", object_id=None, action="update",
+        diff={"saml": {k: v for k, v in data.items()
+                       if k not in ("sp_private_key", "idp_metadata_xml", "sp_x509_cert")}},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return _saml_out(await get_saml_config(session))
 
 
 def _state_token(state: str, nonce: str) -> str:
@@ -186,13 +364,15 @@ def _decode_saml_state(token: str) -> str:
 
 
 @router.get("/saml/metadata")
-async def saml_metadata() -> Response:
+async def saml_metadata(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Response:
     """SP metadata XML — 給 IdP 註冊用。"""
-    settings = get_settings()
-    if not settings.saml_enabled:
+    cfg = await get_saml_config(session)
+    if not cfg.enabled:
         raise HTTPException(503, detail="SAML is disabled")
     try:
-        xml = await saml_service.metadata_xml()
+        xml = await saml_service.metadata_xml(cfg)
     except saml_service.SAMLNotConfigured as exc:
         raise HTTPException(503, detail=str(exc)) from exc
     except saml_service.SAMLError as exc:
@@ -203,11 +383,13 @@ async def saml_metadata() -> Response:
 @router.get("/saml/login")
 async def saml_login(
     request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
     return_to: Annotated[str | None, Query(min_length=1, max_length=512)] = None,
 ) -> Any:
     """SP-initiated：建 AuthnRequest → 重導 IdP。"""
     settings = get_settings()
-    if not settings.saml_enabled:
+    cfg = await get_saml_config(session)
+    if not cfg.enabled:
         raise HTTPException(503, detail="SAML is disabled")
 
     # return_to 限本機路徑（A01）
@@ -216,7 +398,7 @@ async def saml_login(
         safe_return_to = return_to
 
     try:
-        url = await saml_service.build_auth_url(request, return_to=safe_return_to)
+        url = await saml_service.build_auth_url(request, cfg, return_to=safe_return_to)
     except saml_service.SAMLNotConfigured as exc:
         raise HTTPException(503, detail=str(exc)) from exc
     except saml_service.SAMLError as exc:
@@ -243,7 +425,8 @@ async def saml_acs(
 ) -> Any:
     """AssertionConsumerService — 收 IdP 回的 SAMLResponse。"""
     settings = get_settings()
-    if not settings.saml_enabled:
+    cfg = await get_saml_config(session)
+    if not cfg.enabled:
         raise HTTPException(503, detail="SAML is disabled")
 
     post_data = {"SAMLResponse": SAMLResponse}
@@ -251,13 +434,13 @@ async def saml_acs(
         post_data["RelayState"] = RelayState
 
     try:
-        claims = await saml_service.process_acs(request, post_data)
+        claims = await saml_service.process_acs(request, cfg, post_data)
     except saml_service.SAMLError as exc:
         raise HTTPException(401, detail=str(exc)) from exc
 
     try:
         user = await saml_service.upsert_user_from_saml(
-            session, claims,
+            session, claims, cfg,
             actor_ip=request.client.host if request.client else None,
         )
     except saml_service.SAMLError as exc:
@@ -301,17 +484,21 @@ async def saml_acs(
 
 
 @router.get("/saml/sls")
-async def saml_sls(request: Request) -> Any:
+async def saml_sls(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Any:
     """SP-initiated SLO；前端登出時導到這。"""
     settings = get_settings()
-    if not settings.saml_enabled:
+    cfg = await get_saml_config(session)
+    if not cfg.enabled:
         raise HTTPException(503, detail="SAML is disabled")
 
     name_id = request.query_params.get("name_id")
     session_index = request.query_params.get("session_index")
     try:
         url = await saml_service.build_logout_url(
-            request, name_id=name_id, session_index=session_index,
+            request, cfg, name_id=name_id, session_index=session_index,
         )
     except saml_service.SAMLNotConfigured as exc:
         raise HTTPException(503, detail=str(exc)) from exc
@@ -326,10 +513,13 @@ async def saml_sls(request: Request) -> Any:
 
 
 @router.get("/saml/test", dependencies=[Depends(require_admin)])
-async def saml_test() -> dict[str, Any]:
+async def saml_test(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
     """連線測試：確認可以解 IdP metadata。"""
     try:
-        idp = await saml_service._fetch_idp_metadata()
+        cfg = await get_saml_config(session)
+        idp = await saml_service._fetch_idp_metadata(cfg)
     except saml_service.SAMLNotConfigured as exc:
         raise HTTPException(503, detail=str(exc)) from exc
     except saml_service.SAMLError as exc:

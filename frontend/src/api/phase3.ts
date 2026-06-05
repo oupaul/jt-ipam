@@ -296,6 +296,8 @@ export const Advanced = {
   asns: () => getList<ASN>("/api/v1/asns"),
   providers: () => getList<Provider>("/api/v1/providers"),
   circuitTypes: () => getList<CircuitType>("/api/v1/circuit-types"),
+  createCircuitType: (name: string) =>
+    apiClient.post<CircuitType>("/api/v1/circuit-types", { name }).then((r) => r.data),
   circuits: () => getList<Circuit>("/api/v1/circuits"),
   contactGroups: () => getList<ContactGroup>("/api/v1/contact-groups"),
   contactRoles: () => getList<ContactRole>("/api/v1/contact-roles"),
@@ -303,6 +305,38 @@ export const Advanced = {
   ssids: () => getList<WirelessSSID>("/api/v1/wireless/ssids"),
   links: () => getList<WirelessLink>("/api/v1/wireless/links"),
 };
+
+// ─────────────────── 裝置電源埠（PSU → 插座） ───────────────────
+export interface DevicePowerPort {
+  id: string;
+  device_id: string;
+  name: string;
+  outlet_id: string | null;
+  outlet_label: string | null;
+  max_watts: number | null;
+  description: string | null;
+}
+export async function listDevicePowerPorts(deviceId: string): Promise<DevicePowerPort[]> {
+  const { data } = await apiClient.get<DevicePowerPort[]>("/api/v1/device-power-ports", {
+    params: { device_id: deviceId },
+  });
+  return data;
+}
+export async function createDevicePowerPort(p: {
+  device_id: string; name: string; outlet_id?: string | null; max_watts?: number | null; description?: string | null;
+}): Promise<DevicePowerPort> {
+  const { data } = await apiClient.post<DevicePowerPort>("/api/v1/device-power-ports", p);
+  return data;
+}
+export async function updateDevicePowerPort(id: string, p: {
+  name?: string; outlet_id?: string | null; max_watts?: number | null; description?: string | null;
+}): Promise<DevicePowerPort> {
+  const { data } = await apiClient.patch<DevicePowerPort>(`/api/v1/device-power-ports/${id}`, p);
+  return data;
+}
+export async function deleteDevicePowerPort(id: string): Promise<void> {
+  await apiClient.delete(`/api/v1/device-power-ports/${id}`);
+}
 
 // ─────────────────── Virt ───────────────────
 

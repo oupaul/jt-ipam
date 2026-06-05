@@ -3,7 +3,7 @@ import { onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { NCard, NSpace, NSelect, NButton, NIcon, NInputNumber, useMessage } from "naive-ui";
 import { apiClient } from "@/api/client";
-import { RefreshIcon, AdminIcon } from "@/icons";
+import { RefreshIcon, AdminIcon, ExportIcon } from "@/icons";
 
 const { t } = useI18n();
 const msg = useMessage();
@@ -67,7 +67,10 @@ onMounted(async () => { await loadServices(); await load(); });
         <template #icon><n-icon><RefreshIcon /></n-icon></template>
         {{ t("common.refresh") }}
       </n-button>
-      <n-button :disabled="!text" @click="downloadLog">{{ t("system_logs.download") }}</n-button>
+      <n-button :disabled="!text" @click="downloadLog">
+        <template #icon><n-icon><ExportIcon /></n-icon></template>
+        {{ t("system_logs.download") }}
+      </n-button>
     </n-space>
     <pre class="logbox">{{ text }}</pre>
   </n-card>

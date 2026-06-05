@@ -1,5 +1,7 @@
 # jt-ipam 安裝與運維 SOP
 
+> English: [INSTALL.en.md](INSTALL.en.md)
+
 針對 **Proxmox LXC、裸機、虛擬機**（Ubuntu 22.04+/Debian 12+）。本專案
 **不使用 Docker**；以 systemd + apt 直裝。
 
@@ -129,6 +131,26 @@ sudo apt install -y certbot python3-certbot-nginx
 # certbot 會自動改 ssl_certificate 指到 /etc/letsencrypt/live/...
 sudo certbot --nginx -d ipam.example.com
 ```
+
+### 2.6 換成正式 TLS 憑證（uvicorn direct / self-signed 模式）
+
+`BACKEND_TLS_MODE=direct`(或 `self-signed`)時是 **uvicorn 自己掛 TLS**，沒有 nginx。憑證路徑跟 nginx 模式相同，差別只在換完要**重啟 backend**(不是 reload nginx)：
+
+```bash
+# cp 正式(或自管)憑證 + key 到固定位置
+sudo install -m 0644 -o root -g jtipam /path/to/fullchain.pem /etc/jt-ipam/tls/server.crt
+sudo install -m 0640 -o root -g jtipam /path/to/your-key.pem  /etc/jt-ipam/tls/server.key
+
+# 重啟服務套用（uvicorn 啟動時讀 --ssl-certfile/--ssl-keyfile）
+sudo systemctl restart jt-ipam-backend
+
+# 確認新憑證生效（direct 模式 backend 直接聽 443）
+openssl s_client -connect ipam.example.com:443 -servername ipam.example.com </dev/null 2>/dev/null \
+    | openssl x509 -noout -issuer -subject -dates
+```
+
+> 想自己重新產自簽憑證：`sudo bash /opt/jt-ipam/scripts/generate-self-signed-cert.sh` 後 `systemctl restart jt-ipam-backend`。
+> 從 direct 改走 nginx 反代：把 `/etc/jt-ipam/backend.env` 的 `BACKEND_TLS_MODE` 改成 `nginx`、裝好 nginx site，再重啟 backend + reload nginx。
 
 ---
 

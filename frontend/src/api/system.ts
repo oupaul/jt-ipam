@@ -56,6 +56,79 @@ export async function testAuditForward(p: AuditForward): Promise<{ ok: boolean; 
   return data;
 }
 
+// ── OIDC SSO 設定（webui 管理）──
+export interface OidcConfig {
+  enabled: boolean;
+  issuer: string | null;
+  client_id: string | null;
+  client_secret_set: boolean;
+  redirect_uri: string | null;
+  scope: string;
+  groups_claim: string;
+  username_claim: string;
+  admin_groups: string[];
+  default_group_id: string | null;
+}
+export interface OidcConfigPatch {
+  enabled: boolean;
+  issuer: string | null;
+  client_id: string | null;
+  client_secret?: string | null;  // 留空(undefined)=不變更；空字串=清除
+  redirect_uri: string | null;
+  scope: string;
+  groups_claim: string;
+  username_claim: string;
+  admin_groups: string[];
+  default_group_id: string | null;
+}
+export async function getOidcConfig(): Promise<OidcConfig> {
+  const { data } = await apiClient.get<OidcConfig>("/api/v1/auth/oidc/config");
+  return data;
+}
+export async function putOidcConfig(p: OidcConfigPatch): Promise<OidcConfig> {
+  const { data } = await apiClient.put<OidcConfig>("/api/v1/auth/oidc/config", p);
+  return data;
+}
+export async function testOidc(): Promise<{ ok: boolean; issuer?: string; authorization_endpoint?: string; error?: string }> {
+  const { data } = await apiClient.get("/api/v1/auth/oidc/test");
+  return data;
+}
+
+// ── SAML SSO 設定（webui 管理）──
+export interface SamlConfig {
+  enabled: boolean;
+  idp_metadata_url: string | null;
+  idp_metadata_xml: string | null;
+  sp_entity_id: string | null;
+  sp_acs_url: string | null;
+  sp_sls_url: string | null;
+  sp_x509_cert: string | null;
+  sp_private_key_set: boolean;
+  want_assertions_signed: boolean;
+  want_assertions_encrypted: boolean;
+  want_name_id_encrypted: boolean;
+  authn_requests_signed: boolean;
+  attr_username: string;
+  attr_email: string;
+  attr_displayname: string;
+  attr_groups: string;
+  admin_groups: string[];
+  default_group_id: string | null;
+}
+export type SamlConfigPatch = Omit<SamlConfig, "sp_private_key_set"> & { sp_private_key?: string | null };
+export async function getSamlConfig(): Promise<SamlConfig> {
+  const { data } = await apiClient.get<SamlConfig>("/api/v1/auth/saml/config");
+  return data;
+}
+export async function putSamlConfig(p: SamlConfigPatch): Promise<SamlConfig> {
+  const { data } = await apiClient.put<SamlConfig>("/api/v1/auth/saml/config", p);
+  return data;
+}
+export async function testSaml(): Promise<{ entity_id?: string; sso_url?: string; error?: string }> {
+  const { data } = await apiClient.get("/api/v1/auth/saml/test");
+  return data;
+}
+
 export interface LLMConfig {
   enabled: boolean;
   url: string;

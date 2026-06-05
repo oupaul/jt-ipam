@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Annotated, Any
@@ -38,6 +39,41 @@ router = APIRouter(tags=["advanced"], dependencies=[Depends(require_global_read)
 
 
 # ─────────────────── 共用 helper ───────────────────
+
+
+def _slugify(name: str) -> str:
+    """由顯示名稱產生 slug：小寫、非英數轉 -、去頭尾 -；空字串退回 'tenant'。"""
+    s = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return (s[:64] or "tenant")
+
+
+async def _patch_resource(
+    session: AsyncSession,
+    *,
+    model: type,
+    obj_id: uuid.UUID,
+    payload: Any,
+    object_type: str,
+    user: CurrentUser,
+    request: Request,
+):
+    """進階資源通用 PATCH：套用有送來的欄位、寫稽核、commit、回 ORM 物件。"""
+    obj = await session.get(model, obj_id)
+    if obj is None:
+        raise HTTPException(404, detail="Not found")
+    data = payload.model_dump(exclude_unset=True)
+    for key, value in data.items():
+        setattr(obj, key, value)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        raise HTTPException(409, detail="Conflict") from exc
+    await _audit(session, user=user, request=request, object_type=object_type,
+                 object_id=str(obj.id), action="update",
+                 diff=payload.model_dump(mode="json", exclude_unset=True))
+    await session.commit()
+    await session.refresh(obj)
+    return obj
 
 
 async def _audit(
@@ -117,7 +153,8 @@ class TenantRead(StrictModel):
 
 class TenantWrite(StrictModel):
     name: Annotated[str, Field(min_length=1, max_length=128)]
-    slug: Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")]
+    # slug 可不填，後端會由 name 自動產生（小寫、非英數轉 -）
+    slug: Annotated[str | None, Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")] = None
     group_id: uuid.UUID | None = None
     description: Annotated[str | None, Field(max_length=1024)] = None
 
@@ -197,7 +234,10 @@ async def create_tenant(
     payload: TenantWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> TenantRead:
-    obj = Tenant(**payload.model_dump())
+    data = payload.model_dump()
+    if not data.get("slug"):
+        data["slug"] = _slugify(data["name"])
+    obj = Tenant(**data)
     session.add(obj)
     try:
         await session.flush()
@@ -515,6 +555,31 @@ async def list_circuit_types(
     )
 
 
+class CircuitTypeWrite(StrictModel):
+    name: Annotated[str, Field(min_length=1, max_length=64)]
+    description: Annotated[str | None, Field(max_length=1024)] = None
+
+
+@router.post("/circuit-types", response_model=CircuitTypeRead, status_code=201,
+             dependencies=[Depends(require_admin)])
+async def create_circuit_type(
+    payload: CircuitTypeWrite, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CircuitTypeRead:
+    obj = CircuitType(**payload.model_dump())
+    session.add(obj)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        raise HTTPException(409, detail="Conflict") from exc
+    await _audit(session, user=user, request=request, object_type="circuit_type",
+                 object_id=str(obj.id), action="create",
+                 diff=payload.model_dump(mode="json"))
+    await session.commit()
+    await session.refresh(obj)
+    return CircuitTypeRead.model_validate(obj)
+
+
 @router.get("/contact-groups", response_model=Paginated[ContactGroupRead])
 async def list_contact_groups(
     _user: CurrentUser,
@@ -720,4 +785,108 @@ async def create_wlink(
                  diff=payload.model_dump(mode="json"))
     await session.commit()
     await session.refresh(obj)
+    return WirelessLinkRead.model_validate(obj)
+
+
+# ════════════════════════════════════════════════════════════
+# PATCH（編輯）— 各進階資源；admin only。送來的欄位才更新。
+# ════════════════════════════════════════════════════════════
+
+
+@router.patch("/tenant-groups/{tg_id}", response_model=TenantGroupRead,
+              dependencies=[Depends(require_admin)])
+async def update_tenant_group(
+    tg_id: uuid.UUID, payload: TenantGroupWrite, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> TenantGroupRead:
+    obj = await _patch_resource(session, model=TenantGroup, obj_id=tg_id,
+                                payload=payload, object_type="tenant_group", user=user, request=request)
+    return TenantGroupRead.model_validate(obj)
+
+
+@router.patch("/tenants/{t_id}", response_model=TenantRead,
+              dependencies=[Depends(require_admin)])
+async def update_tenant(
+    t_id: uuid.UUID, payload: TenantWrite, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> TenantRead:
+    obj = await _patch_resource(session, model=Tenant, obj_id=t_id,
+                                payload=payload, object_type="tenant", user=user, request=request)
+    return TenantRead.model_validate(obj)
+
+
+@router.patch("/contacts/{c_id}", response_model=ContactRead,
+              dependencies=[Depends(require_admin)])
+async def update_contact(
+    c_id: uuid.UUID, payload: ContactWrite, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ContactRead:
+    obj = await _patch_resource(session, model=Contact, obj_id=c_id,
+                                payload=payload, object_type="contact", user=user, request=request)
+    return ContactRead.model_validate(obj)
+
+
+@router.patch("/asns/{a_id}", response_model=ASNRead,
+              dependencies=[Depends(require_admin)])
+async def update_asn(
+    a_id: uuid.UUID, payload: ASNWrite, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ASNRead:
+    obj = await _patch_resource(session, model=ASN, obj_id=a_id,
+                                payload=payload, object_type="asn", user=user, request=request)
+    return ASNRead.model_validate(obj)
+
+
+@router.patch("/providers/{p_id}", response_model=ProviderRead,
+              dependencies=[Depends(require_admin)])
+async def update_provider(
+    p_id: uuid.UUID, payload: ProviderWrite, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ProviderRead:
+    obj = await _patch_resource(session, model=Provider, obj_id=p_id,
+                                payload=payload, object_type="provider", user=user, request=request)
+    return ProviderRead.model_validate(obj)
+
+
+@router.patch("/circuits/{c_id}", response_model=CircuitRead,
+              dependencies=[Depends(require_admin)])
+async def update_circuit(
+    c_id: uuid.UUID, payload: CircuitWrite, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CircuitRead:
+    obj = await _patch_resource(session, model=Circuit, obj_id=c_id,
+                                payload=payload, object_type="circuit", user=user, request=request)
+    return CircuitRead.model_validate(obj)
+
+
+@router.patch("/circuit-types/{ct_id}", response_model=CircuitTypeRead,
+              dependencies=[Depends(require_admin)])
+async def update_circuit_type(
+    ct_id: uuid.UUID, payload: CircuitTypeWrite, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CircuitTypeRead:
+    obj = await _patch_resource(session, model=CircuitType, obj_id=ct_id,
+                                payload=payload, object_type="circuit_type", user=user, request=request)
+    return CircuitTypeRead.model_validate(obj)
+
+
+@router.patch("/wireless/ssids/{s_id}", response_model=WirelessSSIDRead,
+              dependencies=[Depends(require_admin)])
+async def update_ssid(
+    s_id: uuid.UUID, payload: WirelessSSIDWrite, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> WirelessSSIDRead:
+    obj = await _patch_resource(session, model=WirelessSSID, obj_id=s_id,
+                                payload=payload, object_type="wireless_ssid", user=user, request=request)
+    return WirelessSSIDRead.model_validate(obj)
+
+
+@router.patch("/wireless/links/{l_id}", response_model=WirelessLinkRead,
+              dependencies=[Depends(require_admin)])
+async def update_wlink(
+    l_id: uuid.UUID, payload: WirelessLinkWrite, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> WirelessLinkRead:
+    obj = await _patch_resource(session, model=WirelessLink, obj_id=l_id,
+                                payload=payload, object_type="wireless_link", user=user, request=request)
     return WirelessLinkRead.model_validate(obj)
