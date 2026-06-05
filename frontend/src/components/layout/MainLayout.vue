@@ -213,6 +213,12 @@ const menuOptions = computed<MenuOption[]>(() => {
     const allowed = new Set(["dashboard", "tools"]);
     return base.filter((o) => allowed.has(o.key as string));
   }
+  // 非管理員且無「全域讀取」（只被指派特定物件）→ 隱藏全域基礎設施選單，
+  // 後端對這些端點也會 403（VLAN/VRF/NAT/防火牆/DNS/虛擬化/站對站 VPN…）。
+  if (!me.value?.is_admin && me.value?.has_global_read === false) {
+    const hide = new Set(["vlans", "vrfs", "nat", "phase3"]);
+    return base.filter((o) => !hide.has(o.key as string));
+  }
   return base;
 });
 

@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, forbid_zero_visibility, require_admin
+from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.device import Device
@@ -28,7 +28,7 @@ from app.models.physical import (
 )
 from app.schemas.base import Paginated, StrictModel
 
-router = APIRouter(tags=["physical"], dependencies=[Depends(forbid_zero_visibility)])
+router = APIRouter(tags=["physical"], dependencies=[Depends(require_global_read)])
 
 
 async def _audit(

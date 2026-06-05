@@ -618,6 +618,20 @@ async def search(
             best[key] = h
 
     final = sorted(best.values(), key=lambda h: h.score, reverse=True)
+
+    # RBAC：全域基礎設施類結果（VLAN / NAT / 防火牆 / 站對站 VPN / DNS / IP 申請）
+    # 只有管理員或具萬用讀取權限者可見；只被指派特定物件的帳號不得從搜尋窺見。
+    from app.services.permission import visible_ids as _vis
+    is_global = user.is_admin
+    if not is_global:
+        for ot in ("subnet", "device", "customer", "section", "rack", "location"):
+            if await _vis(session, user=user, object_type=ot) is None:
+                is_global = True
+                break
+    if not is_global:
+        _global_types = {"vlan", "nat", "firewall", "vpn", "dns_record", "ip_request"}
+        final = [h for h in final if h.type not in _global_types]
+
     return {
         "detected": kind,  # type: ignore[dict-item]
         "results": [h.as_dict() for h in final],

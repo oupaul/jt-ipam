@@ -14,6 +14,7 @@ export interface UserMe {
   is_active: boolean;
   is_admin: boolean;
   has_visibility?: boolean;
+  has_global_read?: boolean;
   last_login_at: string | null;
   created_at: string;
 }

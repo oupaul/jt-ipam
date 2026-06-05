@@ -259,18 +259,24 @@ async def me(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> UserMe:
     out = UserMe.model_validate(user)
-    # 計算非管理員的可見性：任一物件類型有可見範圍即 True；零權限 → False
+    # has_visibility：任一類型有可見範圍即 True（零權限→False）
+    # has_global_read：管理員或任一類型有「萬用」授權（visible_ids 回 None）→ True
     if user.is_admin:
         out.has_visibility = True
+        out.has_global_read = True
     else:
         from app.services.permission import visible_ids
-        has = False
+        has_vis = False
+        has_global = False
         for ot in ("subnet", "device", "customer", "section", "rack", "location"):
             v = await visible_ids(session, user=user, object_type=ot)
-            if v is None or v:
-                has = True
-                break
-        out.has_visibility = has
+            if v is None:
+                has_global = True
+                has_vis = True
+            elif v:
+                has_vis = True
+        out.has_visibility = has_vis
+        out.has_global_read = has_global
     return out
 
 
