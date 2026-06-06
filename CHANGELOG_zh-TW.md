@@ -4,6 +4,12 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.102] — 2026-06-07
+
+### 變更
+- 異常偵測（MAC 漂移）：「出現位置」的交換器改顯示友善名（LibreNMS sysname / hostname），
+  不再顯示原始裝置 UUID；裝置 / 埠 / 最後出現三欄改為對齊網格呈現。
+
 ## [0.4.101] — 2026-06-06
 
 ### 變更

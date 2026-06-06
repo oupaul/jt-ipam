@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.102] — 2026-06-07
+
+### Changed
+- Anomaly detection (MAC roaming): the "seen at" location now resolves the switch
+  to its friendly name (LibreNMS sysname / hostname) instead of a raw device UUID,
+  and the device / port / last-seen fields are rendered as an aligned grid.
+
 ## [0.4.101] — 2026-06-06
 
 ### Changed
