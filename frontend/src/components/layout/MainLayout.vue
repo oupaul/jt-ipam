@@ -88,8 +88,10 @@ const inSubnetContext = computed(() =>
   route.name === "subnets" || route.name === "subnet-detail",
 );
 
-// 在同一個單位群組內，依 master_subnet_id 把子網段排在父網段之後並標記深度（DFS）
-function orderSubnetsHier(items: Subnet[]): { s: Subnet; depth: number }[] {
+// 在同一個單位群組內，依 master_subnet_id 建出「真正的巢狀選單」：
+// 有下層的子網段 → n-submenu（可展開、由 n-menu 畫出虛線連接），點標題本身會進入該網段；
+// 無下層的 → 一般 leaf。
+function buildSubnetMenu(items: Subnet[]): MenuOption[] {
   const ids = new Set(items.map((x) => x.id));
   const childrenBy = new Map<string, Subnet[]>();
   const roots: Subnet[] = [];
@@ -102,13 +104,26 @@ function orderSubnetsHier(items: Subnet[]): { s: Subnet; depth: number }[] {
     }
   }
   const cmp = (a: Subnet, b: Subnet) => a.cidr.localeCompare(b.cidr, undefined, { numeric: true });
-  const out: { s: Subnet; depth: number }[] = [];
-  const walk = (s: Subnet, depth: number) => {
-    out.push({ s, depth });
-    (childrenBy.get(s.id) ?? []).slice().sort(cmp).forEach((c) => walk(c, depth + 1));
+  const mk = (s: Subnet): MenuOption => {
+    const text = s.description ? `${s.cidr} (${s.description})` : s.cidr;
+    const kids = (childrenBy.get(s.id) ?? []).slice().sort(cmp);
+    if (kids.length) {
+      // 有下層 → 可展開節點；標題做成可點連結（點文字進入該網段、點箭頭展開）
+      return {
+        key: `subnet:${s.id}`,
+        label: () => h("a", {
+          class: "subnet-node-link",
+          onClick: (e: MouseEvent) => {
+            e.stopPropagation();
+            router.push({ name: "subnet-detail", params: { id: s.id } }).catch(() => {});
+          },
+        }, text),
+        children: kids.map(mk),
+      };
+    }
+    return { key: `subnet:${s.id}`, label: text };
   };
-  roots.slice().sort(cmp).forEach((r) => walk(r, 0));
-  return out;
+  return roots.slice().sort(cmp).map(mk);
 }
 
 const subnetTreeChildren = computed<MenuOption[] | undefined>(() => {
@@ -132,16 +147,8 @@ const subnetTreeChildren = computed<MenuOption[] | undefined>(() => {
       key: `subnetgrp:${cid}`,
       label: g.label,
       icon: renderIcon(CustomersIcon),
-      // 依 master_subnet_id 巢狀排序：子網段緊接在父網段之後並縮排（仍是可點的 leaf，點了會進入該網段）
-      children: orderSubnetsHier(g.items).map(({ s, depth }) => {
-        const text = s.description ? `${s.cidr} (${s.description})` : s.cidr;
-        return {
-          key: `subnet:${s.id}`,
-          label: depth > 0
-            ? () => h("span", { style: `padding-left:${depth * 12}px; opacity:.9` }, `↳ ${text}`)
-            : text,
-        };
-      }),
+      // 依 master_subnet_id 建巢狀選單：有下層者成為可展開節點（n-menu 畫虛線連接）
+      children: buildSubnetMenu(g.items),
     }));
   return [
     { key: "subnets-all", label: () => t("nav.subnet_all"), icon: renderIcon(SubnetsIcon) },
@@ -410,7 +417,7 @@ function startDrag(e: MouseEvent) {
           <circle cx="24" cy="24" r="2.6" fill="#18a058" />
         </svg>
         <svg v-else
-             xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 48" class="brand-logo" aria-label="jt-ipam">
+             xmlns="http://www.w3.org/2000/svg" viewBox="0 0 232 48" class="brand-logo" aria-label="jt-ipam">
           <rect width="48" height="48" rx="10" fill="#18a058" />
           <g stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-opacity="0.9">
             <line x1="13" y1="13" x2="24" y2="24" />
@@ -432,7 +439,7 @@ function startDrag(e: MouseEvent) {
                 letter-spacing="-0.3">jt-ipam</text>
           <text x="150" y="33"
                 font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
-                font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.6"
+                font-size="16" font-weight="500" fill="currentColor" fill-opacity="0.72"
                 letter-spacing="0">v{{ appVersion }}</text>
         </svg>
       </div>
@@ -532,6 +539,8 @@ function startDrag(e: MouseEvent) {
   z-index: 10;
 }
 /* 頂列控制鈕：icon + 文字標籤；窄螢幕由全域 media query 隱藏 .topbar-ctl__label */
+/* 子網路樹：有下層的網段標題做成可點連結（點文字進入該網段、點箭頭展開） */
+.app-sider :deep(.subnet-node-link) { color: inherit; text-decoration: none; display: inline-block; width: 100%; }
 .topbar-ctls { flex-shrink: 0; }
 .topbar-ctl {
   display: inline-flex;

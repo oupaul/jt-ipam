@@ -158,6 +158,22 @@ async def rebuild_subnet_hierarchy(session: AsyncSession) -> int:
                 {"m": str(master) if master else None, "s": str(sid)},
             )
             changed += 1
+    # 子網段繼承上層「單位」：master 有 customer、子網段 customer 為空時補上。
+    # 由淺到深反覆執行，支援多層串接（祖→父→孫），直到沒有可補的為止。
+    while True:
+        res = await session.execute(text(
+            """
+            UPDATE subnets AS c SET customer_id = p.customer_id
+              FROM subnets AS p
+             WHERE c.master_subnet_id = p.id
+               AND c.customer_id IS NULL
+               AND p.customer_id IS NOT NULL
+            """
+        ))
+        n = res.rowcount or 0
+        if n <= 0:
+            break
+        changed += n
     return changed
 
 

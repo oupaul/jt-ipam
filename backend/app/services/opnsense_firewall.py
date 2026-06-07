@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.safe_http import UnsafeOutboundURL, safe_request
@@ -609,6 +609,33 @@ async def sync_nat_rules(
         ("/api/firewall/source_nat/searchRule", "many_to_one"),
     ]
 
+    # ── 關聯範圍（NAT 對應）：多台防火牆共用 RFC1918 子網時，限定此防火牆的
+    #    NAT 規則只對應到範圍內子網的 IP。allowed_subnet_ids 為空 → 沿用全域比對。
+    from app.models.subnet import Subnet
+
+    allowed_subnet_ids: set[uuid.UUID] = set()
+    if fw.scope_subnet_ids:
+        allowed_subnet_ids.update(fw.scope_subnet_ids)
+    if fw.iface_subnet_map:
+        for _sid in fw.iface_subnet_map.values():
+            try:
+                allowed_subnet_ids.add(uuid.UUID(str(_sid)))
+            except (ValueError, AttributeError, TypeError):
+                continue
+    _derived_conds = []
+    if fw.scope_location_id is not None:
+        _derived_conds.append(Subnet.location_id == fw.scope_location_id)
+    if fw.scope_customer_id is not None:
+        _derived_conds.append(Subnet.customer_id == fw.scope_customer_id)
+    if _derived_conds:
+        derived = (
+            await session.execute(
+                select(Subnet.id).where(or_(*_derived_conds))
+            )
+        ).scalars().all()
+        allowed_subnet_ids.update(derived)
+    scoped = len(allowed_subnet_ids) > 0
+
     # IP 文字 → jt-ipam ip uuid 的小 cache
     _ip_cache: dict[str, str | None] = {}
 
@@ -624,11 +651,17 @@ async def sync_nat_rules(
         key = str(addr)
         if key in _ip_cache:
             return _ip_cache[key]
-        row = (
-            await session.execute(
-                select(IPAddress.id).where(func.host(IPAddress.ip) == key).limit(1)
+        if scoped:
+            # 限定範圍內子網：找不到就回 None，不退回全域（這正是 scope 的目的）
+            stmt = (
+                select(IPAddress.id).where(
+                    func.host(IPAddress.ip) == key,
+                    IPAddress.subnet_id.in_(allowed_subnet_ids),
+                ).limit(1)
             )
-        ).scalar_one_or_none()
+        else:
+            stmt = select(IPAddress.id).where(func.host(IPAddress.ip) == key).limit(1)
+        row = (await session.execute(stmt)).scalar_one_or_none()
         _ip_cache[key] = str(row) if row else None
         return _ip_cache[key]
 

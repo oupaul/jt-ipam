@@ -1079,6 +1079,14 @@
     "error_token_too_short": "API token must be at least 8 chars",
     "url_ph": "https://librenms.example.com (no trailing /)"
   },
+  "firewall": {
+    "scope_title": "Association scope (NAT mapping)",
+    "scope_location": "Location",
+    "scope_customer": "Customer",
+    "scope_subnets": "Subnets",
+    "scope_iface_map": "Interface → subnet map",
+    "scope_hint": "When set, this firewall's NAT rules only resolve to IPs in the scoped subnets; leave empty to use global matching."
+  },
   "firewall_admin": {
     "title": "OPNsense Firewall",
     "name": "Name",

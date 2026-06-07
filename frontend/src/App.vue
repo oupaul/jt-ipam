@@ -148,6 +148,10 @@ const themeOverrides = computed(() =>
 /* 卡片柔和陰影：淺色模式給層次感（深色靠表面/邊框對比，黑陰影本就不明顯） */
 .n-card { box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 2px 6px rgba(16, 24, 40, 0.05); }
 
+/* tooltip 內若含連結（例如表格 ellipsis tooltip 會把綠色 <a> 一起複製進來），
+   淺色主題下 tooltip 是深底，綠字看不清 → 讓 tooltip 內連結改用 tooltip 自身的淺色字 */
+.n-tooltip a { color: inherit !important; text-decoration: underline; }
+
 /* 表格「操作」欄：依「該欄實際可用寬度」自動決定顯示完整按鈕或只剩 icon。
    欄位寬度不足以容納完整按鈕時 → 收成只剩 icon（不換行）。
    只要把該欄 column 設 className: "col-actions" 即可套用，免改每顆按鈕。 */

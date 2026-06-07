@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.106] — 2026-06-07
+
+### Added
+- **OPNsense firewall association scope** (migration 0071): each firewall can be
+  scoped by location / customer / explicit subnets / interface→subnet map. Synced
+  NAT rules then resolve their IPs only within the firewall's scope, so multiple
+  firewalls reusing the same RFC1918 subnet no longer cross-attach to the wrong
+  jt-ipam IP. Unscoped firewalls keep the previous global IP-string matching.
+- NAT page: hovering an IP that's linked to a jt-ipam IP shows its details
+  (hostname / status / MAC / vendor / subnet / customer / device / switch port …),
+  lazily loaded; clicking opens that IP's detail page.
+
+### Changed
+- New child subnets inherit the parent subnet's customer (unit); this is now
+  self-healing in `rebuild_subnet_hierarchy` (cascades through levels).
+- Sidebar subnet tree: child subnets render as real nested, expandable nodes with
+  connector lines (instead of a "↳" prefix); the parent label still opens its detail.
+- Sidebar version label enlarged.
+
+### Fixed
+- Light-theme tooltips containing links (e.g. table ellipsis tooltips) used the
+  green link colour on a dark tooltip; links now inherit the tooltip's light text.
+- Firewall scope form: the customer / unit select showed "no data" (options weren't
+  loaded).
+
 ## [0.4.105] — 2026-06-07
 
 ### Fixed

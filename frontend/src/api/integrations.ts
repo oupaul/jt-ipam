@@ -177,6 +177,10 @@ export interface OPNsenseFirewall {
   sync_rules: boolean;
   sync_nat: boolean;
   description: string | null;
+  scope_location_id?: string | null;
+  scope_customer_id?: string | null;
+  scope_subnet_ids?: string[] | null;
+  iface_subnet_map?: Record<string, string> | null;
   last_sync_at: string | null;
   last_error: string | null;
   created_at: string;
@@ -196,6 +200,10 @@ export interface OPNsenseFirewallCreate {
   sync_rules?: boolean;
   sync_nat?: boolean;
   description?: string;
+  scope_location_id?: string | null;
+  scope_customer_id?: string | null;
+  scope_subnet_ids?: string[] | null;
+  iface_subnet_map?: Record<string, string> | null;
 }
 
 export interface OPNsenseRule {

@@ -1,4 +1,4 @@
-# jt-ipam v0.4.105（繁體中文）
+# jt-ipam v0.4.106（繁體中文）
 
 **🌐 [專案介紹網站 / Project site →](https://jasoncheng7115.github.io/jt-ipam/)**
 

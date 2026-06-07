@@ -5,14 +5,17 @@ import { computed, h, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NCard, NDataTable, NSpace, NButton, NModal, NForm, NFormItem,
-  NInput, NSelect, NInputNumber, NPopconfirm, NTag, NIcon, NTooltip,
+  NInput, NSelect, NInputNumber, NPopconfirm, NTag, NIcon, NTooltip, NPopover, NSpin,
   NSwitch, NDivider,
   useMessage, type DataTableColumns, type DataTableRowKey,
 } from "naive-ui";
 import {
   listNATs, createNAT, updateNAT, deleteNAT, bulkDeleteNATs, type NAT,
 } from "@/api/phase3";
-import { listAddresses } from "@/api/addresses";
+import { listAddresses, getAddress } from "@/api/addresses";
+import { listSubnets } from "@/api/subnets";
+import { useCustomers } from "@/composables/useCustomers";
+import type { IPAddress } from "@/types";
 import { listDevices } from "@/api/basic";
 import { listFirewalls, type OPNsenseFirewall } from "@/api/integrations";
 import { useRouter } from "vue-router";
@@ -98,6 +101,8 @@ const form = ref(blankForm());
 
 const addrOpts = ref<{ label: string; value: string }[]>([]);
 const deviceOpts = ref<{ label: string; value: string }[]>([]);
+const subnetCidr = ref<Record<string, string>>({});   // subnet_id → cidr，給 IP 細節彈窗顯示子網路
+const { labelFor: customerLabelFor, ensureLoaded: ensureCustomersLoaded } = useCustomers();
 const firewalls = ref<OPNsenseFirewall[]>([]);
 
 const sourceKindFilter = ref<string[]>([]);
@@ -128,19 +133,63 @@ const natReflectionOpts = [
 const filterDeviceId = ref<string | null>(null);
 
 // 用 link 元件渲染一個可點選的 cell
+// 滑過關聯到 jt-ipam 的 IP 時，即時彈出該 IP 的細節（懶載入 + 快取）
+const ipDetailCache = ref<Record<string, IPAddress | "loading" | "error">>({});
+async function loadIpDetail(ipId: string) {
+  const cur = ipDetailCache.value[ipId];
+  if (cur && cur !== "error") return;  // 已載入或載入中
+  ipDetailCache.value = { ...ipDetailCache.value, [ipId]: "loading" };
+  try {
+    const a = await getAddress(ipId);
+    ipDetailCache.value = { ...ipDetailCache.value, [ipId]: a };
+  } catch {
+    ipDetailCache.value = { ...ipDetailCache.value, [ipId]: "error" };
+  }
+}
+function ipDetailRow(label: string, value: unknown) {
+  if (value == null || value === "") return null;
+  return h("div", { style: "display:flex; gap:8px; font-size:12.5px; line-height:1.7" }, [
+    h("span", { style: "opacity:.55; min-width:64px" }, label),
+    h("span", { style: "word-break:break-all" }, String(value)),
+  ]);
+}
+function ipDetailCard(ipId: string) {
+  const d = ipDetailCache.value[ipId];
+  if (!d || d === "loading") return h(NSpin, { size: "small" });
+  if (d === "error") return h("span", { style: "font-size:12.5px;opacity:.6" }, t("errors.network"));
+  const stateLabel = d.state === "used" ? t("addresses.state_used")
+    : d.state === "reserved" ? t("addresses.state_reserved") : (d.state ?? "—");
+  return h("div", { style: "min-width:200px; max-width:320px" }, [
+    h("div", { style: "font-weight:600; margin-bottom:4px; font-family:monospace" }, d.ip),
+    ipDetailRow(t("addresses.hostname"), d.hostname),
+    ipDetailRow(t("common.status"), stateLabel),
+    ipDetailRow(t("addresses.mac"), d.mac),
+    ipDetailRow(t("cols.vendor"), d.mac_vendor),
+    ipDetailRow(t("subnets.cidr"), d.subnet_id ? subnetCidr.value[d.subnet_id] : null),
+    ipDetailRow(t("nav.customers"), d.customer_id ? customerLabelFor(d.customer_id) : null),
+    ipDetailRow(t("cols.device"), d.device_name),
+    ipDetailRow(t("addresses.owner"), d.owner),
+    ipDetailRow(t("addresses.switch_port"), d.switch_port),
+    ipDetailRow(t("common.description"), d.description),
+  ].filter(Boolean));
+}
 function ipLinkCell(ipId: string | null) {
   if (!ipId) return "—";
   const label = addrOpts.value.find((o) => o.value === ipId)?.label ?? ipId.slice(0, 8) + "…";
-  // IP 沒有專屬 detail 頁；改成搜尋導頁 /addresses?q=<ip>
   const ipText = label.split(" — ")[0];
-  return h("a", {
+  const link = h("a", {
     href: "#",
     style: "color: var(--primary-color, #18a058); text-decoration: none;",
     onClick: (e: MouseEvent) => {
       e.preventDefault();
-      void router.push({ name: "addresses", query: { q: ipText } });
+      void router.push({ name: "address-detail", params: { id: ipId } });
     },
   }, label);
+  // hover 即時彈出該 IP 細節
+  return h(NPopover, {
+    trigger: "hover", delay: 150, placement: "top",
+    onUpdateShow: (s: boolean) => { if (s) void loadIpDetail(ipId); },
+  }, { trigger: () => link, default: () => ipDetailCard(ipId) });
 }
 
 // alias 參考 → 可點的 tag，導到防火牆頁的「Aliases」分頁並以該名稱篩選（看 alias 成員內容）
@@ -176,11 +225,14 @@ function deviceLinkCell(devId: string | null) {
 
 async function loadOpts() {
   try {
-    const [addr, dev, fws] = await Promise.all([
+    void ensureCustomersLoaded();
+    const [addr, dev, fws, subs] = await Promise.all([
       listAddresses({ pageSize: 500 }),
       listDevices(),
       listFirewalls().catch(() => ({ items: [] as OPNsenseFirewall[] })),
+      listSubnets({ page: 1, pageSize: 500 }).catch(() => ({ items: [] as any[] })),
     ]);
+    subnetCidr.value = Object.fromEntries((subs.items ?? []).map((s: any) => [s.id, s.cidr]));
     addrOpts.value = addr.items.map((a: any) => ({
       label: `${a.ip}${a.hostname ? " — " + a.hostname : ""}`,
       value: a.id,

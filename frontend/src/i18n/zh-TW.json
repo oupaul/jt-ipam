@@ -1077,6 +1077,14 @@
     "error_token_too_short": "API token 至少 8 字元",
     "url_ph": "https://librenms.example.com (不含結尾 /)"
   },
+  "firewall": {
+    "scope_title": "關聯範圍 (NAT 對應)",
+    "scope_location": "機房 / 地點",
+    "scope_customer": "單位 / 客戶",
+    "scope_subnets": "子網路",
+    "scope_iface_map": "介面 → 子網路對應",
+    "scope_hint": "設定後，此防火牆的 NAT 規則只會對應到範圍內子網路的 IP；留空則沿用全域比對。"
+  },
   "firewall_admin": {
     "title": "OPNsense 防火牆",
     "name": "名稱",
