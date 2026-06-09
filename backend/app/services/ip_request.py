@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ip_request import IPRequest, IPRequestEvent
@@ -222,6 +223,8 @@ async def create_request(
             "hostname": hostname,
         },
     )
+    # 通知審核人（站內 + Email），best-effort
+    await notify_approvers_new_request(session, request=req, subnet=subnet, requester=requester)
     return req
 
 
@@ -231,20 +234,23 @@ async def approve_request(
     request: IPRequest,
     subnet: Subnet,
     approver: User,
+    override_ip: str | None = None,
 ) -> IPRequest:
     """approve + 原子配發 IP；失敗回滾整個 transaction。
 
-    若 requested_ip 指定且仍可用則用之；否則挑第一個 free。
+    配發的 IP 優先序：審核人指定的 override_ip > 申請人 requested_ip > 第一個 free。
+    審核人可在核准時改成別的 IP（override_ip）。
     """
     if request.status != "pending":
         raise InvalidStateTransition(f"Cannot approve request in status={request.status}")
 
+    chosen_ip = (override_ip or request.requested_ip or "").strip() or None
     try:
-        if request.requested_ip:
+        if chosen_ip:
             ip_obj = await create_ip(
                 session,
                 subnet=subnet,
-                ip=str(request.requested_ip).split("/")[0],
+                ip=str(chosen_ip).split("/")[0],
                 hostname=request.hostname,
                 description=request.description,
                 state="active",
@@ -294,6 +300,54 @@ async def approve_request(
         body=f"Allocated {str(ip_obj.ip).split('/')[0]} for {request.hostname or '(no hostname)'}",
     )
     return request
+
+
+async def record_step_approval(
+    session: AsyncSession, *, request: IPRequest, subnet: Subnet, approver: User,
+    step_index: int, override_ip: str | None = None,
+) -> bool:
+    """多關卡（parallel / stages）：記錄某一關核准。全部關卡通過則配發 IP 並完成。
+
+    回傳 True=已全數通過並配發；False=尚有關卡待審（已通知下一關）。
+    """
+    from app.models.ip_request import IPRequestStageApproval
+    from app.services.ip_request_policy import (
+        approved_step_indices,
+        get_policy,
+    )
+
+    if request.status != "pending":
+        raise InvalidStateTransition(f"Cannot approve request in status={request.status}")
+
+    pol = await get_policy(session)
+    steps = pol.get("stages") or []
+    if step_index < 0 or step_index >= len(steps):
+        raise IPRequestError("invalid approval step")
+
+    session.add(IPRequestStageApproval(
+        request_id=request.id, step_index=step_index, approver_user_id=approver.id,
+    ))
+    await session.flush()
+    _add_event(
+        session, request=request, actor_user_id=approver.id,
+        event_type="stage_approved",
+        message=f"關卡「{steps[step_index]['name']}」已核准",
+    )
+
+    approved = await approved_step_indices(session, request)
+    if approved >= set(range(len(steps))):
+        # 全數通過 → 真正配發 IP + 完成
+        await approve_request(
+            session, request=request, subnet=subnet, approver=approver, override_ip=override_ip,
+        )
+        return True
+
+    # 還有關卡：依序模式通知下一關（parallel 模式建立時已通知全部關卡）
+    if pol["approver_mode"] == "stages":
+        pending = sorted(set(range(len(steps))) - approved)
+        if pending:
+            await _notify_stage(session, request=request, subnet=subnet, step_index=pending[0])
+    return False
 
 
 async def reject_request(

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref } from "vue";
-import { useRouter, useRoute } from "vue-router";
+import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import {
   NCard, NSpace, NInput, NButton, NIcon, NTag, NDataTable, NCheckbox, NAlert, NSelect,
@@ -16,7 +16,6 @@ import ColumnPicker from "@/components/ColumnPicker.vue";
 const { t } = useI18n();
 const msg = useMessage();
 const router = useRouter();
-const route = useRoute();
 const pg = useTablePagination();
 
 const rows = ref<DnsRecord[]>([]);
@@ -133,13 +132,7 @@ const allColumns = computed<DataTableColumns<DnsRecord>>(() => [
 const columns = computed<DataTableColumns<DnsRecord>>(() =>
   autoSort(allColumns.value.filter((c) => isVisible((c as any).key))));
 
-onMounted(() => {
-  // 從全域搜尋點 DNS 記錄進來時，帶 ?q= 把該記錄名稱代入搜尋欄
-  const qq = route.query.q;
-  if (typeof qq === "string" && qq.trim()) q.value = qq.trim();
-  loadServers();
-  load();
-});
+onMounted(() => { loadServers(); load(); });
 </script>
 
 <template>
@@ -155,10 +148,8 @@ onMounted(() => {
 
       <n-space align="center" :wrap="true">
         <n-select v-model:value="serverId" :options="serverOptions" style="width: 150px"
-                  :consistent-menu-width="false"
                   :placeholder="t('dns_records.all_servers')" @update:value="load" />
         <n-select v-model:value="rtype" :options="typeOptions" style="width: 110px"
-                  :consistent-menu-width="false"
                   :placeholder="t('dns_records.all_types')" @update:value="load" />
         <n-input v-model:value="q" clearable style="width: 170px" :placeholder="t('dns_records.search_ph')"
                  @keyup.enter="load">
