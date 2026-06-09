@@ -24,6 +24,56 @@ log()  { echo -e "\033[1;32m[jt-ipam]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[warn]\033[0m $*" >&2; }
 die()  { echo -e "\033[1;31mFATAL:\033[0m $*" >&2; exit 1; }
 
+# Ensure a modern Node.js (>=18) is available to root. Three cases this handles:
+#  - distro 'nodejs' on Ubuntu 22.04 is v12 (too old for pnpm/vite)
+#  - invoked via sudo: an nvm-managed node in the caller's home is not on root's PATH
+#  - no node at all
+ensure_node() {
+    local ver
+    if command -v node >/dev/null 2>&1; then
+        ver=$(node -v 2>/dev/null | sed 's/^v//; s/\..*//')
+        if [[ "${ver:-0}" -ge 18 ]]; then return 0; fi
+    fi
+    if [[ -n "${SUDO_USER:-}" ]]; then
+        local h nb
+        h=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+        nb=$(find "$h/.nvm/versions/node" -maxdepth 2 -name node -type f 2>/dev/null | sort -Vr | head -1)
+        if [[ -n "$nb" ]] && [[ "$("$nb" -v 2>/dev/null | sed 's/^v//; s/\..*//')" -ge 18 ]]; then
+            ln -sf "$nb" /usr/local/bin/node
+            ln -sf "$(dirname "$nb")/npm" /usr/local/bin/npm 2>/dev/null || true
+            hash -r
+            log "Using nvm Node.js $("$nb" -v) from \$SUDO_USER ($SUDO_USER)"
+            return 0
+        fi
+    fi
+    log "Installing Node.js 20 (NodeSource)…"
+    # purge the distro node stack first — its libnode-dev/headers conflict with the
+    # NodeSource package files (e.g. /usr/include/node/common.gypi) and break the install
+    apt-get purge -y nodejs npm libnode-dev 2>/dev/null || true
+    apt-get autoremove -y 2>/dev/null || true
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null
+    apt-get install -y nodejs
+    hash -r
+}
+
+# Build the frontend as root with a clean toolchain, then hand ownership back to $2.
+# Why as root: avoids (a) stale corepack pnpm shims pinned to an old /usr/bin/node, and
+# (b) sudo -u / PAM failures when the owner is a nologin system account on restrictive hosts.
+# $1 = frontend dir, $2 = owner (user:group)
+build_frontend() {
+    local fdir="$1" owner="$2" pnpm_bin
+    ensure_node
+    cd "$fdir"
+    # drop stale corepack pnpm shims (they may hardcode an old node path → v12 errors)
+    rm -f /usr/bin/pnpm /usr/local/bin/pnpm 2>/dev/null || true
+    npm install -g --prefix /usr/local pnpm@9 >/dev/null 2>&1 || true
+    pnpm_bin="$(command -v pnpm || echo /usr/local/bin/pnpm)"
+    HOME=/var/lib/jt-ipam "$pnpm_bin" install --frozen-lockfile \
+        || HOME=/var/lib/jt-ipam "$pnpm_bin" install
+    HOME=/var/lib/jt-ipam "$pnpm_bin" run build
+    chown -R "$owner" node_modules dist 2>/dev/null || true
+}
+
 # -- root guard (used by install/upgrade/uninstall; not by help/usage) --
 require_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -190,10 +240,8 @@ cmd_install() {
         curl ca-certificates gnupg openssl
     )
 
-    # Node: if nodejs is already installed (e.g. nodesource v20), leave it alone; otherwise install distro nodejs+npm
-    if ! command -v node >/dev/null 2>&1; then
-        PKGS+=(nodejs npm)
-    fi
+    # Node.js is handled by ensure_node() right before the frontend build — distro 'nodejs'
+    # on Ubuntu 22.04 is v12 (too old), so we install NodeSource 20 / reuse a modern node instead.
     # only install nginx in nginx mode
     if [[ "$TLS_MODE" == "nginx" ]]; then
         PKGS+=(nginx)
@@ -201,12 +249,6 @@ cmd_install() {
 
     apt-get install -y "${PKGS[@]}"
 
-    # corepack enables pnpm (for the frontend build)
-    if ! command -v pnpm >/dev/null 2>&1; then
-        log "Enabling corepack + pnpm…"
-        corepack enable || npm install -g pnpm@9
-        corepack prepare pnpm@9 --activate || true
-    fi
 
     # -- 2. system user --
     if ! id -u "$JTIPAM_USER" >/dev/null 2>&1; then
@@ -408,11 +450,9 @@ EOF
         rm -f "$_tmp_pw"
     fi
 
-    # -- 8. frontend build --
+    # -- 8. frontend build (as root with a clean toolchain, then chown back) --
     log "Building frontend…"
-    cd "$FRONTEND_DIR"
-    sudo -u "$JTIPAM_USER" pnpm install --frozen-lockfile || sudo -u "$JTIPAM_USER" pnpm install
-    sudo -u "$JTIPAM_USER" pnpm build
+    build_frontend "$FRONTEND_DIR" "$JTIPAM_USER:$JTIPAM_GROUP"
 
     # -- 9. TLS certificate --
     # Unified cert paths: /etc/jt-ipam/tls/server.{crt,key}
@@ -608,16 +648,9 @@ cmd_upgrade() {
     # env must be sourced inside the sudo subshell (sudo does not carry parent environment by default)
     as_user bash -c "cd '$ROOT/backend'; set -a; source '$ENV_FILE'; set +a; .venv/bin/alembic upgrade head"
 
-    # -- 6. frontend build (prefer pnpm, fall back to npm) --
+    # -- 6. frontend build (as root with a clean toolchain, then chown back) --
     log "Building frontend…"
-    cd "$ROOT/frontend"
-    if command -v pnpm >/dev/null 2>&1; then
-      as_user pnpm install --frozen-lockfile || as_user pnpm install
-      as_user pnpm build
-    else
-      as_user npm ci || as_user npm install
-      as_user npm run build
-    fi
+    build_frontend "$ROOT/frontend" "$JTIPAM_USER:$JTIPAM_USER"
 
     # -- 7. restart backend --
     log "Restarting $SVC…"
