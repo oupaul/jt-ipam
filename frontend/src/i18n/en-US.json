@@ -121,6 +121,7 @@
     "subnet_count": "Subnets",
     "type": "Type",
     "view": "View",
+    "close": "Close",
     "back": "Back",
     "bulk_delete": "Bulk delete",
     "clear_selection": "Clear selection",

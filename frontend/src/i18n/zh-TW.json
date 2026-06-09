@@ -121,6 +121,7 @@
     "subnet_count": "子網路數",
     "type": "類型",
     "view": "檢視",
+    "close": "關閉",
     "back": "返回",
     "bulk_delete": "批次刪除",
     "clear_selection": "取消選取",

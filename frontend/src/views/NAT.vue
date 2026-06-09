@@ -45,7 +45,7 @@ const columnPickerItems = computed(() => [
   { key: "actions", label: t("cols.actions") },
 ]);
 import {
-  NatIcon, PlusIcon, EditIcon, DeleteIcon, RefreshIcon, SaveIcon, CancelIcon,
+  NatIcon, PlusIcon, EditIcon, DeleteIcon, RefreshIcon, SaveIcon, CancelIcon, EyeIcon,
 } from "@/icons";
 import { autoSort } from "@/composables/useTableSort";
 
@@ -75,6 +75,7 @@ async function doBulkDelete() {
 const loading = ref(false);
 const show = ref(false);
 const editing = ref<NAT | null>(null);
+const viewOnly = ref(false);   // 點列＝唯讀檢視；點編輯鈕＝可編輯
 function blankForm() {
   return {
     name: "", type: "many_to_one", protocol: "any",
@@ -263,11 +264,13 @@ async function refresh() {
 import { watch } from "vue";
 watch([filterDeviceId, sourceKindFilter, sourceFwFilter], () => { void refresh(); });
 function openCreate() {
+  viewOnly.value = false;
   editing.value = null;
   form.value = blankForm();
   show.value = true;
 }
-function openEdit(r: NAT) {
+function openEdit(r: NAT, view = false) {
+  viewOnly.value = view;
   editing.value = r;
   form.value = {
     name: r.name, type: r.type, protocol: r.protocol,
@@ -457,7 +460,7 @@ onMounted(() => { void refresh(); void loadOpts(); });
         onClick: (e: MouseEvent) => {
           const target = e.target as HTMLElement;
           if (target.closest('a') || target.closest('.n-button') || target.closest('.n-checkbox') || target.closest('.n-tag')) return;
-          openEdit(row);
+          openEdit(row, true);
         },
       })"
     />
@@ -466,9 +469,9 @@ onMounted(() => { void refresh(); void loadOpts(); });
       <template #header>
         <n-space align="center">
           <n-icon :size="20">
-            <component :is="editing ? EditIcon : PlusIcon" />
+            <component :is="viewOnly ? EyeIcon : editing ? EditIcon : PlusIcon" />
           </n-icon>
-          <span>{{ editing ? t("common.edit") : t("common.create") }}</span>
+          <span>{{ viewOnly ? t("common.view") : editing ? t("common.edit") : t("common.create") }}</span>
         </n-space>
       </template>
       <n-form :style="viewOnly ? 'pointer-events:none; opacity:.92' : ''">
@@ -554,9 +557,13 @@ onMounted(() => { void refresh(); void loadOpts(); });
       <n-space justify="end">
         <n-button @click="show = false">
           <template #icon><n-icon><CancelIcon /></n-icon></template>
-          {{ t("common.cancel") }}
+          {{ viewOnly ? t("common.close") : t("common.cancel") }}
         </n-button>
-        <n-button type="primary" @click="submit">
+        <n-button v-if="viewOnly && _authBtn.me?.can_edit !== false" @click="openEdit(editing!, false)">
+          <template #icon><n-icon><EditIcon /></n-icon></template>
+          {{ t("common.edit") }}
+        </n-button>
+        <n-button v-if="!viewOnly" type="primary" @click="submit">
           <template #icon><n-icon><SaveIcon /></n-icon></template>
           {{ t("common.save") }}
         </n-button>
