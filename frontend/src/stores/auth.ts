@@ -66,6 +66,11 @@ export const useAuthStore = defineStore("auth", () => {
     me.value = data;
   }
 
+  async function loginFromOidc(access: string, refresh: string): Promise<void> {
+    persistTokens({ access_token: access, refresh_token: refresh, token_type: "bearer", expires_in: null, mfa_required: false, mfa_token: null });
+    await fetchMe();
+  }
+
   async function logout() {
     try {
       await apiClient.post("/api/v1/auth/logout");
@@ -84,6 +89,7 @@ export const useAuthStore = defineStore("auth", () => {
     login,
     verifyMfa,
     fetchMe,
+    loginFromOidc,
     logout,
     clearTokens,
   };

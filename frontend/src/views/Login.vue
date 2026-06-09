@@ -40,6 +40,22 @@ try {
   if (Array.isArray(cached) && cached.length) realms.value = cached;
 } catch { /* ignore */ }
 onMounted(async () => {
+  // OIDC callback：後端把 token 放在 URL fragment 傳回
+  const params = new URLSearchParams(window.location.hash.substring(1));
+  const oidcAccess = params.get("access_token");
+  const oidcRefresh = params.get("refresh_token");
+  if (oidcAccess) {
+    try {
+      await auth.loginFromOidc(oidcAccess, oidcRefresh ?? "");
+      // 清掉 URL 上的 token fragment，避免重新整理時重複處理
+      window.history.replaceState(null, "", window.location.pathname);
+      window.location.assign(targetAfterLogin());
+    } catch {
+      errorMsg.value = t("login.failed");
+    }
+    return;
+  }
+
   try {
     const { data } = await apiClient.get<{ realms: { label: string; value: string }[] }>("/api/v1/auth/realms");
     if (data.realms?.length) {

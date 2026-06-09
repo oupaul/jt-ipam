@@ -14,6 +14,8 @@ SAML flow：
 
 from __future__ import annotations
 
+import base64
+import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
@@ -292,6 +294,22 @@ async def oidc_callback(
         claims = await oidc_service.fetch_userinfo(cfg, access_token)
     except oidc_service.OIDCError as exc:
         raise HTTPException(502, detail=str(exc)) from exc
+
+    # 合併 ID Token payload 中的 claims（補 userinfo 沒有的欄位，例如 Entra ID 的 groups）
+    # 注意：此處不驗 ID Token 簽章，安全性依賴 TLS + state/nonce 已於前面步驟驗證
+    id_token_raw = token_data.get("id_token", "")
+    if id_token_raw:
+        try:
+            payload_b64 = id_token_raw.split(".")[1]
+            payload_b64 += "=" * (4 - len(payload_b64) % 4)
+            id_token_claims: dict[str, Any] = json.loads(
+                base64.urlsafe_b64decode(payload_b64)
+            )
+            for k, v in id_token_claims.items():
+                if k not in claims:
+                    claims[k] = v
+        except Exception:
+            pass  # ID Token 解析失敗不中斷流程
 
     try:
         user = await oidc_service.upsert_user_from_oidc(
