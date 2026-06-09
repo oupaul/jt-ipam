@@ -149,7 +149,7 @@ function exportDrawio() {
     const fill = colorFor(dev.type);
     const g = partGeom(dev);
     const align = g.half ? "center" : nameAlign.value;
-    cells.push(`<mxCell id="dev${n++}" value="${esc(devLabel(dev))}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=${fill};strokeColor=#000000;fontColor=#ffffff;fontStyle=1;align=${align};spacingLeft=6;spacingRight=6;" vertex="1" parent="1"><mxGeometry x="${g.x}" y="${yTop + 1}" width="${g.w}" height="${hgt - 2}" as="geometry"/></mxCell>`);
+    cells.push(`<mxCell id="dev${n++}" value="${esc(devLabel(dev))}" style="rounded=0;whiteSpace=wrap;html=1;fillColor=${fill};strokeColor=#000000;fontColor=#ffffff;fontStyle=1;align=${align};spacingLeft=6;spacingRight=6;" vertex="1" parent="1"><mxGeometry x="${g.x}" y="${yTop + 1}" width="${g.w}" height="${hgt - 2}" as="geometry"/></mxCell>`);
   }
   const xml =
     `<mxfile host="jt-ipam"><diagram name="${esc(d.name)}">` +

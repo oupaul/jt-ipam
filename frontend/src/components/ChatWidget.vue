@@ -662,6 +662,13 @@ async function removeConversation(id: string) {
 }
 .bubble .md pre code { background: none; padding: 0; }
 .bubble .md a { color: var(--primary-color, #18a058); }
+.bubble .md table {
+  border-collapse: collapse; margin: 6px 0; font-size: 12px; display: block; overflow-x: auto;
+}
+.bubble .md th, .bubble .md td {
+  border: 1px solid rgba(127, 127, 127, 0.4); padding: 4px 8px; text-align: left;
+}
+.bubble .md th { background: rgba(127, 127, 127, 0.12); font-weight: 600; }
 .trace pre {
   font-size: 10px;
   max-height: 240px;

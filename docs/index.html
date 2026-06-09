@@ -352,6 +352,16 @@
   </div>
 </section>
 
+<section class="callout-sec">
+  <div class="wrap callout">
+    <span class="ci"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg></span>
+    <div>
+      <h3><span class="zh">定位：集中記錄與管理，不是網路管控 / 執法工具</span><span class="en">What it is: documentation and central management — not a network-control or enforcement tool</span></h3>
+      <p><span class="zh">jt-ipam 的核心是把 IP、子網路、裝置與整合進來的網路狀態集中記錄、管理，作為你的「事實來源」與稽核依據。它<b>不會</b>主動發放或回收實體位址、不會攔截流量、也不會推送 DHCP 拒絕或防火牆封鎖規則去阻止未登錄的裝置上線。像「IP 申請審核」這類功能屬於<b>管理簽核紀錄</b>：核准或駁回只影響系統內的登錄與授權，不會在網路層面強制阻擋——實際的位址發放與封鎖，仍由你的 DHCP、防火牆、NAC 等系統負責。</span><span class="en">jt-ipam's job is to centrally record and manage IPs, subnets, devices and the network state it integrates — your source of truth and audit trail. It does <b>not</b> hand out or revoke real addresses, intercept traffic, or push DHCP-deny / firewall-block rules to stop unregistered devices from getting online. Workflows like "IP request approval" are <b>administrative sign-off records</b>: approving or rejecting only affects records and authorization inside the system, never enforcement on the wire — actual address assignment and blocking remain the job of your DHCP, firewall and NAC.</span></p>
+    </div>
+  </div>
+</section>
+
 <section id="integrations" class="alt">
   <div class="wrap">
     <div class="sec-head">
@@ -578,7 +588,7 @@
       <h2><span class="zh">部署</span><span class="en">Deployment</span></h2>
       <p><span class="zh">以 systemd 託管、預設強制 HTTPS：可選 nginx 反向代理或 uvicorn 自簽憑證，內網、對外都能安心上線。</span><span class="en">Runs under systemd with HTTPS enforced by default — choose an nginx reverse proxy or a self-signed uvicorn, secure whether on an intranet or the public internet.</span></p>
     </div>
-    <p style="margin:0 0 14px" class="sysreq">
+    <p style="margin:0 0 14px" class="disclaimer">
       <span class="zh"><strong>系統需求：</strong>Debian 12+ 或 Ubuntu 22.04+（64 位元）。<br><strong>硬體：</strong>最低 2 核心 CPU / 4 GB 記憶體 / 20 GB 磁碟；建議 4 核心 / 8 GB / 40 GB 以上（保留給資料庫與備份成長）。選用的本地 LLM 請另跑於獨立主機、依模型自行配足記憶體 / 顯示記憶體，不含在此。<br><strong>自動安裝：</strong>安裝腳本會自動裝好並設定 PostgreSQL 16、Python 3.11+、Node 20+、nginx 等相依套件，並自動產生所有金鑰。<br><strong>更多：</strong>完整步驟與環境變數見 GitHub 上的 README 與 <code>scripts/</code>。</span>
       <span class="en"><strong>Requirements:</strong> Debian 12+ or Ubuntu 22.04+ (64-bit).<br><strong>Hardware:</strong> minimum 2 vCPU / 4 GB RAM / 20 GB disk; recommended 4 vCPU / 8 GB / 40 GB+ (headroom for the database and backups). The optional local LLM runs on a separate host with its own RAM/VRAM and is not included here.<br><strong>Auto-setup:</strong> the install script installs and configures PostgreSQL 16, Python 3.11+, Node 20+ and nginx, and generates all keys for you.<br><strong>More:</strong> see the README and <code>scripts/</code> on GitHub for full steps and env vars.</span>
     </p>
@@ -594,10 +604,6 @@
 
     <h3 style="margin:22px 0 8px"><span class="zh">移除</span><span class="en">Uninstall</span></h3>
     <pre>sudo <span class="g">bash /opt/jt-ipam/scripts/jt-ipam.sh uninstall</span></pre>
-    <p style="margin-top:20px" class="disclaimer">
-      <span class="zh"><strong>系統需求：</strong>Debian 12+ 或 Ubuntu 22.04+（64 位元）。<br><strong>硬體：</strong>最低 2 核心 CPU / 4 GB 記憶體 / 20 GB 磁碟；建議 4 核心 / 8 GB / 40 GB 以上（保留給資料庫與備份成長）。選用的本地 LLM 請另跑於獨立主機、依模型自行配足記憶體 / 顯示記憶體，不含在此。<br><strong>自動安裝：</strong>安裝腳本會自動裝好並設定 PostgreSQL 16、Python 3.11+、Node 20+、nginx 等相依套件，並自動產生所有金鑰。<br><strong>更多：</strong>完整步驟與環境變數見 GitHub 上的 README 與 <code>scripts/</code>。</span>
-      <span class="en"><strong>Requirements:</strong> Debian 12+ or Ubuntu 22.04+ (64-bit).<br><strong>Hardware:</strong> minimum 2 vCPU / 4 GB RAM / 20 GB disk; recommended 4 vCPU / 8 GB / 40 GB+ (headroom for the database and backups). The optional local LLM runs on a separate host with its own RAM/VRAM and is not included here.<br><strong>Auto-setup:</strong> the install script installs and configures PostgreSQL 16, Python 3.11+, Node 20+ and nginx, and generates all keys for you.<br><strong>More:</strong> see the README and <code>scripts/</code> on GitHub for full steps and env vars.</span>
-    </p>
   </div>
 </section>
 

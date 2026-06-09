@@ -230,6 +230,10 @@ async def pull_server(session: AsyncSession, server: DNSServer) -> dict[str, int
             seen: set[tuple[str, str, str]] = set()
 
             for op in records:
+                # 只保留與「IP↔名稱對應」相關的型別：正向 A/AAAA + 反向 PTR；
+                # CNAME/MX/TXT/NS/SOA/SRV/CAA 等對 IPAM 無對應價值，不取也不存。
+                if op.type not in ("A", "AAAA", "PTR"):
+                    continue
                 key = (op.name, op.type, op.value)
                 seen.add(key)
                 summary["pulled_records"] += 1

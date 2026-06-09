@@ -26,6 +26,8 @@ import {
 import { NIcon } from "naive-ui";
 import { RacksIcon, DeleteIcon, PlusIcon, EditIcon, SaveIcon, CancelIcon, LocationsIcon, PinIcon, ExportIcon } from "@/icons";
 import { exportTable, type ExportColumn } from "@/utils/tableExport";
+import { exportRacksSvg, exportRacksPng, exportRacksDrawio, type RackNameAlign } from "@/utils/rackGraphicsExport";
+import { getRackNameAlign } from "@/api/basic";
 import { usePinned } from "@/composables/usePinned";
 import { useRouter } from "vue-router";
 import { apiClient } from "@/api/client";
@@ -327,7 +329,11 @@ watch(selected, (v) => {
   else diagram.value = null;
 });
 
+// 合併卡圖形匯出沿用全域「機櫃名稱對齊」偏好（與 RackDiagram 一致）
+const mergedNameAlign = ref<RackNameAlign>("left");
+
 onMounted(async () => {
+  void getRackNameAlign().then((a) => { mergedNameAlign.value = a as RackNameAlign; });
   // 先 refresh() 把所有機櫃載進 rows（loadRoom 依賴它過濾該機房的機櫃，
   // 否則「機櫃示意圖」會誤判此機房尚無機櫃）。refresh 可能先預設第一個機櫃。
   await refresh();
@@ -400,8 +406,12 @@ async function confirmPickDevice() {
   finally { pickBusy.value = false; }
 }
 
-// 合併卡匯出：跨機房所有機櫃的合併裝置清單（純資料格式，與 RackDiagram 標籤一致）
+// 合併卡匯出：圖形（SVG/PNG/draw.io，整個機房多機櫃並排）+ 純資料格式
 const mergedExportOptions = [
+  { label: "SVG", key: "svg" },
+  { label: "PNG", key: "png" },
+  { label: "draw.io", key: "drawio" },
+  { type: "divider", key: "d1" },
   { label: "CSV", key: "csv" },
   { label: "Excel (.xlsx)", key: "xlsx" },
   { label: "OpenDocument (.ods)", key: "ods" },
@@ -409,6 +419,16 @@ const mergedExportOptions = [
   { label: "純文字 (.txt)", key: "txt" },
 ];
 function onMergedExport(key: string) {
+  if (["svg", "png", "drawio"].includes(key)) {
+    const diags = roomDiagrams.value as any[];
+    if (!diags.length) return;
+    const fname = "room-racks";
+    const al = maxRoomU.value;
+    if (key === "svg") exportRacksSvg(diags, al, mergedNameAlign.value, fname);
+    else if (key === "png") exportRacksPng(diags, al, mergedNameAlign.value, fname);
+    else exportRacksDrawio(diags, al, mergedNameAlign.value, fname);
+    return;
+  }
   if (!["csv", "xlsx", "ods", "md", "txt"].includes(key)) return;
   const fmt = key as "csv" | "xlsx" | "ods" | "md" | "txt";
   const cols: ExportColumn[] = [
