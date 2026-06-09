@@ -121,6 +121,7 @@ class IPAddressUpdate(StrictModel):
 class IPAddressRead(IPAddressBase):
     id: uuid.UUID
     discovery_source: str
+    in_dhcp_lease: bool = False   # 自動判定：目前有 DHCP 租約（由 OPNsense lease 同步維護）
     hostname_source_pin: str | None = None
     switch_port_confident: bool | None = None
     os_guess: str | None = None

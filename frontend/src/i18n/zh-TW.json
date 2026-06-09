@@ -665,6 +665,8 @@
     "dhcp_pool_hint": "此 IP 落在 DHCP 主機的動態發放範圍內。",
     "dhcp_server": "DHCP 主機",
     "dhcp_range": "發放範圍",
+    "dhcp_has_lease": "此 IP 目前有 DHCP 租約（由 OPNsense 同步）。",
+    "source_phpipam": "phpIPAM 匯入",
     "source_scanner": "掃描代理",
     "source_librenms": "LibreNMS",
     "source_dns": "DNS",

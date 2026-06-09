@@ -665,6 +665,8 @@
     "dhcp_pool_hint": "This IP falls within a DHCP server's dynamic lease pool.",
     "dhcp_server": "DHCP server",
     "dhcp_range": "Pool range",
+    "dhcp_has_lease": "This IP currently has a DHCP lease (synced from OPNsense).",
+    "source_phpipam": "phpIPAM import",
     "source_scanner": "scan agent",
     "source_librenms": "LibreNMS",
     "source_dns": "DNS",

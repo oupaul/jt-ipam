@@ -122,6 +122,15 @@ function labelSource(v: string | null | undefined): string {
   const out = t(key);
   return out === key ? v : out;
 }
+// 異動記錄的值顯示：switch_port 用「裝置@埠號」（只換第一個 " / "，埠內斜線不動），與位置顯示一致
+function fmtChangeVal(field: string | null | undefined, v: string | null | undefined): string {
+  if (v == null) return "∅";
+  if (field === "switch_port") {
+    const idx = v.indexOf(" / ");
+    if (idx >= 0) return v.slice(0, idx) + "@" + v.slice(idx + 3);
+  }
+  return v;
+}
 function labelEffective(v: string | null | undefined): string {
   if (!v) return "—";
   // 後端可能塞 "online (scanner)" 之類有附註的字串；只翻譯主詞
@@ -489,14 +498,17 @@ async function remove() {
           <span>{{ props.address?.ip ?? props.createContext?.ip ?? '' }}</span>
           <n-tag v-if="isCreate" type="info" size="small">{{ t("common.create") }}</n-tag>
           <n-tag v-else :type="stateType" size="small">{{ labelState(props.address?.state) }}</n-tag>
-          <n-tooltip v-if="dhcpInfo" :delay="0">
+          <n-tooltip v-if="dhcpInfo || props.address?.in_dhcp_lease" :delay="0">
             <template #trigger>
               <n-tag type="warning" size="small" :bordered="false">DHCP</n-tag>
             </template>
             <div style="max-width:260px;line-height:1.5">
-              <div>{{ t("addresses.dhcp_pool_hint") }}</div>
-              <div style="margin-top:4px"><strong>{{ t("addresses.dhcp_server") }}：</strong>{{ dhcpInfo.server }}{{ dhcpInfo.source ? ` (${dhcpInfo.source})` : "" }}</div>
-              <div>{{ t("addresses.dhcp_range") }}：{{ dhcpInfo.start }} – {{ dhcpInfo.end }}</div>
+              <div v-if="props.address?.in_dhcp_lease">{{ t("addresses.dhcp_has_lease") }}</div>
+              <template v-if="dhcpInfo">
+                <div>{{ t("addresses.dhcp_pool_hint") }}</div>
+                <div style="margin-top:4px"><strong>{{ t("addresses.dhcp_server") }}：</strong>{{ dhcpInfo.server }}{{ dhcpInfo.source ? ` (${dhcpInfo.source})` : "" }}</div>
+                <div>{{ t("addresses.dhcp_range") }}：{{ dhcpInfo.start }} – {{ dhcpInfo.end }}</div>
+              </template>
             </div>
           </n-tooltip>
         </span>
@@ -677,9 +689,9 @@ async function remove() {
                   </template>
                   <n-text v-if="h.old_value != null || h.new_value != null" style="font-size: 13px">
                     <span v-if="h.field">{{ h.field }}: </span>
-                    <n-text depth="3" delete>{{ h.old_value ?? "∅" }}</n-text>
+                    <n-text depth="3" delete>{{ fmtChangeVal(h.field, h.old_value) }}</n-text>
                     →
-                    <n-text strong>{{ h.new_value ?? "∅" }}</n-text>
+                    <n-text strong>{{ fmtChangeVal(h.field, h.new_value) }}</n-text>
                   </n-text>
                   <n-text v-if="h.note" depth="3" style="font-size: 12px; display: block">{{ h.note }}</n-text>
                 </n-timeline-item>
