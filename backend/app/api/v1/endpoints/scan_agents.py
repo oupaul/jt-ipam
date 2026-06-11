@@ -528,6 +528,7 @@ async def agent_report(
                 effective_status="online (scanner)",
             )
             session.add(ipa)
+            await session.flush()  # 確保 ipa.id 由 DB 填好，apply_observation / log_change 用 FK 時才不會拿到 None
             created += 1
         else:
             ipa.last_seen_scanner = now
