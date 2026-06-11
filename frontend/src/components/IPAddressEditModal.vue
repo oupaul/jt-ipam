@@ -426,7 +426,11 @@ async function save() {
       emit("update:show", false);
       return;
     }
-    if (!props.address) return;
+    if (!props.address) {
+      console.warn("[IPModal] save() aborted: props.address is null");
+      msg.error("無法儲存：IP 資料遺失，請重新整理頁面");
+      return;
+    }
     const payload: IPAddressUpdate = {
       hostname: form.value.hostname.trim() || null,
       description: form.value.description.trim() || null,
@@ -441,12 +445,13 @@ async function save() {
       device_id: form.value.device_id ?? null,
       hostname_source_pin: form.value.hostname_source_pin || null,
     };
-    const updated = await updateAddress(props.address?.id, payload);
+    const updated = await updateAddress(props.address.id, payload);
     hostnameSourcesLoaded.value = false;  // 重新整理來源/有效 hostname
     msg.success(t("common.ok"));
     emit("saved", updated);
     editMode.value = false;
   } catch (e: any) {
+    console.error("[IPModal] save() error:", e);
     msg.error(e?.response?.data?.detail ?? t("errors.network"));
   } finally {
     saving.value = false;
@@ -500,10 +505,10 @@ async function remove() {
       <template v-if="inline && !isCreate" #header-extra>
         <n-space align="center" :size="8" :wrap-item="false">
           <template v-if="!editMode">
-            <n-button type="primary" size="small" @click="editMode = true">
+            <n-button key="view-edit" type="primary" size="small" @click="editMode = true">
               <template #icon><n-icon><EditIcon /></n-icon></template>{{ t("common.edit") }}
             </n-button>
-            <n-popconfirm @positive-click="remove">
+            <n-popconfirm key="view-delete" @positive-click="remove">
               <template #trigger>
                 <n-button type="error" ghost size="small" :loading="deleting">
                   <template #icon><n-icon><DeleteIcon /></n-icon></template>{{ t("common.delete") }}
@@ -511,12 +516,12 @@ async function remove() {
               </template>
               {{ t("common.confirm_delete") }}
             </n-popconfirm>
-            <n-button size="small" @click="emit('back')">
+            <n-button key="view-back" size="small" @click="emit('back')">
               <template #icon><n-icon><ArrowLeftIcon /></n-icon></template>{{ t("common.back") }}
             </n-button>
           </template>
           <template v-else>
-            <n-popconfirm @positive-click="remove">
+            <n-popconfirm key="edit-delete" @positive-click="remove">
               <template #trigger>
                 <n-button type="error" ghost size="small" :loading="deleting">
                   <template #icon><n-icon><DeleteIcon /></n-icon></template>{{ t("common.delete") }}
@@ -524,10 +529,10 @@ async function remove() {
               </template>
               {{ t("common.confirm_delete") }}
             </n-popconfirm>
-            <n-button size="small" @click="close">
+            <n-button key="edit-cancel" size="small" @click="close">
               <template #icon><n-icon><CancelIcon /></n-icon></template>{{ t("common.cancel") }}
             </n-button>
-            <n-button type="success" size="small" :loading="saving" @click="save">
+            <n-button key="edit-save" type="success" size="small" :loading="saving" @click="save">
               <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
             </n-button>
           </template>
