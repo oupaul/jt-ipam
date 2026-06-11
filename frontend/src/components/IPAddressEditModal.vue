@@ -181,6 +181,7 @@ const deleting = ref(false);
 const isCreate = computed(() => !props.address && !!props.createContext);
 
 interface FormState {
+  ip: string;               // create 模式下讓使用者填入 IP；edit 模式不使用
   hostname: string;
   description: string;
   state: string;
@@ -198,6 +199,7 @@ const form = ref<FormState>(emptyForm());
 
 function emptyForm(): FormState {
   return {
+    ip: "",
     hostname: "", description: "", state: "active", mac: "",
     owner: "", switch_port: "",
     ptr_ignore: false, note: "",
@@ -234,6 +236,7 @@ async function linkMatchingDevice() {
 
 function fromAddress(a: IPAddress): FormState {
   return {
+    ip: (a.ip ?? "").split("/")[0],
     hostname: a.hostname ?? "",
     description: a.description ?? "",
     state: a.state ?? "active",
@@ -262,6 +265,10 @@ watch(
     // create 模式自動進 edit form；既有 IP 進 view
     editMode.value = isCreate.value;
     form.value = props.address ? fromAddress(props.address) : emptyForm();
+    // create 模式：從 createContext 帶入預填 IP（點空格子時已有值；點「新增」按鈕時為空讓使用者填）
+    if (isCreate.value && props.createContext) {
+      form.value.ip = props.createContext.ip;
+    }
     // 略過探測初始化：優先用 excluded_probes；空但舊 exclude_from_ping=true → 回填 ['icmp']
     const a = props.address;
     if (a) {
@@ -403,7 +410,7 @@ async function save() {
     if (isCreate.value && props.createContext) {
       const created = await createAddress({
         subnet_id: props.createContext.subnet_id,
-        ip: props.createContext.ip,
+        ip: form.value.ip.trim(),
         hostname: form.value.hostname.trim() || null,
         description: form.value.description.trim() || null,
         state: form.value.state,
@@ -683,6 +690,10 @@ async function remove() {
 
         <!-- edit mode -->
         <n-form v-else label-placement="top">
+          <!-- create 模式：IP 輸入框（edit 模式 IP 不可改，顯示在標題） -->
+          <n-form-item v-if="isCreate" :label="t('addresses.ip')" style="margin-bottom: 4px">
+            <n-input v-model:value="form.ip" placeholder="192.168.1.100" />
+          </n-form-item>
           <n-space :size="12" :wrap-item="false" style="flex-wrap: wrap">
             <n-form-item :label="t('addresses.hostname')" style="flex: 1 1 300px">
               <n-input v-model:value="form.hostname" placeholder="host.example.com" />
