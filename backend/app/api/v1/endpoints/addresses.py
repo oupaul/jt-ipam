@@ -910,7 +910,7 @@ async def import_csv(
 
     csv_text = text
     subnet_id_val = subnet.id
-    subnet_label = subnet.cidr
+    subnet_label = str(subnet.cidr)
     filename = file.filename
     actor_user_id_str = str(user.id)
     actor_ip = request.client.host if request.client else None
