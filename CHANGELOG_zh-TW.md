@@ -4,6 +4,108 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.129] — 2026-06-11
+
+### 安全性
+- **RBAC IDOR 修補** — 多個詳情／彙整端點只憑物件 id 取資料、未做物件層級可見性檢查，
+  讓任何已登入帳號都能讀到範圍外的物件：`GET /devices/{id}` 及其子資源（`/integrations`
+  會洩漏 Wazuh CVE 數量＋Proxmox VM，另含 `/librenms`、`/vlans`、`/relations`）、
+  `GET /customers/{id}` 與 `/{id}/summary`（傾印整個客戶資產）、`GET /racks/{id}/diagram`。
+  以上全部改為需要物件 `read` 權限（無權限回 404）。MCP `get_topology` 工具不再把整張拓樸
+  洩漏給受限帳號（原本漏傳 `user` 過濾），並歸為全域讀取；REST `GET /topology` 也補上
+  `require_global_read` 一致化。
+- **OIDC ID Token 驗簽** — callback 原本只把 ID Token base64 解開就信任其 claims（含決定
+  admin 提權的 `groups`），未驗簽章。現在改用 provider 的 JWKS 驗證 ID Token（簽章＋
+  `aud`/`iss`/`nonce`）後才信任 claims；驗證失敗則退回只用 userinfo，不信任未驗的 groups。
+- **CSV 匯出公式注入** — IP 位址 CSV 匯出對以 `= + - @`／tab／CR 開頭的欄位前置跳脫，
+  避免試算表把內容當公式執行。
+
+### 修正
+- **整合同步韌性** — `jt-ipam-sync.py` 在每個整合的例外處理寫 `last_error` 前先 rollback；
+  單一實例失敗（例如 AdGuard 在重疊網段上 `MultipleResultsFound`）不再中斷整輪同步。
+- **重疊網段** — AdGuard 同步（`sync_clients` / `sync_rewrites`）與 MCP ARP 查詢以
+  `scalar_one_or_none()` 比對 `IPAddress.ip`；重疊網段下同一 IP 會有多筆 → `MultipleResultsFound`。
+  改用 `limit(1)` + `first()`。
+- **UCS 以外的 DNS 伺服器連線測試** — BIND 9（dnspython `OSError`／連線被拒）、Windows DNS
+  （WinRM／`requests` 例外）、PowerDNS 與 OPNsense Unbound（認證失敗回非 JSON）會漏出原始例外，
+  而 `/dns/servers/{id}/test` 端點沒接到 → 變成無訊息的 500。各 adapter 現在把這些包成
+  `DNSAdapterError`，端點也加了安全網把任何非預期錯誤轉成可讀的 502。
+
+### UI / 文件
+- 修正區段詳情頁缺少的 i18n key（「顯示順序」原本顯示原始 key）。
+- 通知「全部標為已讀」與群組成員操作補上錯誤提示。
+- 用詞：繁中文件 plugin 一律用「外掛」（不用「插件」）。
+
+## [0.4.128] — 2026-06-10
+
+### 修正 / 改善
+- **外部反向代理 + OIDC / Microsoft 365(Entra ID) 登入**：OIDC/SAML callback 後前端能正確解析
+  網址 fragment 裡帶回的 token（原本會被忽略、卡在登入頁）；後端合併 **ID Token** 的 claims —
+  Entra ID 的 `groups` 只在 ID Token、不在 Graph userinfo，補上後管理員群組才比對得到。新增
+  `deploy/nginx/jt-ipam-external-proxy.{conf,snippet}` 外部代理模式範本（HTTP-only、不送 HSTS、
+  `X-Forwarded-Proto` 透傳）；README 新增「模式 C — 外部反向代理」與 `APP_PUBLIC_URL` 等設定提醒。
+- **安裝（Ubuntu 24.04）**：`ensure_node` 不再把 NodeSource 安裝輸出丟 `/dev/null`，且安裝後**驗證
+  Node ≥ 18**，否則直接停止並印出手動補裝指令——修「Node 安裝靜默失敗、前端沒 build、卻看似安裝成功」。
+- **AI 對話**：Ollama 未啟用 / 連不上 / 設定錯時，改顯示**友善且可行動**的錯誤訊息（指向 管理 → LLM / AI），
+  不再是 `Ollama is disabled` / `transport: …` 這類難懂字串。
+- **電路**：編輯時「關聯裝置」下拉空白修復（裝置查詢 `page_size` 超過後端上限被擋）；電路表格新增
+  「關聯裝置 / 說明」欄（欄位選擇器可選），狀態欄改顯示中文（active → 使用中）。
+- **掃描代理 / 裝置詳情**：表格欄寬收緊——操作欄不再被擠出右側、空欄不再吃滿寬度、MAC 與時間不再折行。
+- **NAT 規則**：從頂層選單移到「進階」群組；點某一列改為**唯讀檢視**（欄位禁用），編輯改走操作欄鉛筆鈕。
+- **更新提示橫幅**：改為有框 + 陰影、整塊可點的方塊、SVG icon（非 emoji），文案改「系統有更新，請按此重新整理載入最新版本」。
+- **全站表格每頁筆數**改為記住使用者偏好（`user_preferences.page_size`，跨裝置同步）。
+
+## [0.4.114] — 2026-06-09
+
+### 新增 / 改善
+- **DNS 記錄頁**：可依伺服器 / 型別篩選（型別下拉帶筆數統計）、來源欄顯示**來源 DNS 伺服器**、IP 對應
+  改用**實際 IP 值**查 `ip_addresses`（修「子網路裡明明有、卻顯示查無對應」）、欄位選擇器；DNS 同步只
+  保留 **A / AAAA / PTR**（IP↔名稱對應用途），不再存 CNAME/MX/TXT 等。
+- **IP 位址**：新增 `in_dhcp_lease`（migration 0074）由 OPNsense DHCP lease 同步**自動標記/撤銷**；
+  phpIPAM 匯入來源改標 `phpipam`（原本一律誤標「手動」）；OPNsense DHCP/ARP 同步加上防火牆關聯子網路
+  範圍 + `limit(1)`，修重疊網段同 IP 的 `MultipleResultsFound` 整批 crash。
+- **全域搜尋**：支援**部分 MAC 前綴**（如 `bc:24`）；DNS 記錄搜尋結果改導向「進階 → DNS 記錄」並把名稱代入搜尋。
+- **機櫃**：合併單卡也能匯出 **SVG / PNG / draw.io**（整機房多櫃並排）；draw.io 方塊改**直角**與畫面一致。
+- **AI 對話**：零相依 Markdown 渲染器支援 **GFM 表格**（修表格亂掉）。
+- **MCP**：新增 `list_dns_records` 工具；AI 回答「某子網路還有幾個可用 IP」改呼叫實際資料而非純 CIDR 算術。
+- **IP 申請審核通知信**：加上**可點連結**（未登入先導登入、登入後自動返回審核頁）。
+- IP 異動記錄的 `switch_port` 顯示改「**裝置@埠號**」。
+
+## [0.4.113] — 2026-06-09
+
+### 新增 — IP 申請審核關卡 + 通知
+- **可設定的審核政策**（管理 → IP 申請審核設定），四種模式供各站台選用：僅管理員；管理員 +
+  指定使用者/群組（單關卡，任一核准）；**多組會簽**（多關卡、不分先後、全部都要核准）；
+  **依序多關卡**（有序關卡，每關各自指定審核人，須逐關通過）。另有「是否允許自核」職責分離
+  開關。逐關核准記錄存於新表 `ip_request_stage_approvals`（migration 0073）。核准/駁回端點
+  改依政策授權（不再只看是否為 admin）。
+- 申請詳情頁顯示**關卡進度**（哪些關卡已過、目前待哪一關）；依序模式下，輪到某關才通知該關審核人。
+- IP 申請清單對審核人的待審項目直接提供 **核准 / 駁回** 按鈕（不必點進詳情）。
+- 申請詳情頁全面中文化；顯示子網路 CIDR（可點）與「**將配發的 IP**」——含系統自動挑的第一個
+  空位，且**審核人可在核准前改成別的 IP**。
+- **審核人通知**：申請送出時，每位審核人會收到站內鈴鐺通知；若已啟用 Email 管道也會收到信。
+- **通知發送設定**（管理 → 通知發送設定）：Email/SMTP 管道（主機/埠/TLS/帳密/寄件者，密碼
+  加密儲存，可寄測試信）。Telegram / Slack / Teams / Nextcloud / Zulip 顯示「開發中」。
+
+### 新增 — DHCP
+- 子網路詳情在有 OPNsense DHCP 發放範圍時多顯示 **DHCP 發放範圍** 欄（無資料則不顯示），
+  IP 清單並新增 **只看 DHCP** 篩選。
+
+### 新增 — DNS 記錄（進階 → DNS 記錄）
+- 新頁面列出從整合 DNS Server 取回的記錄，可搜尋、**用 IP 反查**對應記錄（正解 A/AAAA 或該 IP
+  的 PTR），以及**只看「沒有對應 IPAM IP」**的 A/AAAA 記錄。
+
+## [0.4.112] — 2026-06-09
+
+### 修正
+- **人工編輯的 MAC 未受同步覆寫保護。** 不像 hostname（會記一筆 `manual` 觀測），在 UI
+  改 IP 的 MAC 只設了 `ip.mac`、沒標 `mac_source="manual"`，導致下次掃描 / ARP 同步可能
+  把它蓋掉。IP 編輯端點現在會在人工改 MAC 時標記 `mac_source="manual"`（ARP 優先序最高），
+  清空 MAC 時一併清掉來源。
+  （hostname 的人工 vs 優先序流程已端到端驗證正確；若人工填的主機名稱看似消失，多半是
+  瀏覽器跑到舊的 SPA bundle，請強制重新整理，而非後端問題。）
+- IP 申請工具列：狀態篩選下拉是 `small`、旁邊按鈕是預設大小，導致下拉較矮 → 調成同高。
+
 ## [0.4.111] — 2026-06-08
 
 ### 安全（MCP 逐物件 RBAC 範圍）

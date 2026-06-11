@@ -1,4 +1,13 @@
-# jt-ipam v0.4.111
+# jt-ipam v0.4.129
+
+[![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/jasoncheng7115/jt-ipam)](https://github.com/jasoncheng7115/jt-ipam/commits/main)
+[![Stars](https://img.shields.io/github/stars/jasoncheng7115/jt-ipam?style=flat)](https://github.com/jasoncheng7115/jt-ipam/stargazers)
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)
+![Vue](https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![OWASP](https://img.shields.io/badge/OWASP-Top%2010%3A2025-000000)
 
 **🌐 [專案介紹網站 / Project site →](https://jasoncheng7115.github.io/jt-ipam/)**
 
@@ -118,6 +127,48 @@ systemctl restart jt-ipam-backend
 ```
 
 > 兩種模式憑證路徑相同(`/etc/jt-ipam/tls/server.{crt,key}`)，差別只在「誰終止 TLS」：模式 A reload nginx、模式 B 重啟 backend。
+
+**模式 C — 前面已有外部反向代理負責 SSL**（你自己有一台 nginx / LB 終止 TLS）
+本機 nginx 只做 HTTP，套用外部代理模式範本：
+
+```bash
+sudo cp deploy/nginx/jt-ipam-external-proxy.conf         /etc/nginx/sites-available/jt-ipam
+sudo cp deploy/nginx/jt-ipam-external-proxy-snippet.conf /etc/nginx/snippets/jt-ipam-proxy.conf
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+外部代理本身**不會**影響 OIDC / M365(Entra ID) 登入，但有三個一定要對，否則登入會被導到 `ipam.example.com` 或卡在登入頁：
+
+1. **`/etc/jt-ipam/backend.env`** 的 `APP_PUBLIC_URL` / `API_PUBLIC_URL` / `CORS_ORIGINS` 都設成對外網域（`https://ipam.your-domain.com`），不要留預設 `ipam.example.com`（後端簽發 token、OIDC 回呼網址都看它）→ 改完 `systemctl restart jt-ipam-backend`。
+2. **外部 nginx 轉發時要送** `proxy_set_header X-Forwarded-Proto $scheme;`（=https）與 `Host $host;`；本機範本會把它透傳給後端（避免後端誤判成 http、Secure cookie 設不起來）。
+3. **OIDC Redirect URI** 在 IdP 與 jt-ipam UI（系統設定 → SSO → OIDC）都填 `https://ipam.your-domain.com/api/v1/auth/oidc/callback`。注意 **UI 存過的 DB 值優先於 .env**，改 .env 後要在 UI 再存一次。
+> HSTS 由持有憑證的外部 nginx 送出，本機（HTTP）不送。
+
+## 專案結構
+
+```
+jt-ipam/
+├── docs/              # 規格、安全、資料模型、API 參考
+├── backend/           # FastAPI app
+│   └── app/
+│       ├── core/      # config / db / audit / safe_http / encrypted_secret
+│       ├── models/    # SQLAlchemy 2.0
+│       ├── schemas/   # Pydantic v2
+│       ├── api/v1/    # REST API
+│       ├── services/  # 商業邏輯（ai / oui / opnsense / topology / search / permission）
+│       ├── mcp/       # MCP server + tools（給 LLM 用戶端）
+│       └── plugins/   # 外掛系統
+├── frontend/          # Vue 3 + TS
+│   └── src/{views,components,composables,api,stores,i18n,router}
+└── scripts/           # jt-ipam.sh（install/upgrade/uninstall）、ci.sh、oui_refresh.py
+```
+
+## 藍圖進度
+
+- **Phase 1（完成）** — phpIPAM 對等功能 + 改良（區段/子網路/IP/VLAN/VRF/NAT/裝置/機櫃/地點/IP 申請、TOTP/API-Token/RBAC、phpIPAM 匯入、CSV/RIPE/TWNIC、視覺化子網路格、強制 TLS）
+- **Phase 2（完成）** — 多家 DNS + 深度 LibreNMS 整合（裝置/ARP/FDB/實際狀態）+ 異常偵測 + SHA-256 稽核鏈 + pgvector AI 語意搜尋
+- **Phase 3（完成）** — 租戶/聯絡人/佈線/電力/VPN/虛擬化 + Proxmox VE 同步 + Cytoscape 拓樸 + OIDC/SAML SSO + OPNsense 防火牆同步 + Wazuh agent 盤點
+- **Phase 4（完成、已縮減範圍）** — MCP server + 本地 LLM 自然語言（LLM Server）+ 外掛機制
 
 ## 授權
 

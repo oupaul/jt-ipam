@@ -4,6 +4,137 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.129] — 2026-06-11
+
+### Security
+- **RBAC IDOR fixes** — several detail/aggregate endpoints accepted an object id without an
+  object-level visibility check, letting any signed-in account read objects outside its scope:
+  `GET /devices/{id}` and its sub-resources (`/integrations` exposed Wazuh CVE counts + Proxmox
+  VMs, plus `/librenms`, `/vlans`, `/relations`), `GET /customers/{id}` and `/{id}/summary`
+  (full per-customer asset dump), and `GET /racks/{id}/diagram`. All now require object `read`
+  permission (404 on no access). The MCP `get_topology` tool no longer leaks the full topology
+  to scoped accounts (was missing the `user` filter) and is gated as global-read; the REST
+  `GET /topology` is gated with `require_global_read` to match.
+- **OIDC ID Token verification** — the callback previously base64-decoded the ID Token and
+  trusted its claims (including `groups`, which drives admin promotion) without verifying the
+  signature. It now verifies the ID Token against the provider's JWKS (signature + `aud`/`iss`/
+  `nonce`) before trusting any claim; on failure it falls back to userinfo only instead of
+  trusting unverified groups.
+- **CSV export formula injection** — IP address CSV export now escapes cells beginning with
+  `= + - @` / tab / CR so spreadsheets don't execute them as formulas.
+
+### Fixed
+- **Integration sync resilience** — `jt-ipam-sync.py` now rolls back the session before writing
+  `last_error` in every integration's exception handler; a single failing instance (e.g. an
+  AdGuard `MultipleResultsFound` on overlapping subnets) no longer aborts the whole sync run.
+- **Overlapping subnets** — AdGuard sync (`sync_clients` / `sync_rewrites`) and the MCP ARP
+  lookup matched `IPAddress.ip` with `scalar_one_or_none()`; with overlapping subnets the same
+  IP yields multiple rows → `MultipleResultsFound`. Changed to `limit(1)` + `first()`.
+- **Non-UCS DNS server connection tests** — BIND 9 (dnspython `OSError`/connection-refused),
+  Windows DNS (WinRM/`requests` exceptions), PowerDNS and OPNsense Unbound (non-JSON responses
+  on auth failure) leaked raw exceptions that the `/dns/servers/{id}/test` endpoint didn't catch,
+  producing a 500 with no message. Adapters now wrap these as `DNSAdapterError`, and the test
+  endpoint has a safety net that turns any unexpected error into a readable 502.
+
+### UI / Docs
+- Fixed a missing i18n key on the section detail page ("display order" showed the raw key).
+- Added error feedback to the notifications "mark all read" and group-members actions.
+- Terminology: use 「外掛」 (not 「插件」) for "plugin" in zh-TW docs.
+
+## [0.4.128] — 2026-06-10
+
+### Fixed / Improved
+- **External reverse proxy + OIDC / Microsoft 365 (Entra ID) login**: the frontend now parses
+  the token the backend returns in the URL fragment after the OIDC/SAML callback (previously
+  ignored → stuck on the login page); the backend merges **ID Token** claims into userinfo —
+  Entra ID returns `groups` only in the ID Token (not the Graph userinfo endpoint), so admin-
+  group mapping now matches. Added `deploy/nginx/jt-ipam-external-proxy.{conf,snippet}`
+  templates (HTTP-only, no HSTS, `X-Forwarded-Proto` passthrough) and a README "Mode C —
+  external reverse proxy" section (set `APP_PUBLIC_URL`/CORS to your domain, forward the proto).
+- **Install (Ubuntu 24.04)**: `ensure_node` no longer pipes the NodeSource output to `/dev/null`
+  and now **verifies Node ≥ 18** after install, otherwise it stops with a clear remedy — fixes a
+  silent Node-install failure that left the frontend unbuilt while the run "looked" successful.
+- **AI chat**: when Ollama is disabled / unreachable / misconfigured, a **friendly, actionable**
+  error is shown (pointing to Admin → LLM / AI) instead of a cryptic string.
+- **Circuits**: fixed the empty "associated device" dropdown when editing (device query exceeded
+  the backend `page_size` cap); circuit table gains Device / Description columns and a localized
+  Status column.
+- **Tables (scan agents / device detail)**: tightened column widths so the actions column no
+  longer overflows, empty columns no longer hog width, and MAC / timestamps no longer wrap.
+- **NAT rules**: moved under the Advanced menu; clicking a row opens a read-only view (fields
+  disabled), editing is via the pencil action.
+- **Update banner**: a bordered + shadowed clickable box with an SVG icon (not an emoji) and
+  clearer wording.
+- **Per-table page size** now remembers the user preference (`user_preferences.page_size`).
+
+## [0.4.114] — 2026-06-09
+
+### Added / Improved
+- **DNS records page**: filter by server / type (type dropdown shows per-type counts), a source
+  column showing the originating DNS server, IP matching resolved against the **actual IP value**
+  in `ip_addresses` (fixes "the IP is in IPAM but shows no match"), and a column picker. DNS sync
+  now keeps only **A / AAAA / PTR** (IP↔name mapping) — CNAME/MX/TXT etc. are no longer stored.
+- **IP addresses**: new `in_dhcp_lease` (migration 0074) auto-managed by the OPNsense DHCP-lease
+  sync; phpIPAM import now labels `discovery_source='phpipam'` (was mislabeled "manual"); OPNsense
+  DHCP/ARP sync scopes the IP lookup to the firewall's subnets + `limit(1)`, fixing
+  `MultipleResultsFound` on overlapping subnets sharing an IP.
+- **Global search**: matches **partial MAC prefixes** (e.g. `bc:24`); DNS-record hits open
+  Advanced → DNS records with the name pre-filled.
+- **Racks**: the merged single-card view can export **SVG / PNG / draw.io** (all racks side-by-
+  side); draw.io device boxes are now square to match the on-screen diagram.
+- **AI chat**: the zero-dependency Markdown renderer now supports **GFM tables**.
+- **MCP**: new `list_dns_records` tool; AI answers about subnet usage call real data instead of
+  generic CIDR arithmetic.
+- **IP request approval emails** include a **clickable link** (routes through login then back to
+  the approval page if not signed in).
+- The IP change log renders `switch_port` as **device@port**.
+
+## [0.4.113] — 2026-06-09
+
+### Added — IP request approval gate + notifications
+- **Configurable approval policy** (Admin → IP Request Approval) with four modes so
+  each site can pick: `admin only`; `administrators + designated users/groups`
+  (single gate, any one approves); **parallel sign-off** (multiple gates, any order,
+  all must approve); and **sequential multi-stage** (ordered gates, each with its own
+  approvers — must pass gate 1→2→3…). Plus a separation-of-duties self-approval
+  toggle. Per-step approvals are tracked in a new `ip_request_stage_approvals` table
+  (migration 0073). Approve/reject authorize via the policy, not a blanket admin check.
+- The request detail page shows **gate progress** (which gates passed / which is
+  awaiting); each sequential gate's approvers are notified only when it's their turn.
+- **Inline approve / reject** on the IP Requests list for approvers (pending rows),
+  in addition to the request detail page.
+- Request detail: fully localized; shows the subnet CIDR (linked) and, for pending
+  requests, the **IP that will be allocated** — including the auto-picked first-free
+  IP — which the **approver can change** before approving.
+- **Approver notifications**: when a request is submitted, every approver gets an
+  in-app bell notification and (if the Email channel is enabled) an email.
+- **Notification channels settings** (Admin → Notification Channels): an SMTP/email
+  channel (host/port/TLS/credentials/from, encrypted password, test-send button).
+  Telegram / Slack / Teams / Nextcloud / Zulip are shown as "in development".
+
+### Added — DHCP
+- Subnet detail shows a **DHCP ranges** row when OPNsense DHCP pool ranges exist for
+  that subnet (hidden when none), and a **DHCP-only** filter on its IP list.
+
+### Added — DNS records (Advanced → DNS Records)
+- New page listing DNS records pulled from integrated DNS servers, with search, an
+  **IP lookup** (find records matching an IP — forward A/AAAA or the IP's PTR), and a
+  **"no matching IP"** filter (A/AAAA records whose target isn't in IPAM).
+
+## [0.4.112] — 2026-06-09
+
+### Fixed
+- **Manually-edited MAC was not protected from sync overwrite.** Unlike hostname
+  (which records a `manual` observation), editing an IP's MAC in the UI only set
+  `ip.mac` without marking `mac_source="manual"`, so the next scan/ARP sync could
+  clobber it. The IP-edit endpoint now stamps `mac_source="manual"` on manual MAC
+  edits (highest ARP precedence) and clears the source when the MAC is cleared.
+  (Hostname's manual-vs-precedence path was verified correct end-to-end; if a
+  manually-set hostname seems to vanish, hard-refresh — it is usually a stale SPA
+  bundle, not the backend.)
+- IP Requests toolbar: the status filter select was `small` while the buttons next
+  to it were default size, so it sat shorter — aligned to the same height.
+
 ## [0.4.111] — 2026-06-08
 
 ### Security (MCP per-object RBAC scoping)
