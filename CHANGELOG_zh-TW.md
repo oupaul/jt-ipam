@@ -4,7 +4,32 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
-## [0.4.130] — 2026-06-11
+## [0.4.132] — 2026-06-12
+
+### 修正
+- **CSV 實際匯入 500（客戶回報 / issue #4）** — 匯入端點把 `subnet.cidr`（asyncpg 回傳的
+  `IPv4Network` 物件，不是 str）當成背景作業的 VARCHAR `target_label` → asyncpg `DataError`。
+  dry-run 不受影響（不會 spawn task），所以「模擬匯入正常、實際匯入 500」。已用 `str()` 轉型。
+- **IP 申請列表在有手動指定 IP 時 500（issue #4）** — asyncpg 從 `INET` 欄位回傳 `IPv4Address`，
+  但 `IPRequestRead.requested_ip` 宣告為 `str`，Pydantic 驗證失敗 → 整個列表頁 500。比照
+  `IPAddressRead.ip` / `SubnetRead.cidr` 既有作法加 `mode="before"` 強制轉 str。
+- **掃描代理無法回傳主機名稱（客戶回報）** — 回報帶 rdns/NetBIOS/mDNS/OS 主機名稱時，對「新發現
+  的 IP」會 500。session `autoflush=False` + UUID 由 DB 端產生，剛 add 的 `IPAddress` 此時 `id=None`，
+  `apply_observation` 建 hostname 觀測 FK row 時違反 `NOT NULL`。改成建立 IP 後立即 flush，讓
+  id 先有值。（只有 icmp+arp 的回報不受影響，因為不會呼叫 `apply_observation`。）
+- **一併修補同類 asyncpg INET/CIDR 當 str 的隱性 bug**：其他以 `model_validate(ORM)` 組裝、漏掉
+  轉型的 read schema — `APITokenRead.last_used_ip`、`VMInterfaceRead`（`primary_ip`/`mac`）、
+  `ARPEntryRead`/`FDBEntryRead`（`ip`/`mac`）。
+
+## [0.4.131] — 2026-06-12
+
+### 修正
+- **Ubuntu 26.04 安裝失敗（客戶回報）** — 安裝腳本原本寫死 `postgresql-16`，但 Ubuntu 26.04
+  預設庫沒有 PG 16（改出 PG 17/18）。舊的退路會去加 PGDG 對應「新發行版 codename」的庫，而
+  PGDG 對剛發布的 Ubuntu codename 常延遲數月才上架 → `apt-get update` 404、整個安裝中斷。
+  現在改成偵測「已啟用的庫裡可用的 PostgreSQL 版本」（優先 16，否則用發行版自帶的 17/18…）
+  並安裝對應的 `postgresql-N-pgvector`；只有在完全找不到 `postgresql-N`（>=16）時才退回 PGDG。
+  app 對 PG 16/17/18 皆相容。Python 偵測也加入 `python3.14`（Ubuntu 26.04 預設）。
 
 ### 修正
 - **ARP 紀錄保留** — `arp_entries` 原本只新增/更新、從不回收，長期會無限累積（MAC↔IP 變動、

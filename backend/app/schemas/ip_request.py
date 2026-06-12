@@ -63,6 +63,15 @@ class IPRequestRead(StrictModel):
     created_at: datetime
     updated_at: datetime
 
+    @field_validator("requested_ip", mode="before")
+    @classmethod
+    def _coerce_requested_ip(cls, v: object) -> str | None:
+        # requested_ip 是 INET 欄位，asyncpg 回傳 IPv4Address 物件而非 str；
+        # 手動指定 IP 的申請開啟列表時，Pydantic str 驗證會失敗 → 整頁 500（issue #4）。
+        if v is None or v == "":
+            return None
+        return str(v)
+
 
 class IPRequestEventRead(StrictModel):
     id: uuid.UUID
