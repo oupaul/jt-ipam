@@ -113,6 +113,16 @@ _INPUT_COLS = {
     "ip", "hostname", "mac", "state", "description", "owner", "switch_port", "note",
 }
 
+# 中文欄位別名 → 英文標準名（匯入時自動正規化）
+_COL_ALIASES: dict[str, str] = {
+    "主機名稱": "hostname",
+    "狀態":    "state",
+    "說明":    "description",
+    "擁有者":  "owner",
+    "交換器位置": "switch_port",
+    "備註":    "note",
+}
+
 
 async def import_addresses_csv(
     session: AsyncSession,
@@ -167,7 +177,9 @@ async def import_addresses_csv(
 
     for line_no, raw in enumerate(reader, start=2):  # header 是第 1 行
         # 正規化 key（小寫 + strip）
-        row = {(k or "").strip().lower(): (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
+        row_raw = {(k or "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
+        # 中文欄位別名正規化（先套別名，再 lower）
+        row = {(_COL_ALIASES.get(k, k).lower()): v for k, v in row_raw.items()}
         # 拒絕未識別欄位（A03）— 但只報告，不阻止此列
         unknown = [k for k in row if k not in _INPUT_COLS and k != ""]
         if unknown:
