@@ -317,11 +317,16 @@ async def import_devices_csv(
     dialect = _detect_dialect(sample)
     reader = csv.DictReader(io.StringIO(text), dialect=dialect)
 
-    if not reader.fieldnames or "name" not in [c.strip().lower() for c in reader.fieldnames]:
+    # 檢查 header 時也套別名（支援中文欄位）
+    _norm_headers = [
+        (_DEVICE_COL_ALIASES.get((c or "").strip(), (c or "").strip())).lower()
+        for c in (reader.fieldnames or [])
+    ]
+    if not reader.fieldnames or "name" not in _norm_headers:
         return ImportResult(
             inserted=0, updated=0, skipped=0, errored=1,
             errors=[ImportRowError(line_number=1, raw={"fieldnames": reader.fieldnames or []},
-                                   error="Required header 'name' not found")],
+                                   error="Required header 'name' (or '名稱') not found")],
             preview=[],
         )
 
