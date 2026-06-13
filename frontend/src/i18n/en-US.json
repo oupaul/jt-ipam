@@ -763,6 +763,17 @@
     "queued": "Import queued as a background job — see the Tasks page for progress",
     "import_failed": "Import failed"
   },
+  "device_csv_import": {
+    "button": "Import CSV",
+    "hint_html": "Column order doesn't matter; header must include <code>name</code>. Optional: <code>fqdn, type, vendor, model, serial, description</code>. UTF-8 (with BOM); auto-detects comma / semicolon / Tab.",
+    "dry_run": "Dry-run (don't write DB, just preview)",
+    "update_existing": "Upsert mode (update existing devices with non-empty CSV fields)",
+    "select_file": "Choose CSV",
+    "result_title": "Result",
+    "dry_run_preview": "Dry-run: preview {n} rows",
+    "imported": "Imported: {inserted}, updated: {updated}, skipped: {skipped}",
+    "import_failed": "Import failed"
+  },
   "visualisation": {
     "active": "active",
     "reserved": "reserved",

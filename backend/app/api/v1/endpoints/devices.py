@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -461,3 +461,51 @@ async def bulk_delete_devices(
         deleted += 1
     await session.commit()
     return {"deleted": deleted, "failed": len(errors), "errors": errors[:50]}
+
+
+@router.post("/import-csv", dependencies=[Depends(require_admin)])
+async def import_devices_csv(
+    file: Annotated[UploadFile, File()],
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    dry_run: Annotated[bool, Form()] = True,
+    update_existing: Annotated[bool, Form()] = False,
+) -> dict[str, object]:
+    """匯入裝置 CSV。
+
+    - header 必須含 `name`
+    - dry_run=true：只回預覽 + 錯誤，不寫 DB
+    - update_existing=true：以 CSV 非空欄位更新同名裝置（upsert 模式）
+    """
+    from app.services.csv_io import import_devices_csv as _import_devices_csv
+
+    raw = await file.read()
+    if len(raw) > 16_777_216:
+        raise HTTPException(413, detail="CSV file too large (max 16 MB)")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(400, detail=f"CSV must be UTF-8: {exc}") from exc
+
+    result = await _import_devices_csv(
+        session, csv_text=text, dry_run=dry_run, update_existing=update_existing,
+    )
+
+    if not dry_run and (result.inserted > 0 or result.updated > 0):
+        await append_audit(
+            session,
+            actor_user_id=str(user.id),
+            actor_ip=request.client.host if request.client else None,
+            actor_user_agent=request.headers.get("user-agent"),
+            object_type="device", object_id="bulk",
+            action="device_csv_import",
+            diff={
+                "inserted": result.inserted, "updated": result.updated,
+                "skipped": result.skipped, "errored": result.errored,
+                "filename": file.filename, "update_existing": update_existing,
+            },
+            request_id=getattr(request.state, "request_id", None),
+        )
+
+    return {"dry_run": dry_run, **result.to_dict()}

@@ -8,7 +8,8 @@ import { apiClient } from "@/api/client";
 import {
   NCard, NDataTable, NSpace, NIcon, NButton, NModal, NForm, NFormItem,
   NInput, NInputNumber, NInputGroup, NSelect, NPopconfirm, NTag, NTooltip, NSpin,
-  useMessage, type DataTableColumns, type DataTableRowKey,
+  NUpload, NPopover, NCheckbox, NAlert,
+  useMessage, type DataTableColumns, type DataTableRowKey, type UploadCustomRequestOptions,
 } from "naive-ui";
 import {
   listDevices, createDevice, updateDevice, deleteDevice, bulkDeleteDevices, type Device,
@@ -58,6 +59,44 @@ const racks = ref<Rack[]>([]);
 const loading = ref(false);
 const show = ref(false);
 const editing = ref<Device | null>(null);
+
+const dryRun = ref(true);
+const updateExisting = ref(false);
+const importBusy = ref(false);
+const importResult = ref<Record<string, unknown> | null>(null);
+
+async function uploadDevicesCsv(opts: UploadCustomRequestOptions) {
+  const { file } = opts;
+  if (!file.file) { opts.onError(); return; }
+  importBusy.value = true;
+  importResult.value = null;
+  try {
+    const form = new FormData();
+    form.append("file", file.file as Blob, file.name);
+    form.append("dry_run", String(dryRun.value));
+    form.append("update_existing", String(updateExisting.value));
+    const resp = await apiClient.post("/api/v1/devices/import-csv", form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    importResult.value = resp.data;
+    if (dryRun.value) {
+      msg.info(t("device_csv_import.dry_run_preview", { n: resp.data.preview?.length ?? 0 }));
+    } else {
+      msg.success(t("device_csv_import.imported", {
+        inserted: resp.data.inserted ?? 0,
+        updated: resp.data.updated ?? 0,
+        skipped: resp.data.skipped ?? 0,
+      }));
+      await refresh();
+    }
+    opts.onFinish();
+  } catch (e: any) {
+    msg.error(e?.response?.data?.detail ?? t("device_csv_import.import_failed"));
+    opts.onError();
+  } finally {
+    importBusy.value = false;
+  }
+}
 
 const form = ref<{
   name: string; fqdn: string; type: string;
@@ -421,6 +460,37 @@ onMounted(async () => {
                     @update:visible="setVisible" @reset="reset" />
       <ExportButton :columns="cols" :rows="rows" :fetch-all="fetchAllForExport"
                     filename="devices" :title="t('nav.devices')" />
+      <n-popover trigger="click" placement="bottom-end" :width="360">
+        <template #trigger>
+          <n-button :disabled="_authBtn.me?.can_edit === false">
+            {{ t("device_csv_import.button") }}
+          </n-button>
+        </template>
+        <n-space vertical :size="12">
+          <n-alert type="info" size="small">
+            <span v-html="t('device_csv_import.hint_html')" />
+          </n-alert>
+          <n-checkbox v-model:checked="dryRun">
+            {{ t("device_csv_import.dry_run") }}
+          </n-checkbox>
+          <n-checkbox v-model:checked="updateExisting">
+            {{ t("device_csv_import.update_existing") }}
+          </n-checkbox>
+          <n-upload
+            :custom-request="uploadDevicesCsv"
+            :show-file-list="false"
+            accept=".csv,text/csv"
+            :disabled="importBusy"
+          >
+            <n-button :loading="importBusy" type="primary" size="small">
+              {{ t("device_csv_import.select_file") }}
+            </n-button>
+          </n-upload>
+          <n-card v-if="importResult" size="small" :title="t('device_csv_import.result_title')">
+            <pre style="font-size:11px;overflow:auto;max-height:260px;margin:0">{{ JSON.stringify(importResult, null, 2) }}</pre>
+          </n-card>
+        </n-space>
+      </n-popover>
       <n-button type="primary" :disabled="_authBtn.me?.can_edit === false" @click="openCreate">
         <template #icon><n-icon><PlusIcon /></n-icon></template>
         {{ t("common.create") }}

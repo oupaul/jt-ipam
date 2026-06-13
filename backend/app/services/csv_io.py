@@ -25,8 +25,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.address import IPAddress
+from app.models.device import Device as DeviceModel
 from app.models.subnet import Subnet
 from app.schemas.address import IPAddressCreate
+from app.schemas.device import DeviceCreate
 
 EXPORT_COLUMNS: list[str] = [
     "ip",
@@ -142,7 +144,7 @@ async def import_addresses_csv(
     """
     text = _strip_bom(csv_text)
     if not text.strip():
-        return ImportResult(0, 0, 0, [], [])
+        return ImportResult(inserted=0, updated=0, skipped=0, errored=0, errors=[], preview=[])
 
     sample = text[:4096]
     dialect = _detect_dialect(sample)
@@ -150,10 +152,10 @@ async def import_addresses_csv(
 
     if not reader.fieldnames or "ip" not in [c.strip().lower() for c in reader.fieldnames]:
         return ImportResult(
-            0, 0, 1,
-            [ImportRowError(line_number=1, raw={"fieldnames": reader.fieldnames or []},
-                            error="Required header 'ip' not found")],
-            [],
+            inserted=0, updated=0, skipped=0, errored=1,
+            errors=[ImportRowError(line_number=1, raw={"fieldnames": reader.fieldnames or []},
+                                   error="Required header 'ip' not found")],
+            preview=[],
         )
 
     # 預先抓 subnet 內既有 IP；upsert 模式需要完整物件以便更新
@@ -266,6 +268,146 @@ async def import_addresses_csv(
 
     return ImportResult(
         inserted=0 if dry_run else inserted,  # dry_run 不算 inserted
+        updated=0 if dry_run else updated,
+        skipped=skipped,
+        errored=errored,
+        errors=errors,
+        preview=preview,
+    )
+
+
+# ─────────────────── 裝置 CSV 匯入 ───────────────────
+
+_DEVICE_INPUT_COLS = {
+    "name", "fqdn", "type", "vendor", "model", "serial", "description",
+}
+
+_DEVICE_COL_ALIASES: dict[str, str] = {
+    "裝置名稱": "name",
+    "名稱":    "name",
+    "類型":    "type",
+    "廠牌":    "vendor",
+    "製造商":  "vendor",
+    "型號":    "model",
+    "序號":    "serial",
+    "序列號":  "serial",
+    "說明":    "description",
+}
+
+
+async def import_devices_csv(
+    session: AsyncSession,
+    *,
+    csv_text: str,
+    dry_run: bool = False,
+    update_existing: bool = False,
+) -> ImportResult:
+    """匯入裝置 CSV。
+
+    - header 必須含 `name`（裝置名稱，作為唯一鍵）
+    - update_existing=False（預設）：已存在同名裝置視為 skip
+    - update_existing=True：以 CSV 非空欄位更新既有裝置（fqdn/type/vendor/model/serial/description）
+    - 支援欄位：name, fqdn, type, vendor, model, serial, description
+    """
+    text = _strip_bom(csv_text)
+    if not text.strip():
+        return ImportResult(inserted=0, updated=0, skipped=0, errored=0, errors=[], preview=[])
+
+    sample = text[:4096]
+    dialect = _detect_dialect(sample)
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+
+    if not reader.fieldnames or "name" not in [c.strip().lower() for c in reader.fieldnames]:
+        return ImportResult(
+            inserted=0, updated=0, skipped=0, errored=1,
+            errors=[ImportRowError(line_number=1, raw={"fieldnames": reader.fieldnames or []},
+                                   error="Required header 'name' not found")],
+            preview=[],
+        )
+
+    # 預先抓所有裝置名稱（用於 upsert 比對）
+    existing_q = await session.execute(select(DeviceModel))
+    existing_objs: dict[str, DeviceModel] = {r.name: r for r in existing_q.scalars().all()}
+    existing = set(existing_objs.keys())
+
+    inserted = 0
+    updated = 0
+    skipped = 0
+    errored = 0
+    errors: list[ImportRowError] = []
+    preview: list[dict[str, Any]] = []
+
+    for line_no, raw in enumerate(reader, start=2):
+        # 正規化 key（小寫 + strip）
+        row_raw = {(k or "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
+        row = {(_DEVICE_COL_ALIASES.get(k, k).lower()): v for k, v in row_raw.items()}
+        # 未識別欄位：報告但不阻擋
+        unknown = [k for k in row if k not in _DEVICE_INPUT_COLS and k != ""]
+        if unknown:
+            errors.append(ImportRowError(line_no, dict(row), f"Ignored unknown columns: {unknown}"))
+
+        name = row.get("name") or ""
+        if not name:
+            errored += 1
+            errors.append(ImportRowError(line_no, dict(row), "Missing name"))
+            continue
+
+        # Pydantic 驗證（type enum / 長度等）
+        try:
+            payload = DeviceCreate(
+                name=name,
+                fqdn=row.get("fqdn") or None,
+                type=row.get("type") or "other",
+                vendor=row.get("vendor") or None,
+                model=row.get("model") or None,
+                serial=row.get("serial") or None,
+                description=row.get("description") or None,
+            )
+        except Exception as exc:  # ValidationError
+            errored += 1
+            msg = getattr(exc, "errors", lambda: [{"msg": str(exc)}])()
+            errors.append(ImportRowError(line_no, dict(row), f"Validation: {msg[0]['msg']}"))
+            continue
+
+        if name in existing:
+            if not update_existing:
+                skipped += 1
+                continue
+            # upsert：只以非空欄位更新
+            if not dry_run:
+                obj = existing_objs[name]
+                if row.get("fqdn"):        obj.fqdn = payload.fqdn
+                if row.get("type"):        obj.type = payload.type
+                if row.get("vendor"):      obj.vendor = payload.vendor
+                if row.get("model"):       obj.model = payload.model
+                if row.get("serial"):      obj.serial = payload.serial
+                if row.get("description"): obj.description = payload.description
+            updated += 1
+            continue
+
+        if len(preview) < 5:
+            preview.append(payload.model_dump(mode="json"))
+
+        if not dry_run:
+            obj = DeviceModel(
+                name=payload.name,
+                fqdn=payload.fqdn,
+                type=payload.type,
+                vendor=payload.vendor,
+                model=payload.model,
+                serial=payload.serial,
+                description=payload.description,
+            )
+            session.add(obj)
+            existing.add(name)
+
+        inserted += 1
+
+    if not dry_run and (inserted > 0 or updated > 0):
+        await session.commit()
+
+    return ImportResult(
+        inserted=0 if dry_run else inserted,
         updated=0 if dry_run else updated,
         skipped=skipped,
         errored=errored,
