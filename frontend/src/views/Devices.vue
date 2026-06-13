@@ -20,7 +20,7 @@ import {
   DevicesIcon, PlusIcon, EditIcon, DeleteIcon, RefreshIcon, SaveIcon, CancelIcon, EyeIcon, LinkIcon, RacksIcon,
 } from "@/icons";
 import { cmpNatural } from "@/utils/sort";
-import { listAddresses } from "@/api/addresses";
+import { listAddresses, getAddress } from "@/api/addresses";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
@@ -141,6 +141,15 @@ async function loadAddresses() {
     ipAddrs.value = r.items.map((a: any) => ({ id: a.id, ip: a.ip, hostname: a.hostname }));
   } catch { /* silent */ }
 }
+
+async function ensurePrimaryIpLoaded(primaryIpId: string | null) {
+  if (!primaryIpId) return;
+  if (ipAddrs.value.some((a) => a.id === primaryIpId)) return;
+  try {
+    const a = await getAddress(primaryIpId);
+    ipAddrs.value = [{ id: a.id, ip: a.ip, hostname: a.hostname ?? null }, ...ipAddrs.value];
+  } catch { /* silent */ }
+}
 const ipOptions = computed(() =>
   ipAddrs.value.map((a) => ({
     label: a.hostname ? `${a.ip} — ${a.hostname}` : a.ip,
@@ -214,6 +223,7 @@ function openEdit(r: Device) {
   };
   void ensureCustomersLoaded();
   void loadAddresses();
+  void ensurePrimaryIpLoaded((r as any).primary_ip_id ?? null);
   show.value = true;
 }
 
