@@ -10,7 +10,7 @@ const LONG_OP_TIMEOUT_MS = 300_000;
 
 // 是否存在重疊網段（同 IP 可能跨子網路多筆）→ 用來提醒未設 scope 的整合可能標錯筆。
 export async function getSubnetOverlapExists(): Promise<boolean> {
-  const { data } = await apiClient.get<{ has_overlap: boolean }>("/subnets/overlaps/exists");
+  const { data } = await apiClient.get<{ has_overlap: boolean }>("/api/v1/subnets/overlaps/exists");
   return !!data.has_overlap;
 }
 

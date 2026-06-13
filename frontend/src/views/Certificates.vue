@@ -7,7 +7,7 @@ import {
   NFormItem, NInput, NInputNumber, NDynamicTags, NSelect, NPopconfirm, NAlert,
   NCheckbox, NRadioGroup, NRadioButton, useMessage, type DataTableColumns,
 } from "naive-ui";
-import { PlusIcon, RefreshIcon, CopyIcon, LockIcon, InfoIcon } from "@/icons";
+import { PlusIcon, RefreshIcon, CopyIcon, LockIcon, InfoIcon, SaveIcon } from "@/icons";
 import {
   listCertificates, createCertificate, deleteCertificate, uploadVersion, generateSelfSigned,
   listCertAgents, createCertAgent, rotateCertAgentKey, deleteCertAgent,
@@ -249,7 +249,9 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() => [
       </n-form-item>
     </n-form>
     <template #footer>
-      <n-button type="primary" @click="doCreate">{{ t("common.save") }}</n-button>
+      <n-button type="primary" @click="doCreate">
+        <template #icon><n-icon :component="SaveIcon" /></template>{{ t("common.save") }}
+      </n-button>
     </template>
   </n-modal>
 
@@ -330,7 +332,9 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() => [
       </n-form-item>
     </n-form>
     <template #footer>
-      <n-button v-if="!newKey" type="primary" @click="doCreateAgent">{{ t("common.save") }}</n-button>
+      <n-button v-if="!newKey" type="primary" @click="doCreateAgent">
+        <template #icon><n-icon :component="SaveIcon" /></template>{{ t("common.save") }}
+      </n-button>
       <n-button v-else @click="showNewAgent = false">{{ t("common.close") }}</n-button>
     </template>
   </n-modal>

@@ -4,6 +4,16 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.137] — 2026-06-13
+
+### 修正
+- **憑證頁 405 /「伺服器發生錯誤」(憑證 API client 路徑漏 /api/v1)** — `certificates.ts` 的
+  API 呼叫(以及 `integrations.ts` 的重疊網段檢查)漏掉共用 axios client 需要的 `/api/v1` 前綴
+  (它的 baseURL 是 `/`),導致請求打到 SPA 路徑(`/certificates`、`/cert-agents`)→ nginx 對
+  POST 回 405、對 GET 回 index.html。已全部補上正確前綴。憑證管理頁、派送代理、產自簽、進階現況
+  頁都正常了。
+- 補上憑證/代理「儲存」按鈕漏掉的 icon。
+
 ## [0.4.136] — 2026-06-13
 
 ### 憑證派送 — 體驗

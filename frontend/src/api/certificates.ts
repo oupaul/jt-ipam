@@ -49,18 +49,18 @@ export interface CertAgentCreated extends CertAgent { enroll_key: string; }
 
 // ── 憑證 ──
 export async function listCertificates(): Promise<Paginated<Certificate>> {
-  const { data } = await apiClient.get("/certificates");
+  const { data } = await apiClient.get("/api/v1/certificates");
   return data;
 }
 export async function createCertificate(payload: { name: string; description?: string | null }): Promise<Certificate> {
-  const { data } = await apiClient.post("/certificates", payload);
+  const { data } = await apiClient.post("/api/v1/certificates", payload);
   return data;
 }
 export async function deleteCertificate(id: string): Promise<void> {
-  await apiClient.delete(`/certificates/${id}`);
+  await apiClient.delete(`/api/v1/certificates/${id}`);
 }
 export async function listVersions(id: string): Promise<CertVersion[]> {
-  const { data } = await apiClient.get(`/certificates/${id}/versions`);
+  const { data } = await apiClient.get(`/api/v1/certificates/${id}/versions`);
   return data;
 }
 export async function uploadVersion(
@@ -71,39 +71,39 @@ export async function uploadVersion(
   fd.append("key_file", files.key);
   if (files.chain) fd.append("chain_file", files.chain);
   fd.append("allow_expired", String(allowExpired));
-  const { data } = await apiClient.post(`/certificates/${id}/versions`, fd);
+  const { data } = await apiClient.post(`/api/v1/certificates/${id}/versions`, fd);
   return data;
 }
 export async function generateSelfSigned(
   id: string, payload: { common_name: string; sans: string[]; days: number },
 ): Promise<CertVersion> {
-  const { data } = await apiClient.post(`/certificates/${id}/self-signed`, payload);
+  const { data } = await apiClient.post(`/api/v1/certificates/${id}/self-signed`, payload);
   return data;
 }
 
 // ── 派送代理 ──
 export async function listCertAgents(): Promise<Paginated<CertAgent>> {
-  const { data } = await apiClient.get("/cert-agents");
+  const { data } = await apiClient.get("/api/v1/cert-agents");
   return data;
 }
 export async function createCertAgent(payload: {
   name: string; description?: string | null; enabled?: boolean; scope_cert_ids: string[];
 }): Promise<CertAgentCreated> {
-  const { data } = await apiClient.post("/cert-agents", payload);
+  const { data } = await apiClient.post("/api/v1/cert-agents", payload);
   return data;
 }
 export async function updateCertAgent(id: string, payload: Partial<{
   name: string; description: string | null; enabled: boolean; scope_cert_ids: string[];
 }>): Promise<CertAgent> {
-  const { data } = await apiClient.patch(`/cert-agents/${id}`, payload);
+  const { data } = await apiClient.patch(`/api/v1/cert-agents/${id}`, payload);
   return data;
 }
 export async function rotateCertAgentKey(id: string): Promise<CertAgentCreated> {
-  const { data } = await apiClient.post(`/cert-agents/${id}/rotate-key`);
+  const { data } = await apiClient.post(`/api/v1/cert-agents/${id}/rotate-key`);
   return data;
 }
 export async function deleteCertAgent(id: string): Promise<void> {
-  await apiClient.delete(`/cert-agents/${id}`);
+  await apiClient.delete(`/api/v1/cert-agents/${id}`);
 }
 
 // ── 唯讀現況（進階，global-read 可看）──
@@ -128,6 +128,6 @@ export interface CertAgentStatus {
   deployments: CertStatusDeployment[];
 }
 export async function getCertAgentStatus(): Promise<{ agents: CertAgentStatus[] }> {
-  const { data } = await apiClient.get("/cert-agents/status");
+  const { data } = await apiClient.get("/api/v1/cert-agents/status");
   return data;
 }

@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.137] — 2026-06-13
+
+### Fixed
+- **Certificate pages returned 405 / "server error" (regression in the cert API client)** — the
+  `certificates.ts` API calls (and the subnet-overlap check in `integrations.ts`) were missing the
+  `/api/v1` prefix that the shared axios client requires (its baseURL is `/`), so requests hit the
+  SPA paths (`/certificates`, `/cert-agents`) and nginx returned 405 for POST / index.html for GET.
+  All cert API paths are now correctly prefixed. The certificate admin page, agents, self-signed,
+  and the Advanced status view work.
+- Added the missing icon on the certificate/agent "Save" buttons.
+
 ## [0.4.136] — 2026-06-13
 
 ### Certificate distribution — UX
