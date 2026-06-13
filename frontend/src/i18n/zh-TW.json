@@ -755,6 +755,7 @@
     "export_button": "匯出 CSV",
     "hint_html": "欄位順序不重要；header 必須含 <code>ip</code>。選用欄位：<code>hostname, mac, state, description, owner, switch_port, note</code>。UTF-8 (含 BOM)；自動偵測逗號 / 分號 / Tab。",
     "dry_run": "Dry-run (不寫入 DB，只回傳預覽 + 錯誤)",
+    "update_existing": "Upsert 模式（以 CSV 非空欄位更新已存在的記錄）",
     "select_file": "選擇 CSV 上傳",
     "result_title": "結果",
     "dry_run_preview": "Dry-run：預覽 {n} 筆",

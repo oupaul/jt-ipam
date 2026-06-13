@@ -80,7 +80,8 @@ class ImportRowError:
 @dataclass
 class ImportResult:
     inserted: int
-    skipped: int          # 已存在 (subnet, ip)
+    updated: int          # upsert 模式下更新已存在記錄的筆數
+    skipped: int          # 已存在 (subnet, ip)，且非 upsert 模式
     errored: int
     errors: list[ImportRowError]
     preview: list[dict[str, Any]]   # 前 5 筆「即將寫入」的列（dry-run + 真寫入皆回）
@@ -88,6 +89,7 @@ class ImportResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "inserted": self.inserted,
+            "updated": self.updated,
             "skipped": self.skipped,
             "errored": self.errored,
             "errors": [e.to_dict() for e in self.errors[:50]],  # cap report
@@ -118,12 +120,15 @@ async def import_addresses_csv(
     subnet: Subnet,
     csv_text: str,
     dry_run: bool = False,
+    update_existing: bool = False,
 ) -> ImportResult:
     """匯入到指定 subnet。
 
     - header 必須含 `ip`
     - 多餘欄位忽略；不在 _INPUT_COLS 的 header 列入錯誤訊息（不阻擋）
-    - 已存在的 (subnet_id, ip) 視為 skip（idempotent）
+    - update_existing=False（預設）：已存在的 (subnet_id, ip) 視為 skip（idempotent）
+    - update_existing=True：已存在的記錄以 CSV 中非空欄位更新（hostname/mac/state/
+      description/owner/switch_port/note）；discovery_source 等掃描欄位不動
     """
     text = _strip_bom(csv_text)
     if not text.strip():
@@ -141,18 +146,20 @@ async def import_addresses_csv(
             [],
         )
 
-    # 預先抓 subnet 內既有 IP（idempotent 比對用）
-    existing_rows = (
-        await session.execute(
-            select(IPAddress.ip).where(IPAddress.subnet_id == subnet.id)
-        )
-    ).all()
-    existing = {str(r[0]).split("/")[0] for r in existing_rows}
+    # 預先抓 subnet 內既有 IP；upsert 模式需要完整物件以便更新
+    existing_q = await session.execute(
+        select(IPAddress).where(IPAddress.subnet_id == subnet.id)
+    )
+    existing_objs: dict[str, IPAddress] = {
+        str(r.ip).split("/")[0]: r for r in existing_q.scalars().all()
+    }
+    existing = set(existing_objs.keys())
 
     cidr = str(subnet.cidr)
     net = ipaddress.ip_network(cidr, strict=False)
 
     inserted = 0
+    updated = 0
     skipped = 0
     errored = 0
     errors: list[ImportRowError] = []
@@ -186,11 +193,7 @@ async def import_addresses_csv(
                                          f"{ip} not in subnet {cidr}"))
             continue
 
-        if ip in existing:
-            skipped += 1
-            continue
-
-        # Pydantic 驗證（hostname / MAC / state 等）
+        # Pydantic 驗證（hostname / MAC / state 等）— 在存在性檢查前跑，upsert 也需要驗證過的值
         try:
             payload = IPAddressCreate(
                 subnet_id=subnet.id,
@@ -206,6 +209,23 @@ async def import_addresses_csv(
         except ValidationError as exc:
             errored += 1
             errors.append(ImportRowError(line_no, dict(row), f"Validation: {exc.errors()[0]['msg']}"))
+            continue
+
+        if ip in existing:
+            if not update_existing:
+                skipped += 1
+                continue
+            # upsert：只以 CSV 中明確填寫的非空欄位更新，空值不覆蓋既有資料
+            if not dry_run:
+                obj = existing_objs[ip]
+                if row.get("hostname"): obj.hostname = payload.hostname
+                if row.get("mac"): obj.mac = payload.mac
+                if row.get("state"): obj.state = payload.state
+                if row.get("description"): obj.description = payload.description
+                if row.get("owner"): obj.owner = payload.owner
+                if row.get("switch_port"): obj.switch_port = payload.switch_port
+                if row.get("note"): obj.note = payload.note
+            updated += 1
             continue
 
         if len(preview) < 5:
@@ -229,11 +249,12 @@ async def import_addresses_csv(
 
         inserted += 1
 
-    if not dry_run and inserted > 0:
+    if not dry_run and (inserted > 0 or updated > 0):
         await session.commit()
 
     return ImportResult(
         inserted=0 if dry_run else inserted,  # dry_run 不算 inserted
+        updated=0 if dry_run else updated,
         skipped=skipped,
         errored=errored,
         errors=errors,

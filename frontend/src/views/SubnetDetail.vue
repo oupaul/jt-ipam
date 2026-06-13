@@ -147,6 +147,7 @@ const vrf = ref<VRF | null>(null);
 const masterSubnet = ref<Subnet | null>(null);
 
 const dryRun = ref(true);
+const updateExisting = ref(false);
 const importBusy = ref(false);
 const importResult = ref<Record<string, unknown> | null>(null);
 
@@ -265,6 +266,7 @@ async function uploadCsv(opts: UploadCustomRequestOptions) {
     form.append("subnet_id", subnet.value.id);
     form.append("file", file.file as Blob, file.name);
     form.append("dry_run", String(dryRun.value));
+    form.append("update_existing", String(updateExisting.value));
     const resp = await apiClient.post("/api/v1/addresses/import", form, {
       headers: { "Content-Type": "multipart/form-data" },
     });
@@ -639,6 +641,9 @@ onMounted(() => {
                 </n-alert>
                 <n-checkbox v-model:checked="dryRun">
                   {{ t("csv_import.dry_run") }}
+                </n-checkbox>
+                <n-checkbox v-model:checked="updateExisting">
+                  {{ t("csv_import.update_existing") }}
                 </n-checkbox>
                 <n-upload
                   :custom-request="uploadCsv"

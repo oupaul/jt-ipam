@@ -43,6 +43,13 @@ class IPRequestRead(StrictModel):
     approver_user_id: uuid.UUID | None
     subnet_id: uuid.UUID
     requested_ip: str | None
+
+    @field_validator("requested_ip", mode="before")
+    @classmethod
+    def _coerce_inet(cls, v: object) -> str | None:
+        if v is None:
+            return None
+        return str(v)
     hostname: str | None
     description: str | None
     purpose: str

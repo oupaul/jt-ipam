@@ -877,6 +877,7 @@ async def import_csv(
     subnet_id: Annotated[uuid.UUID, Form()],
     file: Annotated[UploadFile, File()],
     dry_run: Annotated[bool, Form()] = False,
+    update_existing: Annotated[bool, Form()] = False,
 ) -> dict[str, object]:
     """匯入 CSV 至指定 subnet。
 
@@ -884,7 +885,8 @@ async def import_csv(
     - header-driven（欄位順序不重要，只要 header 含 ip）
     - 容忍 BOM、自動偵測 delimiter
     - dry_run=true 只回傳預覽與錯誤，不寫 DB
-    - idempotent：已存在的 (subnet_id, ip) 自動 skip
+    - update_existing=false（預設）：已存在的 (subnet_id, ip) 自動 skip
+    - update_existing=true：以 CSV 非空欄位更新既有記錄（upsert 模式）
     """
     subnet = await _require_subnet_perm(session, user, subnet_id, "write")
 
@@ -901,6 +903,7 @@ async def import_csv(
     if dry_run:
         result = await import_addresses_csv(
             session, subnet=subnet, csv_text=text, dry_run=True,
+            update_existing=update_existing,
         )
         return {"dry_run": True, **result.to_dict()}
 
@@ -916,12 +919,16 @@ async def import_csv(
     actor_ip = request.client.host if request.client else None
     actor_ua = request.headers.get("user-agent")
     request_id = getattr(request.state, "request_id", None)
+    update_existing_val = update_existing
 
     async def _runner(sess: AsyncSession, _task) -> dict[str, object]:  # type: ignore[no-untyped-def]
         sub = await sess.get(Subnet, subnet_id_val)
         if sub is None:
             raise RuntimeError("subnet no longer exists")
-        result = await import_addresses_csv(sess, subnet=sub, csv_text=csv_text, dry_run=False)
+        result = await import_addresses_csv(
+            sess, subnet=sub, csv_text=csv_text, dry_run=False,
+            update_existing=update_existing_val,
+        )
         await append_audit(
             sess,
             actor_user_id=actor_user_id_str,
@@ -929,8 +936,9 @@ async def import_csv(
             object_type="subnet", object_id=str(subnet_id_val),
             action="ip_csv_import",
             diff={
-                "inserted": result.inserted, "skipped": result.skipped,
-                "errored": result.errored, "filename": filename,
+                "inserted": result.inserted, "updated": result.updated,
+                "skipped": result.skipped, "errored": result.errored,
+                "filename": filename, "update_existing": update_existing_val,
             },
             request_id=request_id,
         )

@@ -755,6 +755,7 @@
     "export_button": "Export CSV",
     "hint_html": "Column order doesn't matter; header must include <code>ip</code>. Optional: <code>hostname, mac, state, description, owner, switch_port, note</code>. UTF-8 (with BOM); auto-detects comma / semicolon / Tab.",
     "dry_run": "Dry-run (don't write DB, just preview + errors)",
+    "update_existing": "Upsert mode (overwrite existing records with non-empty CSV fields)",
     "select_file": "Choose CSV",
     "result_title": "Result",
     "dry_run_preview": "Dry-run: {n} preview rows",
