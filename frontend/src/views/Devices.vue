@@ -222,11 +222,10 @@ async function openEdit(r: Device) {
     primary_ip_id: r.primary_ip_id ?? null,
   };
   void ensureCustomersLoaded();
-  // 先確保 primary_ip 對應的選項已載入，再開 modal，避免 NSelect 顯示原始 UUID
-  await Promise.all([
-    loadAddresses(),
-    ensurePrimaryIpLoaded(r.primary_ip_id ?? null),
-  ]);
+  // 依序：先載入前 500 筆 IP，再補上 primary_ip（可能不在前 500 內）
+  // 不能用 Promise.all，否則 loadAddresses 的賦值會覆蓋 ensurePrimaryIpLoaded 的結果
+  await loadAddresses();
+  await ensurePrimaryIpLoaded(r.primary_ip_id ?? null);
   show.value = true;
 }
 
