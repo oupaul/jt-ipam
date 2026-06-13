@@ -208,7 +208,7 @@ function openCreate() {
   show.value = true;
 }
 
-function openEdit(r: Device) {
+async function openEdit(r: Device) {
   editing.value = r;
   form.value = {
     name: r.name, fqdn: r.fqdn ?? "", type: r.type,
@@ -216,14 +216,17 @@ function openEdit(r: Device) {
     description: r.description ?? "",
     location_id: r.location_id, rack_id: r.rack_id,
     u_position: r.u_position, u_size: r.u_size,
-    rack_face: (r as any).rack_face ?? null,
-    rack_side: (r as any).rack_side ?? "full",
+    rack_face: r.rack_face ?? null,
+    rack_side: r.rack_side ?? "full",
     customer_id: r.customer_id ?? null,
     primary_ip_id: r.primary_ip_id ?? null,
   };
   void ensureCustomersLoaded();
-  void loadAddresses();
-  void ensurePrimaryIpLoaded(r.primary_ip_id ?? null);
+  // 先確保 primary_ip 對應的選項已載入，再開 modal，避免 NSelect 顯示原始 UUID
+  await Promise.all([
+    loadAddresses(),
+    ensurePrimaryIpLoaded(r.primary_ip_id ?? null),
+  ]);
   show.value = true;
 }
 
