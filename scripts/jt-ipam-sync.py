@@ -202,6 +202,17 @@ async def _run() -> int:
                 log.error("dns %s sync failed: %s", name, exc)
                 failed += 1
 
+        # ── 憑證到期 / 飄移告警 ──（去重保證每輪呼叫也不洗版）
+        try:
+            from app.services.cert_alert import check_cert_alerts
+            stats = await check_cert_alerts(session)
+            await session.commit()
+            if stats.get("expiry") or stats.get("drift"):
+                log.info("cert alerts: %s", stats)
+        except Exception as exc:  # noqa: BLE001
+            await session.rollback()
+            log.error("cert alert check failed: %s", exc)
+
     return 1 if failed else 0
 
 

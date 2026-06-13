@@ -214,10 +214,16 @@ cmd_install() {
     # 直接 404、整個安裝中斷（客戶回報的「ubuntu26 裝不起來」即此）。改成優先用發行版自帶的
     # PG（app 對 16/17/18 皆相容），都沒有才退回 PGDG 裝 16。pgvector 用對應版本套件。
     _add_pgdg_repo() {
-        install -d /usr/share/postgresql-common/pgdg
+        # keyring 放 /etc/apt/keyrings（自有檔名），**不要**用
+        # /usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg：那是 postgresql-common
+        # 套件自己的檔，已存在時 gpg --dearmor 會跳 "File exists. Overwrite?" 去開 /dev/tty，
+        # 非互動下直接 dearmoring failed → 金鑰沒寫成 → PGDG 簽章無效 → pgvector 抓不到（客戶
+        # 回報 Debian 12 卡在這）。`--yes` 確保可覆寫、整支腳本可重入。
+        local keyring=/etc/apt/keyrings/jt-ipam-pgdg.gpg
+        install -d /etc/apt/keyrings
         curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-            | gpg --dearmor -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg
-        echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | gpg --dearmor --yes -o "$keyring"
+        echo "deb [signed-by=$keyring] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             > /etc/apt/sources.list.d/pgdg.list
         apt-get update -qq
     }

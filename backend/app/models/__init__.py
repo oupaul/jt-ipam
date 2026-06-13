@@ -20,6 +20,7 @@ from app.models.ai_chat import AIChatConversation, AIChatMessage
 from app.models.audit import AuditLog
 from app.models.background_task import BackgroundTask
 from app.models.base import Base
+from app.models.certificate import CertAgent, Certificate, CertVersion
 from app.models.custom_field import CustomFieldDefinition
 from app.models.customer import Customer
 from app.models.device import Device
@@ -75,6 +76,9 @@ __all__ = [
     "Base",
     "Cable",
     "CableTermination",
+    "CertAgent",
+    "CertVersion",
+    "Certificate",
     "Circuit",
     "CircuitType",
     "Contact",

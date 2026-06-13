@@ -1,0 +1,253 @@
+"""憑證集中保管 + 版本上傳（管理面,全部 require_admin — 屬純管理/機敏資料）。
+
+agent 拉取協定(check/bundle/report,key 認證)放 cert_agents.py。
+私鑰:上傳即 AES-GCM 加密存,API 一律不回傳明文。
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1.dependencies import CurrentUser, require_admin
+from app.core.audit import append_audit
+from app.core.db import get_session
+from app.core.security import encrypt_secret
+from app.models.certificate import Certificate, CertVersion
+from app.schemas.base import Paginated
+from app.schemas.certificate import (
+    CertificateCreate,
+    CertificateRead,
+    CertificateUpdate,
+    CertVersionRead,
+    SelfSignedRequest,
+)
+from app.services.cert_service import CertError, CertInfo, generate_self_signed, validate_bundle
+
+router = APIRouter(prefix="/certificates", tags=["certificates"],
+                   dependencies=[Depends(require_admin)])
+
+
+def _key_aad(certificate_id: uuid.UUID, fingerprint: str) -> bytes:
+    return f"cert_version:{certificate_id}:{fingerprint}".encode()
+
+
+async def _store_version(
+    session: AsyncSession, *, cert: Certificate, cert_pem: str, key_pem: str,
+    chain_pem: str | None, info: CertInfo, user: CurrentUser, request: Request, action: str,
+) -> CertVersion:
+    """把驗證過的 bundle 存成新版本（加密私鑰、設為 current、寫稽核）。upload 與 self-signed 共用。"""
+    if (await session.execute(
+        select(CertVersion).where(
+            CertVersion.certificate_id == cert.id,
+            CertVersion.fingerprint_sha256 == info.fingerprint_sha256,
+        ).limit(1)
+    )).scalar_one_or_none() is not None:
+        raise HTTPException(409, detail="這張憑證(相同 fingerprint)已經上傳過")
+
+    key_enc, key_nonce = encrypt_secret(key_pem, aad=_key_aad(cert.id, info.fingerprint_sha256))
+    await session.execute(
+        update(CertVersion).where(CertVersion.certificate_id == cert.id).values(is_current=False)
+    )
+    v = CertVersion(
+        certificate_id=cert.id,
+        fingerprint_sha256=info.fingerprint_sha256, serial=info.serial,
+        subject=info.subject, issuer=info.issuer,
+        not_before=info.not_before, not_after=info.not_after, domains=info.domains,
+        cert_pem=cert_pem, chain_pem=chain_pem,
+        key_enc=key_enc, key_nonce=key_nonce,
+        is_current=True, uploaded_by=user.id,
+    )
+    session.add(v)
+    cert.domains = info.domains
+    await session.flush()
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="certificate", object_id=str(cert.id), action=action,
+        diff={"fingerprint": info.fingerprint_sha256, "not_after": info.not_after.isoformat(),
+              "domains": info.domains},  # 不含 key
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return v
+
+
+async def _to_read(session: AsyncSession, cert: Certificate) -> CertificateRead:
+    cur = (await session.execute(
+        select(CertVersion).where(
+            CertVersion.certificate_id == cert.id, CertVersion.is_current.is_(True)
+        ).limit(1)
+    )).scalar_one_or_none()
+    count = int((await session.execute(
+        select(func.count()).select_from(CertVersion).where(CertVersion.certificate_id == cert.id)
+    )).scalar_one())
+    m = CertificateRead.model_validate(cert, from_attributes=True)
+    m.version_count = count
+    if cur is not None:
+        m.current_fingerprint = cur.fingerprint_sha256
+        m.current_not_after = cur.not_after
+        m.current_days_remaining = (cur.not_after - datetime.now(UTC)).days
+    return m
+
+
+@router.get("", response_model=Paginated[CertificateRead])
+async def list_certificates(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Paginated[CertificateRead]:
+    rows = list((await session.execute(
+        select(Certificate).order_by(Certificate.name)
+    )).scalars().all())
+    items = [await _to_read(session, c) for c in rows]
+    return Paginated[CertificateRead](items=items, total=len(items), page=1, page_size=len(items) or 1)
+
+
+@router.post("", response_model=CertificateRead, status_code=201)
+async def create_certificate(
+    payload: CertificateCreate,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CertificateRead:
+    if (await session.execute(
+        select(Certificate).where(Certificate.name == payload.name).limit(1)
+    )).scalar_one_or_none() is not None:
+        raise HTTPException(409, detail="Certificate name already exists")
+    obj = Certificate(name=payload.name, description=payload.description)
+    session.add(obj)
+    await session.flush()
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="certificate", object_id=str(obj.id), action="cert_create",
+        diff={"name": obj.name}, request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return await _to_read(session, obj)
+
+
+@router.get("/{cert_id}", response_model=CertificateRead)
+async def get_certificate(
+    cert_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CertificateRead:
+    obj = await session.get(Certificate, cert_id)
+    if obj is None:
+        raise HTTPException(404, detail="Not found")
+    return await _to_read(session, obj)
+
+
+@router.patch("/{cert_id}", response_model=CertificateRead)
+async def update_certificate(
+    cert_id: uuid.UUID,
+    payload: CertificateUpdate,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CertificateRead:
+    obj = await session.get(Certificate, cert_id)
+    if obj is None:
+        raise HTTPException(404, detail="Not found")
+    data = payload.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        setattr(obj, k, v)
+    await session.commit()
+    return await _to_read(session, obj)
+
+
+@router.delete("/{cert_id}", status_code=204)
+async def delete_certificate(
+    cert_id: uuid.UUID,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    obj = await session.get(Certificate, cert_id)
+    if obj is None:
+        raise HTTPException(404, detail="Not found")
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="certificate", object_id=str(obj.id), action="cert_delete",
+        diff={"name": obj.name}, request_id=getattr(request.state, "request_id", None),
+    )
+    await session.delete(obj)  # cert_versions cascade
+    await session.commit()
+
+
+@router.get("/{cert_id}/versions", response_model=list[CertVersionRead])
+async def list_versions(
+    cert_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[CertVersionRead]:
+    if await session.get(Certificate, cert_id) is None:
+        raise HTTPException(404, detail="Not found")
+    rows = (await session.execute(
+        select(CertVersion).where(CertVersion.certificate_id == cert_id)
+        .order_by(CertVersion.created_at.desc())
+    )).scalars().all()
+    return [CertVersionRead.model_validate(r, from_attributes=True) for r in rows]
+
+
+@router.post("/{cert_id}/versions", response_model=CertVersionRead, status_code=201)
+async def upload_version(
+    cert_id: uuid.UUID,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    cert_file: Annotated[UploadFile, File()],
+    key_file: Annotated[UploadFile, File()],
+    chain_file: Annotated[UploadFile | None, File()] = None,
+    allow_expired: Annotated[bool, Form()] = False,
+) -> CertVersionRead:
+    """上傳新版憑證 bundle(crt + key [+ chain])。驗證後加密私鑰、設為目前版本。"""
+    cert = await session.get(Certificate, cert_id)
+    if cert is None:
+        raise HTTPException(404, detail="Not found")
+
+    cert_pem = (await cert_file.read()).decode("utf-8-sig", errors="replace")
+    key_pem = (await key_file.read()).decode("utf-8-sig", errors="replace")
+    chain_pem = (await chain_file.read()).decode("utf-8-sig", errors="replace") if chain_file else None
+
+    try:
+        info = validate_bundle(cert_pem, key_pem, chain_pem)
+    except CertError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    if info.is_expired and not allow_expired:
+        raise HTTPException(400, detail=f"憑證已於 {info.not_after.date()} 過期;如確定要上傳請勾選 allow_expired")
+
+    v = await _store_version(
+        session, cert=cert, cert_pem=cert_pem, key_pem=key_pem, chain_pem=chain_pem,
+        info=info, user=user, request=request, action="cert_version_upload",
+    )
+    return CertVersionRead.model_validate(v, from_attributes=True)
+
+
+@router.post("/{cert_id}/self-signed", response_model=CertVersionRead, status_code=201)
+async def create_self_signed(
+    cert_id: uuid.UUID,
+    payload: SelfSignedRequest,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CertVersionRead:
+    """方便小工具:產生自簽憑證(自訂 CN/SAN/天數)並存成此憑證的目前版本(可直接派送)。"""
+    cert = await session.get(Certificate, cert_id)
+    if cert is None:
+        raise HTTPException(404, detail="Not found")
+    try:
+        cert_pem, key_pem = generate_self_signed(payload.common_name, payload.sans, payload.days)
+        info = validate_bundle(cert_pem, key_pem)
+    except CertError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    v = await _store_version(
+        session, cert=cert, cert_pem=cert_pem, key_pem=key_pem, chain_pem=None,
+        info=info, user=user, request=request, action="cert_self_signed",
+    )
+    return CertVersionRead.model_validate(v, from_attributes=True)

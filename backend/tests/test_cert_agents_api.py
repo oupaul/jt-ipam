@@ -1,0 +1,106 @@
+"""憑證派送 agent 協定測試：check / bundle（含 scope）/ report + key 認證。"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime, timedelta
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
+
+
+def _make_cert(cn="svc.example.com", days=90):
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder().subject_name(name).issuer_name(name)
+        .public_key(key.public_key()).serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=days))
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName(cn)]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    return (cert.public_bytes(serialization.Encoding.PEM).decode(),
+            key.private_bytes(serialization.Encoding.PEM,
+                              serialization.PrivateFormat.TraditionalOpenSSL,
+                              serialization.NoEncryption()).decode())
+
+
+async def _cert_with_version(client, auth_headers) -> tuple[str, str, str]:
+    """建立憑證 + 上傳一版,回 (cert_id, name, fingerprint)。"""
+    name = f"cert-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/api/v1/certificates", headers=auth_headers, json={"name": name})
+    cid = r.json()["id"]
+    cert_pem, key_pem = _make_cert()
+    rv = await client.post(f"/api/v1/certificates/{cid}/versions", headers=auth_headers, files={
+        "cert_file": ("c.crt", cert_pem, "application/x-pem-file"),
+        "key_file": ("c.key", key_pem, "application/x-pem-file"),
+    })
+    return cid, name, rv.json()["fingerprint_sha256"]
+
+
+async def _make_agent(client, auth_headers, scope_ids) -> str:
+    r = await client.post("/api/v1/cert-agents", headers=auth_headers,
+                          json={"name": f"agent-{uuid.uuid4().hex[:6]}", "scope_cert_ids": scope_ids})
+    assert r.status_code == 201, r.text
+    return r.json()["enroll_key"]
+
+
+async def test_check_and_bundle_in_scope(client, auth_headers):
+    cid, name, fp = await _cert_with_version(client, auth_headers)
+    key = await _make_agent(client, auth_headers, [cid])
+
+    # check 回目前版本指紋
+    rc = await client.get("/api/v1/cert-agents/check", headers={"X-Agent-Key": key})
+    assert rc.status_code == 200, rc.text
+    certs = rc.json()["certificates"]
+    assert len(certs) == 1
+    assert certs[0]["cert"] == name
+    assert certs[0]["fingerprint"] == fp
+
+    # bundle 回 crt/key/chain（私鑰明文，僅 agent 認證後可取）
+    rb = await client.get(f"/api/v1/cert-agents/bundle?cert={name}", headers={"X-Agent-Key": key})
+    assert rb.status_code == 200, rb.text
+    body = rb.json()
+    assert "BEGIN CERTIFICATE" in body["cert_pem"]
+    assert "PRIVATE KEY" in body["key_pem"]
+    assert body["fingerprint"] == fp
+
+
+async def test_bundle_out_of_scope_404(client, auth_headers):
+    _cid, name, _ = await _cert_with_version(client, auth_headers)
+    other_cid, _, _ = await _cert_with_version(client, auth_headers)
+    key = await _make_agent(client, auth_headers, [other_cid])  # scope 只含別張
+    rb = await client.get(f"/api/v1/cert-agents/bundle?cert={name}", headers={"X-Agent-Key": key})
+    assert rb.status_code == 404  # 不在 scope 與不存在回相同 404
+
+
+async def test_empty_scope_sees_nothing(client, auth_headers):
+    await _cert_with_version(client, auth_headers)
+    key = await _make_agent(client, auth_headers, [])  # deny-by-default
+    rc = await client.get("/api/v1/cert-agents/check", headers={"X-Agent-Key": key})
+    assert rc.json()["certificates"] == []
+
+
+async def test_report_stored(client, auth_headers):
+    cid, name, fp = await _cert_with_version(client, auth_headers)
+    key = await _make_agent(client, auth_headers, [cid])
+    rr = await client.post("/api/v1/cert-agents/report", headers={"X-Agent-Key": key}, json={
+        "deployments": [{"cert": name, "profile": "nginx", "fingerprint": fp,
+                         "status": "ok", "dry_run": False}],
+    })
+    assert rr.status_code == 200
+    assert rr.json()["received"] == 1
+
+
+async def test_bad_agent_key_401(client, auth_headers):
+    await _cert_with_version(client, auth_headers)
+    rc = await client.get("/api/v1/cert-agents/check", headers={"X-Agent-Key": "wrong"})
+    assert rc.status_code == 401
+
+
+async def test_agent_list_requires_admin(client):
+    r = await client.get("/api/v1/cert-agents")
+    assert r.status_code in (401, 403)

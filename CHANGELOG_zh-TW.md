@@ -4,6 +4,33 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.134] — 2026-06-13
+
+### 修正
+- **Debian 12 加 PGDG repo 時若 keyring 檔已存在會失敗（客戶回報）** — 安裝腳本把
+  `gpg --dearmor` 寫到 `/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg`（那是
+  `postgresql-common` 套件自己的檔）。該檔已存在時 gpg 會跳「File exists. Overwrite?」、
+  非互動下直接失敗 → 金鑰沒寫成 → PGDG 簽章無效 → `postgresql-16-pgvector` 變「not installable」。
+  現在改寫到自有的 `/etc/apt/keyrings/jt-ipam-pgdg.gpg` 並加 `gpg --dearmor --yes`（不撞檔、可重入）。
+  已在 Debian 12 容器端到端驗證。
+
+### 新增 — 憑證集中保管 + 派送（商業憑證一次上傳、派到所有站台）
+- 集中保管商業憑證,搭配 pull 模型的派送代理。續約後只要上傳一次 bundle(crt/key/chain),
+  各站台代理會自動取走新版、寫到正確路徑、跑 config-test、重載服務,失敗自動回滾。
+- **後端**:migration `0075`(`certificates` / `cert_versions` / `cert_agents`);私鑰以 AES-GCM
+  加密儲存,任何管理 API 都不回傳明文。`/certificates` admin CRUD + `POST /{id}/versions`
+  (驗證 key↔cert 配對、SAN/效期,擋不配對/過期/重複)+ **`POST /{id}/self-signed`**
+  (產生自簽憑證,可自訂 CN/SAN/天數 —— 商業憑證還沒到時先頂著)。`/cert-agents` admin CRUD +
+  key 輪替,以及 agent 協定(`X-Agent-Key`):`check` / `bundle`(解密私鑰,scope 限定、逐次稽核)
+  / `report`。
+- **代理**(`agent/jt_ipam_cert_agent.py` + 安裝器):pull 模型,內建 service profiles
+  (nginx / apache / haproxy / pve / pmg / postfix / dovecot / zimbra / generic),原子寫入 +
+  時間戳備份 + config-test gate + 回滾,冪等,並支援 **`--dry-run`**。設定是每台主機一份小 YAML,
+  列出哪些憑證用哪個 profile 派送。
+- **監控**:每日到期告警 +**飄移偵測**(某代理回報的指紋不是目前版本 → 那台沒換成功)走既有
+  通知/鈴鐺。
+- **前端**:憑證管理頁(上傳、產自簽、版本/到期狀態、代理 + 一次性 key、scope)。
+
 ## [0.4.133] — 2026-06-13
 
 ### 修正

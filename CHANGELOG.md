@@ -4,6 +4,37 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.134] — 2026-06-13
+
+### Fixed
+- **PGDG repo setup failed on Debian 12 when the keyring file already existed (customer report)** —
+  the installer ran `gpg --dearmor` onto `/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg`
+  (a file owned by the `postgresql-common` package). When that file already existed, gpg prompted
+  "File exists. Overwrite?" / failed non-interactively, so the key was never written, the PGDG repo
+  signature was invalid, and `postgresql-16-pgvector` was "not installable". Now the key is written
+  to its own `/etc/apt/keyrings/jt-ipam-pgdg.gpg` with `gpg --dearmor --yes` (no collision, idempotent).
+  Verified end-to-end in a Debian 12 container.
+
+### Added — Certificate distribution (commercial certs → push to all sites)
+- Central store for commercial certificates with a pull-based distribution agent. You upload a
+  renewed bundle (crt/key/chain) once; agents on each host pick up the new version, write it to
+  the right paths, run a config-test, reload the service, and roll back on failure.
+- **Backend**: migration `0075` (`certificates` / `cert_versions` / `cert_agents`); the private
+  key is stored AES-GCM encrypted and is never returned by any management API. `/certificates`
+  admin CRUD + `POST /{id}/versions` (validates key↔cert match, SAN/expiry, rejects mismatched/
+  expired/duplicate) + **`POST /{id}/self-signed`** (generate a self-signed cert with a custom
+  CN/SAN/validity — handy while waiting for the commercial cert). `/cert-agents` admin CRUD +
+  key rotate, plus the agent protocol (`X-Agent-Key`): `check` / `bundle` (decrypts the key,
+  scope-limited, audited every time) / `report`.
+- **Agent** (`agent/jt_ipam_cert_agent.py` + installer): pull model, built-in service profiles
+  (nginx / apache / haproxy / pve / pmg / postfix / dovecot / zimbra / generic), atomic write +
+  timestamped backup + config-test gate + rollback, idempotent, and **`--dry-run`**. Config is a
+  small per-host YAML listing which certs deploy via which profile.
+- **Monitoring**: daily expiry alerts and **drift detection** (an agent reporting a fingerprint
+  other than the current version → that site didn't update) via the existing notification/bell.
+- **Frontend**: a Certificates admin page (upload, self-signed, version/expiry status, agents +
+  one-time key, scope).
+
 ## [0.4.133] — 2026-06-13
 
 ### Fixed

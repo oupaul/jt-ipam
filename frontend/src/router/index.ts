@@ -61,6 +61,7 @@ const routes: RouteRecordRaw[] = [
       { path: "my-chat-history", name: "my_chat_history", component: () => import("@/views/MyChatHistory.vue") },
       { path: "permissions", name: "permissions", component: () => import("@/views/Permissions.vue"), meta: { admin: true } },
       { path: "scan-agents", name: "scan_agents", component: () => import("@/views/ScanAgents.vue"), meta: { admin: true } },
+      { path: "certificates", name: "certificates", component: () => import("@/views/Certificates.vue"), meta: { admin: true } },
       { path: "webhooks", name: "webhooks", component: () => import("@/views/Webhooks.vue"), meta: { admin: true } },
       { path: "nat", name: "nat", component: () => import("@/views/NAT.vue") },
       { path: "anomaly", name: "anomaly", component: () => import("@/views/Anomaly.vue"), meta: { admin: true } },
