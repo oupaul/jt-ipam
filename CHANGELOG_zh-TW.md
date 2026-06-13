@@ -4,6 +4,18 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.133] — 2026-06-13
+
+### 修正
+- **最小化 Debian 12 / 13 容器安裝失敗（客戶回報）** — 乾淨容器映像上兩個缺口：
+  - 「加 PGDG repo」那步用 `curl | gpg`、後面 PostgreSQL 設定全用 `sudo -u postgres`，但
+    `ca-certificates` / `curl` / `gnupg` / `sudo` 不保證存在（最小化 Debian 容器常拿掉）。
+    Debian 12 預設庫是 PG15、必走 PGDG → 在 `curl` 那步失敗；補完 PG 後又卡在
+    `sudo: command not found`。現在開頭就先把這四個裝齊。
+  - 搭配 v0.4.131 的 `apt-cache madison` 版本偵測，現在的對應是：Debian 12 → PGDG 裝 PG16；
+    Debian 13 → 用發行版自帶的 PG17（+ `postgresql-17-pgvector`，不必 PGDG）；Ubuntu 24.04 →
+    自帶 16；Ubuntu 26.04 → 自帶 17/18。app 對 PG 16/17/18 皆相容。
+
 ## [0.4.132] — 2026-06-12
 
 ### 修正

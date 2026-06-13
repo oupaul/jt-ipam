@@ -114,6 +114,13 @@ cmd_install() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
 
+    # 最小化容器（如乾淨 Debian 12 / Ubuntu LXC）常缺這些基礎工具：
+    #  - curl / gpg / ca-certificates：「加 PGDG repo」那步（curl | gpg）在裝主要套件清單前就會用到；
+    #    Debian 12 預設無 PG16、必走 PGDG，不先補齊會在加 repo 時直接失敗。
+    #  - sudo：後面 PostgreSQL 設定全用 `sudo -u postgres psql …`，最小化 Debian 容器常無 sudo
+    #    → `sudo: command not found`（客戶回報手動補 PG 後卡住的第二關多半是這個）。
+    apt-get install -y -qq ca-certificates curl gnupg sudo
+
     # Detect available Python (newest to oldest, needs >= 3.11).
     # Use apt-cache madison: only counts if actually installable (apt-cache show matches Provides, unreliable).
     local PYTHON_BIN=""

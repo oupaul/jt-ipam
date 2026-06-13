@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.133] — 2026-06-13
+
+### Fixed
+- **Install on minimal Debian 12 / 13 containers (customer report)** — two gaps surfaced on
+  clean container images:
+  - The PGDG-repo step runs `curl | gpg` and the later PostgreSQL setup uses `sudo -u postgres`,
+    but `ca-certificates` / `curl` / `gnupg` / `sudo` were not guaranteed present (minimal Debian
+    container images often omit them). The PGDG step (which Debian 12 always takes, since its
+    default repo ships PG 15, not 16) failed at `curl`, and the PostgreSQL config step failed with
+    `sudo: command not found`. These four are now installed up-front.
+  - Combined with the v0.4.131 `apt-cache madison` version detection, the matrix is now: Debian 12
+    → PGDG PostgreSQL 16; Debian 13 → native PostgreSQL 17 (+ `postgresql-17-pgvector`, no PGDG);
+    Ubuntu 24.04 → native 16; Ubuntu 26.04 → native 17/18. The app supports PG 16/17/18.
+
 ## [0.4.132] — 2026-06-12
 
 ### Fixed
