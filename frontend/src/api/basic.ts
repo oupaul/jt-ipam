@@ -117,6 +117,7 @@ export async function deleteVRF(id: string): Promise<void> {
 export interface Device {
   id: string; name: string; type: string;
   fqdn: string | null;
+  primary_ip_id: string | null;
   ip?: string | null;     // 由清單 endpoint 解析 primary_ip 填入
   ip_address_id?: string | null;   // 有對應的 IPAddress → IP 欄可點進該位址
   ip_match_id?: string | null;   // 有相符但未連結的 IPAddress → 可一鍵關聯

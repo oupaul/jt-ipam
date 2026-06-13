@@ -219,11 +219,11 @@ function openEdit(r: Device) {
     rack_face: (r as any).rack_face ?? null,
     rack_side: (r as any).rack_side ?? "full",
     customer_id: r.customer_id ?? null,
-    primary_ip_id: (r as any).primary_ip_id ?? null,
+    primary_ip_id: r.primary_ip_id ?? null,
   };
   void ensureCustomersLoaded();
   void loadAddresses();
-  void ensurePrimaryIpLoaded((r as any).primary_ip_id ?? null);
+  void ensurePrimaryIpLoaded(r.primary_ip_id ?? null);
   show.value = true;
 }
 
