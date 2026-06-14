@@ -79,12 +79,18 @@ VERIFY_TLS=$([[ -n "$JT_IPAM_INSECURE" ]] && echo false || echo true)
 AUTO_UPDATE=true
 TLS_BASE=/etc/ssl/jt-ipam
 
-# List which certificates this host deploys and with which profile (one DEPLOY_N per line,
-# ";"-separated key=value).
-# Built-in profiles: nginx / apache / haproxy / postfix / dovecot / pve / pmg / pbs / zimbra / generic
-# generic requires custom *_path and reload. Examples:
-#DEPLOY_1="cert=wildcard-example-com; profile=nginx"
-#DEPLOY_2="cert=mail-cert; profile=pmg"
+# Each deployment is a group of DEPLOY_<N>_* lines (one setting per line). N = 1, 2, 3, ...
+#
+# Option A - you choose where the files go and how to reload:
+#DEPLOY_1_CERT=wildcard-example-com           # which jt-ipam certificate
+#DEPLOY_1_FULLCHAIN=/etc/nginx/ssl/site.pem   # where to write the cert (cert + chain)
+#DEPLOY_1_KEY=/etc/nginx/ssl/site.key         # where to write the private key
+#DEPLOY_1_RELOAD=systemctl reload nginx       # command to reload the service
+# Optional: DEPLOY_1_CHAIN=  DEPLOY_1_CRT= (leaf only)  DEPLOY_1_COMBINED=  DEPLOY_1_TEST=
+#
+# Option B - use a built-in profile (fixed paths, nothing else to set):
+#DEPLOY_2_CERT=mail-cert
+#DEPLOY_2_PROFILE=pmg     # nginx apache haproxy postfix dovecot pve pmg pbs zimbra
 EOF
     chmod 0600 "$CONF"
     echo "Created config template: $CONF (edit DEPLOY_N before enabling)"

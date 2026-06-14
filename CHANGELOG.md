@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.151] — 2026-06-14
+
+### Changed — distribution-agent config is now one setting per line
+- The agent config moved from a single packed line (`DEPLOY_1="cert=..; profile=..; fullchain_path=.."`)
+  to readable, one-setting-per-line `DEPLOY_<N>_*` groups:
+  - `DEPLOY_1_CERT=` (certificate), `DEPLOY_1_FULLCHAIN=` (cert file path), `DEPLOY_1_KEY=` (key path),
+    `DEPLOY_1_RELOAD=` (reload command); optional `DEPLOY_1_CHAIN/CRT/COMBINED/TEST`.
+  - Or just `DEPLOY_1_CERT=` + `DEPLOY_1_PROFILE=nginx` to use a built-in profile (fixed paths).
+- Installer template and the install-help modal example updated. Validated end-to-end against a live
+  server (dry-run + real apply).
+
 ## [0.4.150] — 2026-06-14
 
 ### Changed

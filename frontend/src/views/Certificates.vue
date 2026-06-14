@@ -259,8 +259,15 @@ const installerOneLiner = computed(() =>
   `curl -fsSLk ${serverOrigin}/api/v1/cert-agents/installer.sh | sudo `
   + `JT_IPAM_URL=${serverOrigin} JT_IPAM_AGENT_KEY=${newKey.value || "<建立代理時的-KEY>"} JT_IPAM_INSECURE=1 bash`);
 const uninstallOneLiner = `curl -fsSLk ${serverOrigin}/api/v1/cert-agents/installer.sh | sudo JT_IPAM_UNINSTALL=1 bash`;
-const configExample = `DEPLOY_1="cert=wildcard-example-com; profile=nginx"
-DEPLOY_2="cert=mail-cert; profile=pmg"`;
+const configExample = `# 自訂路徑（一行一個設定）
+DEPLOY_1_CERT=wildcard-example-com
+DEPLOY_1_FULLCHAIN=/etc/nginx/ssl/site.pem
+DEPLOY_1_KEY=/etc/nginx/ssl/site.key
+DEPLOY_1_RELOAD=systemctl reload nginx
+
+# 或用內建 profile（固定路徑）
+DEPLOY_2_CERT=mail-cert
+DEPLOY_2_PROFILE=pmg`;
 
 // 來源類型選擇器：被選中的按鈕整顆填綠底白字，明顯看出目前選的是哪個。
 const radioGreen = {

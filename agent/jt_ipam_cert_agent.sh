@@ -5,22 +5,29 @@
 # If so, downloads each raw PEM part via curl, writes them to the site atomically, reloads only after
 # config-test passes, rolls back automatically on failure, then reports the result back to jt-ipam.
 #
-# Config file (default /etc/jt-ipam-cert-agent/config, KEY=VALUE, sourced by this script):
+# Config file (default /etc/jt-ipam-cert-agent/config, KEY=VALUE, one setting per line, sourced here):
 #
 #   SERVER=https://ipam.example.com
 #   AGENT_KEY=<enrollment key>
 #   VERIFY_TLS=true            # set false if the server cert is self-signed, or use CA_CERT
 #   # CA_CERT=/etc/ssl/certs/ipam-ca.pem
 #   AUTO_UPDATE=true           # auto-update self when the server has a newer agent
-#   TLS_BASE=/etc/ssl/jt-ipam  # default write directory for generic profiles
-#   # One line per deployment (DEPLOY_1, DEPLOY_2, ...), ";"-separated key=value (values may contain spaces):
-#   DEPLOY_1="cert=wildcard-example-com; profile=nginx"
-#   DEPLOY_2="cert=mail-cert; profile=pmg"
-#   # generic requires custom paths and reload:
-#   DEPLOY_3="cert=wildcard-example-com; profile=generic; fullchain_path=/etc/myapp/tls.crt; key_path=/etc/myapp/tls.key; reload=systemctl reload myapp"
+#   TLS_BASE=/etc/ssl/jt-ipam  # default write directory for built-in profiles
+#
+#   # Each deployment is a group of DEPLOY_<N>_* lines (one setting per line). N = 1, 2, 3, ...
+#   # Custom paths (you choose where the files go + how to reload):
+#   DEPLOY_1_CERT=wildcard-example-com          # which jt-ipam certificate
+#   DEPLOY_1_FULLCHAIN=/etc/nginx/ssl/site.pem  # cert + chain file path
+#   DEPLOY_1_KEY=/etc/nginx/ssl/site.key        # private key file path
+#   DEPLOY_1_RELOAD=systemctl reload nginx      # reload command
+#   # Optional: DEPLOY_1_CHAIN= / DEPLOY_1_CRT= (leaf only) / DEPLOY_1_COMBINED= / DEPLOY_1_TEST=
+#
+#   # Or use a built-in profile (fixed paths, no need to specify paths/reload):
+#   DEPLOY_2_CERT=mail-cert
+#   DEPLOY_2_PROFILE=pmg     # nginx apache haproxy postfix dovecot pve pmg pbs zimbra
 #
 # Usage: jt_ipam_cert_agent.sh [--config PATH] [--dry-run] [--version]
-AGENT_VERSION=0.4.150
+AGENT_VERSION=0.4.151
 
 set -u
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
@@ -238,25 +245,24 @@ set_state() {  # cert profile fp
   printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$tmp"; mv -f "$tmp" "$STATE_FILE"
 }
 
+# Read one config field for deployment N, e.g. _f 1 FULLCHAIN -> value of DEPLOY_1_FULLCHAIN
+_f() { local v="DEPLOY_${1}_${2}"; printf '%s' "${!v:-}"; }
+
 FAILED=0; n=1
 while :; do
-  var="DEPLOY_$n"; spec="${!var:-}"; [ -z "$spec" ] && break
-  n=$((n+1))
-  # parse ";"-separated key=value (values may contain spaces, e.g. reload=systemctl reload x). clear old D_*.
+  cert="$(_f "$n" CERT)"
+  [ -z "$cert" ] && break
+  profile="$(_f "$n" PROFILE)"; profile="${profile:-generic}"
+  # Map the one-per-line path / reload / test fields to the D_* overrides used by apply_deployment.
   unset "${!D_@}" 2>/dev/null || true
-  cert=""; profile="generic"
-  IFS=';' read -ra _pairs <<< "$spec"
-  for kv in "${_pairs[@]}"; do
-    kv="${kv#"${kv%%[![:space:]]*}"}"; kv="${kv%"${kv##*[![:space:]]}"}"  # trim
-    [ -z "$kv" ] && continue
-    k="${kv%%=*}"; v="${kv#*=}"
-    case "$k" in
-      cert) cert="$v" ;;
-      profile) profile="$v" ;;
-      *) printf -v "D_$k" '%s' "$v" ;;
-    esac
-  done
-  [ -z "$cert" ] && { log "DEPLOY_$((n-1)) missing cert, skipping"; continue; }
+  [ -n "$(_f "$n" FULLCHAIN)" ] && D_fullchain_path="$(_f "$n" FULLCHAIN)"
+  [ -n "$(_f "$n" KEY)" ]       && D_key_path="$(_f "$n" KEY)"
+  [ -n "$(_f "$n" CHAIN)" ]     && D_chain_path="$(_f "$n" CHAIN)"
+  [ -n "$(_f "$n" CRT)" ]       && D_cert_path="$(_f "$n" CRT)"
+  [ -n "$(_f "$n" COMBINED)" ]  && D_combined_path="$(_f "$n" COMBINED)"
+  [ -n "$(_f "$n" RELOAD)" ]    && D_reload="$(_f "$n" RELOAD)"
+  [ -n "$(_f "$n" TEST)" ]      && D_test="$(_f "$n" TEST)"
+  n=$((n+1))
   # look up this cert's current fingerprint from the check output
   fp="$(awk -F'\t' -v c="$cert" '$1==c{print $2}' "$CHECK")"
   na="$(awk -F'\t' -v c="$cert" '$1==c{print $3}' "$CHECK")"

@@ -4,6 +4,16 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.151] — 2026-06-14
+
+### 變更 — 派送代理設定改一行一個設定
+- 派送代理設定檔從一行擠一堆（`DEPLOY_1="cert=..; profile=..; fullchain_path=.."`）改成**一行一個設定**的
+  `DEPLOY_<N>_*` 群組,好讀好改:
+  - `DEPLOY_1_CERT=`（要派送的憑證）、`DEPLOY_1_FULLCHAIN=`（憑證檔路徑）、`DEPLOY_1_KEY=`（私鑰路徑）、
+    `DEPLOY_1_RELOAD=`（重載指令）;另有 `DEPLOY_1_CHAIN/CRT/COMBINED/TEST` 可選。
+  - 或只設 `DEPLOY_1_CERT=` ＋ `DEPLOY_1_PROFILE=nginx`（內建 profile 用固定路徑）。
+- installer 設定檔範本、安裝說明彈窗範例同步更新。已對 prod 實機驗證新格式 dry-run ＋ 真套用。
+
 ## [0.4.150] — 2026-06-14
 
 ### 變更

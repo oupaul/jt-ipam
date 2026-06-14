@@ -73,7 +73,7 @@
     "intro": "在每台要自動換憑證的主機上裝一個代理。代理會定時向 jt-ipam 檢查有沒有新版憑證，有的話自動下載、寫到正確路徑、跑 config-test、重載服務，失敗自動還原。",
     "step1": "先在「派送代理」分頁建立一個代理，複製它的單次 key。",
     "step2": "在目標主機以 root 執行下面的一行式安裝（把 key 換成你複製的）。",
-    "step3": "編輯 /etc/jt-ipam-cert-agent/config 的 DEPLOY_N，先 --dry-run 試跑，再讓排程自動派送。",
+    "step3": "編輯 /etc/jt-ipam-cert-agent/config 的 DEPLOY_1_* 設定（一行一個），先 --dry-run 試跑，再讓排程自動派送。",
     "oneliner_label": "一行式安裝（root）：",
     "distros": "支援 Debian 11/12/13、Ubuntu 22.04/24.04/26.04、RHEL/Rocky/AlmaLinux/CentOS、Fedora、openSUSE/SLES（自動偵測 apt/dnf/yum/zypper）。server 為自簽憑證時保留 JT_IPAM_INSECURE=1。",
     "config_label": "設定檔範例（/etc/jt-ipam-cert-agent/config）：",
