@@ -4,6 +4,11 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.144] — 2026-06-14
+
+### 變更
+- 憑證 / 派送代理操作欄按鈕改**靠左對齊**（移除置中）,與全站其它列表頁一致。
+
 ## [0.4.143] — 2026-06-14
 
 ### 修正 — commit 後序列化的一類 500（流程檢查找出）

@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.144] — 2026-06-14
+
+### Changed
+- Certificate / distribution-agent action-column buttons are now **left-aligned** (centering removed),
+  matching every other list page in the app.
+
 ## [0.4.143] — 2026-06-14
 
 ### Fixed — a class of post-commit serialization 500s (found via flow review)

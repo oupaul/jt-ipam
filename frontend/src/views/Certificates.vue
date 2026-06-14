@@ -293,8 +293,8 @@ const certColsAll = computed<DataTableColumns<Certificate>>(() => autoSort([
         ? h("span", { style: "opacity:.5" }, "—")
         : h(NTag, { size: "small", type: c.last_fetch_error ? "error" : "info" },
             () => c.source_type.toUpperCase()) },
-  { title: t("cols.actions"), key: "actions", className: "col-actions", align: "center", width: 190,
-    render: (c) => h(NSpace, { size: 2, wrapItem: false, wrap: false, justify: "center", style: "width:100%" }, () => [
+  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 190,
+    render: (c) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
       actBtn(ImportIcon, t("certs.upload_version"), () => openUpload(c)),
       actBtn(TokenIcon, t("certs.self_signed"), () => openSelf(c)),
       actBtn(SettingsIcon, t("certSource.source"), () => openSource(c)),
@@ -355,8 +355,8 @@ const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
   { title: t("certs.deployed"), key: "reported", width: 90,
     sorter: (a, b) => (a.reported ?? []).length - (b.reported ?? []).length,
     render: (a) => `${(a.reported ?? []).filter(d => (d as any).status === "ok").length} / ${(a.reported ?? []).length}` },
-  { title: t("cols.actions"), key: "actions", className: "col-actions", align: "center", width: 100,
-    render: (a) => h(NSpace, { size: 2, wrapItem: false, wrap: false, justify: "center", style: "width:100%" }, () => [
+  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 100,
+    render: (a) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
       actBtn(SyncIcon, t("certs.rotate_key"), () => doRotate(a)),
       h(NPopconfirm, { onPositiveClick: () => removeAgent(a) }, {
         trigger: () => actBtn(DeleteIcon, t("common.delete"), () => {}, { tertiary: true, type: "error" }),
