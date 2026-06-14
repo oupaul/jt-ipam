@@ -9,7 +9,7 @@ import {
 } from "naive-ui";
 import {
   PlusIcon, RefreshIcon, CopyIcon, LockIcon, InfoIcon, SaveIcon,
-  ImportIcon, TokenIcon, SettingsIcon, SyncIcon, DeleteIcon, TestIcon,
+  ImportIcon, TokenIcon, SettingsIcon, SyncIcon, DeleteIcon, TestIcon, EyeIcon,
 } from "@/icons";
 import { autoSort } from "@/composables/useTableSort";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
@@ -17,7 +17,7 @@ import ColumnPicker from "@/components/ColumnPicker.vue";
 import {
   listCertificates, createCertificate, deleteCertificate, uploadVersion, generateSelfSigned,
   setCertSource, fetchCertNow, testCertSource, genCertSourceSshKey,
-  listCertAgents, createCertAgent, rotateCertAgentKey, deleteCertAgent,
+  listCertAgents, createCertAgent, rotateCertAgentKey, deleteCertAgent, getCertAgentKey,
   type Certificate, type CertAgent,
 } from "@/api/certificates";
 
@@ -218,7 +218,18 @@ async function doFetchNow(c: Certificate) {
 const showNewAgent = ref(false);
 const agentForm = ref({ name: "", description: "", scope_cert_ids: [] as string[] });
 const newKey = ref<string | null>(null);
+const viewMode = ref(false);  // true＝檢視既有代理（非剛建立）
+const viewAgentName = ref("");
 const certOptions = computed(() => certs.value.map(c => ({ label: c.name, value: c.id })));
+async function viewAgent(a: CertAgent) {
+  try {
+    const r = await getCertAgentKey(a.id);
+    newKey.value = r.enroll_key; viewMode.value = true; viewAgentName.value = a.name;
+    showNewAgent.value = true;
+  } catch (e: any) {
+    msg.error(e?.response?.data?.detail ?? t("errors.server"));
+  }
+}
 async function doCreateAgent() {
   if (!agentForm.value.name.trim()) { msg.warning(t("certs.name_required")); return; }
   try {
@@ -229,8 +240,11 @@ async function doCreateAgent() {
   } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
 async function doRotate(a: CertAgent) {
-  try { const r = await rotateCertAgentKey(a.id); newKey.value = r.enroll_key; showNewAgent.value = true; }
-  catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+  try {
+    const r = await rotateCertAgentKey(a.id);
+    newKey.value = r.enroll_key; viewMode.value = false; viewAgentName.value = a.name;
+    showNewAgent.value = true;
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
 async function removeAgent(a: CertAgent) {
   try { await deleteCertAgent(a.id); await loadAgents(); msg.success(t("common.deleted")); }
@@ -362,8 +376,9 @@ const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
   { title: t("certs.deployed"), key: "reported", width: 90,
     sorter: (a, b) => (a.reported ?? []).length - (b.reported ?? []).length,
     render: (a) => `${(a.reported ?? []).filter(d => (d as any).status === "ok").length} / ${(a.reported ?? []).length}` },
-  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 110, fixed: "right",
+  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 140, fixed: "right",
     render: (a) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
+      actBtn(EyeIcon, t("certs.view_key"), () => viewAgent(a)),
       actBtn(SyncIcon, t("certs.rotate_key"), () => doRotate(a)),
       h(NPopconfirm, { onPositiveClick: () => removeAgent(a) }, {
         trigger: () => actBtn(DeleteIcon, t("common.delete"), () => {}, { tertiary: true, type: "error" }),
@@ -405,7 +420,7 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
       <n-tab-pane name="agents" :tab="t('certs.tab_agents')">
         <n-space justify="space-between" style="margin-bottom: 10px">
           <n-space :size="8">
-            <n-button type="primary" size="small" @click="newKey = null; showNewAgent = true">
+            <n-button type="primary" size="small" @click="newKey = null; viewMode = false; showNewAgent = true">
               <template #icon><n-icon :component="PlusIcon" /></template>{{ t("certs.new_agent") }}
             </n-button>
             <n-button size="small" @click="showHelp = true">
@@ -420,7 +435,7 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
             </n-button>
           </n-space>
         </n-space>
-        <n-data-table :columns="agentCols" :data="agents" size="small" :scroll-x="888" :row-key="(r:CertAgent) => r.id" />
+        <n-data-table :columns="agentCols" :data="agents" size="small" :scroll-x="918" :row-key="(r:CertAgent) => r.id" />
       </n-tab-pane>
     </n-tabs>
   </n-card>
@@ -528,7 +543,9 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
         <n-form-item :label="t('certSource.password')"><n-input v-model:value="sourceForm.source_password" type="password" show-password-on="click" :placeholder="t('certSource.secret_keep')" /></n-form-item>
         <n-form-item :label="t('certSource.private_key')">
           <n-space vertical :size="6" style="width:100%">
-            <n-input v-model:value="sourceForm.source_private_key" type="textarea" :rows="3" :placeholder="t('certSource.ssh_key_keep')" />
+            <n-input v-model:value="sourceForm.source_private_key" type="textarea" :rows="3"
+                     :disabled="!!sshPubKey"
+                     :placeholder="sshPubKey ? t('certSource.key_managed') : t('certSource.ssh_key_keep')" />
             <n-space :size="8" align="center">
               <n-button size="tiny" secondary :loading="genningKey" @click="genSshKey">
                 <template #icon><n-icon :component="TokenIcon" /></template>{{ t("certSource.gen_key") }}
@@ -576,16 +593,28 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
     </template>
   </n-modal>
 
-  <!-- 新增代理 / 顯示 key -->
-  <n-modal v-model:show="showNewAgent" preset="card" :title="t('certs.new_agent')" style="max-width: 540px">
-    <n-alert v-if="newKey" type="success" :title="t('certs.key_once')" :bordered="false" style="margin-bottom: 12px">
-      <n-space align="center">
-        <code style="word-break: break-all">{{ newKey }}</code>
-        <n-button size="tiny" @click="copy(newKey!)">
-          <template #icon><n-icon :component="CopyIcon" /></template>
+  <!-- 新增代理 / 顯示 key + 安裝指令 -->
+  <n-modal v-model:show="showNewAgent" preset="card" style="max-width: 600px"
+           :title="newKey ? (viewMode ? `${t('certs.agent_info')} — ${viewAgentName}` : t('certs.new_agent')) : t('certs.new_agent')">
+    <template v-if="newKey">
+      <n-alert :type="viewMode ? 'info' : 'success'" :title="viewMode ? t('certs.key_label') : t('certs.key_saved')"
+               :bordered="false" style="margin-bottom: 14px">
+        <n-space align="center" :wrap="false">
+          <code style="word-break: break-all; flex: 1">{{ newKey }}</code>
+          <n-button size="tiny" secondary @click="copy(newKey!)">
+            <template #icon><n-icon :component="CopyIcon" /></template>{{ t("certHelp.copy") }}
+          </n-button>
+        </n-space>
+      </n-alert>
+      <div style="font-weight: 600; margin: 4px 0 6px">{{ t("certHelp.oneliner_label") }}</div>
+      <n-space align="center" :wrap="false" :size="8">
+        <code class="help-code">{{ installerOneLiner }}</code>
+        <n-button size="small" secondary @click="copy(installerOneLiner)">
+          <template #icon><n-icon :component="CopyIcon" /></template>{{ t("certHelp.copy") }}
         </n-button>
       </n-space>
-    </n-alert>
+      <div class="help-note">{{ t("certHelp.distros") }}</div>
+    </template>
     <n-form v-if="!newKey">
       <n-form-item :label="t('cols.name')">
         <n-input v-model:value="agentForm.name" placeholder="web01" />

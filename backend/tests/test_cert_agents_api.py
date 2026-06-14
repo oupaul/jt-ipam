@@ -183,6 +183,32 @@ async def test_report_tsv(client, auth_headers):
     assert dep["up_to_date"] is True
 
 
+async def test_agent_key_reviewable(client, auth_headers):
+    """建立後可再次檢視 enroll key（加密保存）；輪替後檢視回新 key；非 admin 不可取。"""
+    r = await client.post("/api/v1/cert-agents", headers=auth_headers,
+                          json={"name": f"agent-{uuid.uuid4().hex[:6]}", "scope_cert_ids": []})
+    aid = r.json()["id"]
+    created_key = r.json()["enroll_key"]
+    # 再次檢視回相同 key
+    rk = await client.get(f"/api/v1/cert-agents/{aid}/key", headers=auth_headers)
+    assert rk.status_code == 200, rk.text
+    assert rk.json()["enroll_key"] == created_key
+    # 取回的 key 真的能通過 agent 認證
+    rc = await client.get("/api/v1/cert-agents/check", headers={"X-Agent-Key": created_key})
+    assert rc.status_code == 200
+    # 輪替後檢視回新 key，舊 key 失效
+    rr = await client.post(f"/api/v1/cert-agents/{aid}/rotate-key", headers=auth_headers)
+    new_key = rr.json()["enroll_key"]
+    assert new_key != created_key
+    rk2 = await client.get(f"/api/v1/cert-agents/{aid}/key", headers=auth_headers)
+    assert rk2.json()["enroll_key"] == new_key
+
+
+async def test_agent_key_requires_admin(client):
+    r = await client.get(f"/api/v1/cert-agents/{uuid.uuid4()}/key")
+    assert r.status_code in (401, 403)
+
+
 async def test_bad_agent_key_401(client, auth_headers):
     await _cert_with_version(client, auth_headers)
     rc = await client.get("/api/v1/cert-agents/check", headers={"X-Agent-Key": "wrong"})

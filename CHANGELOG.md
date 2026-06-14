@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.149] — 2026-06-14
+
+### Added — re-viewable agent key & install command
+- A distribution agent's enroll key is now also stored AES-GCM encrypted (alongside the hash), so it can
+  be **retrieved again from the "View" action** in the list (admin only, `GET /cert-agents/{id}/key`). The
+  action column gains a "View" button that shows the key + the one-line install command (with the key) +
+  copy buttons.
+- The create / rotate-key dialog now also shows the one-line install command; "cannot be retrieved later"
+  is replaced with "retrievable later via View".
+- Deleting an agent also removes its encrypted key.
+- Agents created on older versions (no stored plaintext) return a hint to rotate the key instead.
+
+## [0.4.148] — 2026-06-14
+
+### Changed
+- After "Generate & install key", the login-private-key field becomes disabled and shows "Generated and
+  stored by jt-ipam", so users don't think they still need to paste a key.
+
 ## [0.4.147] — 2026-06-14
 
 ### Fixed

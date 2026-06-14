@@ -51,6 +51,7 @@
     "private_key": "Login private key (SSH key, PEM)",
     "secret_keep": "blank = keep stored",
     "ssh_key_keep": "Paste the SSH private key (OpenSSH/PEM); blank = keep stored",
+    "key_managed": "Generated and stored by jt-ipam (reopen this dialog to paste your own key instead)",
     "auth_section": "SFTP login auth",
     "auth_hint": "Used to log in to the SFTP host. Provide a password OR an SSH private key (key takes precedence). The certificate's own private key is the remote key_path file below — unrelated to this.",
     "remote_files": "Remote certificate file paths",
@@ -120,6 +121,10 @@
     "days": "Validity (days)",
     "generate": "Generate",
     "key_once": "This is the agent's one-time key — copy it now; it cannot be retrieved later",
+    "key_saved": "Keep this agent's key safe (you can retrieve it again via \"View\" in the list)",
+    "key_label": "This agent's key",
+    "agent_info": "Distribution agent info",
+    "view_key": "View key & install command",
     "scope_certs": "Certificates this agent may fetch",
     "scope_hint": "Pick the certificates this agent distributes (empty = none)"
   },

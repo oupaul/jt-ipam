@@ -51,6 +51,7 @@
     "private_key": "登入私鑰（SSH 金鑰，PEM）",
     "secret_keep": "留空＝沿用已存的",
     "ssh_key_keep": "貼上 SSH 私鑰（OpenSSH/PEM）；留空＝沿用已存的",
+    "key_managed": "已由 jt-ipam 產生並儲存（如需改貼自己的私鑰，請關閉後重開此視窗）",
     "auth_section": "SFTP 登入認證",
     "auth_hint": "用來登入 SFTP 主機。密碼或 SSH 私鑰二擇一即可（私鑰優先）；憑證本身的私鑰是下方的 key_path 遠端檔案，與此無關。",
     "remote_files": "遠端憑證檔案路徑",
@@ -120,6 +121,10 @@
     "days": "效期天數",
     "generate": "產生",
     "key_once": "這是此代理的單次 Key，請立即複製保存，離開後無法再取得",
+    "key_saved": "請妥善保存此代理的 Key（之後可在列表按「檢視」再次取得）",
+    "key_label": "此代理的 Key",
+    "agent_info": "派送代理資訊",
+    "view_key": "檢視 Key 與安裝指令",
     "scope_certs": "此代理可取哪些憑證",
     "scope_hint": "選擇此代理負責派送的憑證（留空＝不可取任何）"
   },

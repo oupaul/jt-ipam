@@ -19,14 +19,15 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
-from app.core.security import decrypt_secret
+from app.core.security import decrypt_secret, encrypt_secret
 from app.models.certificate import CertAgent, Certificate, CertVersion
+from app.models.encrypted_secret import EncryptedSecret
 from app.schemas.base import Paginated
 from app.schemas.certificate import (
     CertAgentCreate,
@@ -61,6 +62,35 @@ def _server_agent_version() -> str | None:
 
 def _key_hash(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+# enroll key 除了存 hash（給比對認證），另把明文 AES-GCM 加密存 encrypted_secret，讓管理員之後可再檢視。
+def _agent_key_aad(agent_id: uuid.UUID) -> bytes:
+    return f"cert_agent:{agent_id}:enroll_key".encode()
+
+
+async def _save_agent_key(session: AsyncSession, agent_id: uuid.UUID, raw_key: str) -> None:
+    enc, nonce = encrypt_secret(raw_key, aad=_agent_key_aad(agent_id))
+    existing = (await session.execute(select(EncryptedSecret).where(
+        EncryptedSecret.object_type == "cert_agent", EncryptedSecret.object_id == agent_id,
+        EncryptedSecret.field == "enroll_key",
+    ))).scalar_one_or_none()
+    if existing is None:
+        session.add(EncryptedSecret(object_type="cert_agent", object_id=agent_id,
+                                    field="enroll_key", ciphertext=enc, nonce=nonce))
+    else:
+        existing.ciphertext = enc
+        existing.nonce = nonce
+
+
+async def _load_agent_key(session: AsyncSession, agent_id: uuid.UUID) -> str | None:
+    row = (await session.execute(select(EncryptedSecret).where(
+        EncryptedSecret.object_type == "cert_agent", EncryptedSecret.object_id == agent_id,
+        EncryptedSecret.field == "enroll_key",
+    ))).scalar_one_or_none()
+    if row is None:
+        return None
+    return decrypt_secret(row.ciphertext, row.nonce, aad=_agent_key_aad(agent_id)).decode("utf-8")
 
 
 def _new_key() -> str:
@@ -193,6 +223,7 @@ async def create_agent(
     )
     session.add(obj)
     await session.flush()
+    await _save_agent_key(session, obj.id, raw_key)
     await append_audit(
         session, actor_user_id=str(user.id),
         actor_ip=request.client.host if request.client else None,
@@ -201,6 +232,7 @@ async def create_agent(
         diff={"name": obj.name}, request_id=getattr(request.state, "request_id", None),
     )
     await session.commit()
+    await session.refresh(obj)
     return CertAgentCreated(**_to_read(obj).model_dump(), enroll_key=raw_key)
 
 
@@ -234,9 +266,26 @@ async def rotate_key(
         raise HTTPException(404, detail="Not found")
     raw_key = _new_key()
     obj.enroll_key_hash = _key_hash(raw_key)
+    await _save_agent_key(session, obj.id, raw_key)
     await session.commit()
     await session.refresh(obj)  # commit 後 updated_at(onupdate)過期 → refresh 免 model_validate 同步 lazy IO 500
     return CertAgentCreated(**_to_read(obj).model_dump(), enroll_key=raw_key)
+
+
+@router.get("/{agent_id}/key", dependencies=[Depends(require_admin)])
+async def get_agent_key(
+    agent_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, str]:
+    """再次取得此代理的 enroll key（管理員）。金鑰 AES-GCM 加密保存，僅 admin 可解。
+
+    舊版建立、未保存明文的代理回 404，請改用輪替金鑰取得新的。"""
+    if await session.get(CertAgent, agent_id) is None:
+        raise HTTPException(404, detail="Not found")
+    key = await _load_agent_key(session, agent_id)
+    if key is None:
+        raise HTTPException(404, detail="此代理未保存金鑰（可能建立於舊版），請輪替金鑰取得新的")
+    return {"enroll_key": key}
 
 
 @router.delete("/{agent_id}", status_code=204, dependencies=[Depends(require_admin)])
@@ -247,6 +296,8 @@ async def delete_agent(
     obj = await session.get(CertAgent, agent_id)
     if obj is None:
         raise HTTPException(404, detail="Not found")
+    await session.execute(delete(EncryptedSecret).where(
+        EncryptedSecret.object_type == "cert_agent", EncryptedSecret.object_id == agent_id))
     await session.delete(obj)
     await session.commit()
 
