@@ -40,14 +40,18 @@ async function loadAgents() {
 }
 onMounted(() => { loadCerts(); loadAgents(); });
 
-// ── 到期狀態著色 ──
-function expiryTag(c: Certificate) {
-  if (c.current_days_remaining === null || c.current_not_after === null)
+// ── 到期狀態著色（到期日 / 剩餘天數 拆兩欄）──
+function expDateCell(c: Certificate) {
+  if (c.current_not_after === null)
     return h(NTag, { size: "small" }, () => t("certs.no_version"));
+  return h("span", fmtDateTime(c.current_not_after).slice(0, 10));
+}
+function daysLeftCell(c: Certificate) {
+  if (c.current_days_remaining === null) return h("span", { style: "opacity:.5" }, "—");
   const d = c.current_days_remaining;
   const type = d < 0 ? "error" : d <= 21 ? "warning" : "success";
-  const label = d < 0 ? t("certs.expired") : t("certs.days_left", { n: d });
-  return h(NTag, { size: "small", type }, () => `${fmtDateTime(c.current_not_after!).slice(0, 10)} · ${label}`);
+  return h(NTag, { size: "small", type },
+    () => d < 0 ? t("certs.expired") : t("certs.days_left", { n: d }));
 }
 
 // ── 新增憑證 ──
@@ -223,12 +227,13 @@ function actBtn(icon: any, label: string, onClick: () => void, props: Record<str
 }
 
 // ── 憑證表格欄位 + 顯示偏好 ──
-const CERT_KEYS = ["name", "domains", "exp", "version_count", "source", "actions"];
+const CERT_KEYS = ["name", "domains", "exp_date", "days_left", "version_count", "source", "actions"];
 const certPrefs = useColumnPrefs("certificates", CERT_KEYS, CERT_KEYS);
 const certPickerItems = computed(() => [
   { key: "name", label: t("cols.name") },
   { key: "domains", label: t("certs.domains") },
-  { key: "exp", label: t("certs.expiry") },
+  { key: "exp_date", label: t("certs.expiry_date") },
+  { key: "days_left", label: t("certs.days_remaining") },
   { key: "version_count", label: t("certs.versions") },
   { key: "source", label: t("certSource.col_source") },
   { key: "actions", label: t("cols.actions") },
@@ -239,9 +244,12 @@ const certColsAll = computed<DataTableColumns<Certificate>>(() => autoSort([
     sorter: (a, b) => (a.domains?.[0] ?? "").localeCompare(b.domains?.[0] ?? ""),
     render: (c) => h(NSpace, { size: 4 }, () => (c.domains ?? []).slice(0, 4).map(d =>
       h(NTag, { size: "small" }, () => d))) },
-  { title: t("certs.expiry"), key: "exp", width: 150,
+  { title: t("certs.expiry_date"), key: "exp_date", width: 120,
     sorter: (a, b) => (a.current_not_after ?? "").localeCompare(b.current_not_after ?? ""),
-    render: expiryTag },
+    render: expDateCell },
+  { title: t("certs.days_remaining"), key: "days_left", width: 110,
+    sorter: (a, b) => (a.current_days_remaining ?? Infinity) - (b.current_days_remaining ?? Infinity),
+    render: daysLeftCell },
   { title: t("certs.versions"), key: "version_count", width: 80 },
   { title: t("certSource.col_source"), key: "source", width: 90,
     sorter: (a, b) => a.source_type.localeCompare(b.source_type),
@@ -250,8 +258,8 @@ const certColsAll = computed<DataTableColumns<Certificate>>(() => autoSort([
         ? h("span", { style: "opacity:.5" }, "—")
         : h(NTag, { size: "small", type: c.last_fetch_error ? "error" : "info" },
             () => c.source_type.toUpperCase()) },
-  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 360,
-    render: (c) => h(NSpace, { size: 4, wrapItem: false, wrap: false }, () => [
+  { title: t("cols.actions"), key: "actions", className: "col-actions", align: "center", width: 420,
+    render: (c) => h(NSpace, { size: 4, wrapItem: false, wrap: false, justify: "center", style: "width:100%" }, () => [
       actBtn(ImportIcon, t("certs.upload_version"), () => openUpload(c)),
       actBtn(TokenIcon, t("certs.self_signed"), () => openSelf(c)),
       actBtn(SettingsIcon, t("certSource.source"), () => openSource(c)),
@@ -312,8 +320,8 @@ const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
   { title: t("certs.deployed"), key: "reported", width: 90,
     sorter: (a, b) => (a.reported ?? []).length - (b.reported ?? []).length,
     render: (a) => `${(a.reported ?? []).filter(d => (d as any).status === "ok").length} / ${(a.reported ?? []).length}` },
-  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 180,
-    render: (a) => h(NSpace, { size: 4, wrapItem: false, wrap: false }, () => [
+  { title: t("cols.actions"), key: "actions", className: "col-actions", align: "center", width: 200,
+    render: (a) => h(NSpace, { size: 4, wrapItem: false, wrap: false, justify: "center", style: "width:100%" }, () => [
       actBtn(SyncIcon, t("certs.rotate_key"), () => doRotate(a)),
       h(NPopconfirm, { onPositiveClick: () => removeAgent(a) }, {
         trigger: () => actBtn(DeleteIcon, t("common.delete"), () => {}, { tertiary: true, type: "error" }),

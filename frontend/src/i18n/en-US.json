@@ -89,6 +89,8 @@
     "self_signed_done": "Self-signed certificate generated and set as current",
     "domains": "Domains (SAN)",
     "expiry": "Expiry",
+    "expiry_date": "Expiry date",
+    "days_remaining": "Days left",
     "versions": "Versions",
     "upload_version": "Upload version",
     "self_signed": "Self-signed",

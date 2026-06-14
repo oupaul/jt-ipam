@@ -4,6 +4,13 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.141] — 2026-06-14
+
+### 修正 / 變更
+- 「系統有更新」重新整理橫幅的 icon 與文字未垂直置中 — icon 改置中於 16×16 框、容器與文字 `line-height:1`。
+- 憑證表格「到期」欄拆成**「到期日」**與**「剩餘天數」**兩個獨立欄位（各自可排序、可選擇）。
+- 憑證 / 派送代理表格操作欄 icon 改**置中**（欄位 `align:center` + NSpace `justify:center`）。
+
 ## [0.4.140] — 2026-06-14
 
 ### 變更 — 憑證自動抓取來源設定 UX

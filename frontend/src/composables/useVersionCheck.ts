@@ -36,7 +36,7 @@ export function useVersionCheck() {
               {
                 title: t("update.new_version_v", { v: deployed }),
                 style:
-                  "display:inline-flex;align-items:center;gap:8px;cursor:pointer;"
+                  "display:inline-flex;align-items:center;gap:8px;cursor:pointer;line-height:1;"
                   + "border:1px solid var(--primary-color,#18a058);border-radius:10px;"
                   + "padding:8px 16px;background:rgba(24,160,88,.1);"
                   + "box-shadow:0 4px 14px rgba(0,0,0,.15);"
@@ -44,9 +44,11 @@ export function useVersionCheck() {
                 onClick: () => window.location.reload(),
               },
               [
-                h("span", { style: "display:inline-flex;width:16px;height:16px;flex:0 0 auto" },
-                  h(RefreshIcon)),
-                h("span", t("update.banner")),
+                h("span", {
+                  style: "display:inline-flex;align-items:center;justify-content:center;"
+                    + "width:16px;height:16px;flex:0 0 auto",
+                }, h(RefreshIcon, { width: 16, height: 16, style: "display:block" })),
+                h("span", { style: "line-height:1" }, t("update.banner")),
               ],
             ),
         });

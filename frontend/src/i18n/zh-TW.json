@@ -89,6 +89,8 @@
     "self_signed_done": "已產生自簽憑證並設為目前版本",
     "domains": "網域 (SAN)",
     "expiry": "到期",
+    "expiry_date": "到期日",
+    "days_remaining": "剩餘天數",
     "versions": "版本數",
     "upload_version": "上傳新版",
     "self_signed": "產生自簽",

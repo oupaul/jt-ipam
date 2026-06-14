@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.141] — 2026-06-14
+
+### Fixed / Changed
+- The "update available" reload banner had its icon and text misaligned vertically — the icon is now
+  centered in a 16×16 box, with `line-height:1` on the container and text.
+- The certificate table's "Expiry" column is split into two independent columns: **"Expiry date"** and
+  **"Days left"** (each sortable and pickable).
+- Certificate / distribution-agent action-column icons are now centered (column `align:center` +
+  NSpace `justify:center`).
+
 ## [0.4.140] — 2026-06-14
 
 ### Changed — Certificate auto-fetch source UX
