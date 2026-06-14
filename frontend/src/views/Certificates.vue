@@ -362,15 +362,16 @@ const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
   { title: t("certs.scope"), key: "scope", width: 90,
     sorter: (a, b) => (a.scope_cert_ids ?? []).length - (b.scope_cert_ids ?? []).length,
     render: (a) => `${(a.scope_cert_ids ?? []).length} ${t("certs.certs_unit")}` },
-  { title: t("cols.version"), key: "agent_version", width: 110,
+  { title: t("cols.version"), key: "agent_version", width: 130,
     render: (a) => {
       if (!a.agent_version) return "—";
       const outdated = !!a.server_agent_version && a.agent_version !== a.server_agent_version;
       const verTag = h(NTag, { size: "small", type: outdated ? "warning" : "success", bordered: false },
         () => `v${a.agent_version}`);
       if (!outdated) return verTag;
+      // 允許「可更新」換行到下一列，不要溢出到右邊欄位
       return h(NTooltip, null, {
-        trigger: () => h(NSpace, { size: 4, wrapItem: false, align: "center", wrap: false }, () => [
+        trigger: () => h(NSpace, { size: 4, wrapItem: false, align: "center", wrap: true }, () => [
           verTag,
           h(NTag, { size: "small", type: "warning", bordered: false }, () => t("scan_agent.outdated")),
         ]),
@@ -380,7 +381,7 @@ const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
   { title: t("cols.source_ip"), key: "source_ip", width: 128,
     render: (a) => a.last_source_ip
       ? h("span", { style: "font-family:monospace" }, a.last_source_ip) : "—" },
-  { title: t("cols.last_report"), key: "last_seen_at", width: 170,
+  { title: t("cols.last_report"), key: "last_seen_at", minWidth: 170,
     sorter: (a, b) => (a.last_seen_at ?? "").localeCompare(b.last_seen_at ?? ""),
     render: (a) => a.last_seen_at ? fmtDateTime(a.last_seen_at) : "—" },
   { title: t("certs.deployed"), key: "reported", width: 90,
@@ -445,7 +446,7 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
             </n-button>
           </n-space>
         </n-space>
-        <n-data-table :columns="agentCols" :data="agents" size="small" :scroll-x="918" :row-key="(r:CertAgent) => r.id" />
+        <n-data-table :columns="agentCols" :data="agents" size="small" :scroll-x="938" :row-key="(r:CertAgent) => r.id" />
       </n-tab-pane>
     </n-tabs>
   </n-card>
