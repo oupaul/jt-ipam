@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.154] — 2026-06-15
+
+### Changed
+- The agent config template is now split into **QUICK MODE (preferred)** and **MANUAL MODE** sections.
+  The quick-mode comments spell out exactly which cert / key / chain paths and filenames each profile
+  writes, with the matching nginx / apache directives, so you know what to point your service config at.
+
 ## [0.4.153] — 2026-06-14
 
 ### Changed

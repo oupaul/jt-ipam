@@ -80,28 +80,55 @@ AUTO_UPDATE=true
 TLS_BASE=/etc/ssl/jt-ipam
 
 # Each deployment is a group of DEPLOY_<N>_* lines (one setting per line). N = 1, 2, 3, ...
-# Pick the service via PROFILE; it provides the file paths AND the reload command.
 #
+# ══════════════════════════════════════════════════════════════════════════════
+#  QUICK MODE (preferred) - just name the certificate and the service.
+#  The agent writes the cert files to the fixed paths below and reloads the
+#  service. Then edit your service config (nginx/apache/...) to point at those
+#  exact paths (shown per profile).
+# ══════════════════════════════════════════════════════════════════════════════
 #DEPLOY_1_CERT=wildcard-example-com
 #DEPLOY_1_PROFILE=nginx
 #
-# Built-in PROFILE values (default paths use TLS_BASE above; <cert> = the cert name):
-#   nginx    fullchain <base>/<cert>.fullchain.pem + key <base>/<cert>.key       reload: systemctl reload nginx
-#   apache   cert <base>/<cert>.crt + chain .chain.pem + key .key                reload: systemctl reload apache2 || httpd
-#   haproxy  combined <base>/<cert>.pem (cert+chain+key)                         reload: systemctl reload haproxy
-#   postfix  fullchain <base>/<cert>.fullchain.pem + key .key                    reload: systemctl reload postfix
-#   dovecot  fullchain <base>/<cert>.fullchain.pem + key .key                    reload: systemctl reload dovecot
-#   pve      /etc/pve/local/pveproxy-ssl.pem + .key                              reload: systemctl restart pveproxy
-#   pmg      /etc/pmg/pmg-api.pem (cert+chain+key)                               reload: systemctl restart pmgproxy
-#   pbs      /etc/proxmox-backup/proxy.pem + .key                                reload: systemctl reload proxmox-backup-proxy
-#   zimbra   Zimbra cert deployment
-#   generic  no fixed paths/reload - you set the paths and RELOAD yourself (below)
+# Where each PROFILE writes the files (base = TLS_BASE above = /etc/ssl/jt-ipam, <cert> = DEPLOY_<N>_CERT):
+#   nginx
+#     cert+chain : /etc/ssl/jt-ipam/<cert>.fullchain.pem
+#     key        : /etc/ssl/jt-ipam/<cert>.key
+#     reload     : systemctl reload nginx
+#     point nginx -> ssl_certificate     /etc/ssl/jt-ipam/<cert>.fullchain.pem;
+#                    ssl_certificate_key /etc/ssl/jt-ipam/<cert>.key;
+#   apache
+#     cert       : /etc/ssl/jt-ipam/<cert>.crt
+#     chain      : /etc/ssl/jt-ipam/<cert>.chain.pem
+#     key        : /etc/ssl/jt-ipam/<cert>.key
+#     reload     : systemctl reload apache2 (or httpd)
+#     point apache-> SSLCertificateFile      /etc/ssl/jt-ipam/<cert>.crt
+#                    SSLCertificateKeyFile   /etc/ssl/jt-ipam/<cert>.key
+#                    SSLCertificateChainFile /etc/ssl/jt-ipam/<cert>.chain.pem
+#   haproxy
+#     combined   : /etc/ssl/jt-ipam/<cert>.pem   (cert + chain + key in one file)
+#     reload     : systemctl reload haproxy      (point: bind ... ssl crt /etc/ssl/jt-ipam/<cert>.pem)
+#   postfix
+#     cert+chain : /etc/ssl/jt-ipam/<cert>.fullchain.pem    key: /etc/ssl/jt-ipam/<cert>.key
+#     reload     : systemctl reload postfix
+#   dovecot
+#     cert+chain : /etc/ssl/jt-ipam/<cert>.fullchain.pem    key: /etc/ssl/jt-ipam/<cert>.key
+#     reload     : systemctl reload dovecot
+#   pve   -> /etc/pve/local/pveproxy-ssl.pem + .key   reload: systemctl restart pveproxy   (no config change)
+#   pmg   -> /etc/pmg/pmg-api.pem (cert+chain+key)     reload: systemctl restart pmgproxy   (no config change)
+#   pbs   -> /etc/proxmox-backup/proxy.pem + .key      reload: systemctl reload proxmox-backup-proxy (no config change)
+#   zimbra-> Zimbra cert deployment
 #
-# Optionally override where the files go (keep PROFILE for the reload):
-#   DEPLOY_1_FULLCHAIN=  cert + chain          DEPLOY_1_KEY=       private key
-#   DEPLOY_1_CRT=        leaf cert only        DEPLOY_1_CHAIN=     intermediate chain
-#   DEPLOY_1_COMBINED=   cert + chain + key in one file
-# Advanced: DEPLOY_1_RELOAD= / DEPLOY_1_TEST=  override the profile's reload / config-test command.
+# ══════════════════════════════════════════════════════════════════════════════
+#  MANUAL MODE - you choose exactly where each file goes (set RELOAD yourself,
+#  or keep PROFILE for its reload command).
+# ══════════════════════════════════════════════════════════════════════════════
+#DEPLOY_1_CERT=wildcard-example-com
+#DEPLOY_1_FULLCHAIN=/etc/nginx/ssl/site.pem   # cert + chain
+#DEPLOY_1_KEY=/etc/nginx/ssl/site.key         # private key
+#DEPLOY_1_RELOAD=systemctl reload nginx       # reload command
+# Other path fields: DEPLOY_1_CRT= (leaf cert only)  DEPLOY_1_CHAIN= (intermediate)  DEPLOY_1_COMBINED= (cert+chain+key)
+# DEPLOY_1_TEST= config-test command run before reload
 EOF
     chmod 0600 "$CONF"
     echo "Created config template: $CONF (edit DEPLOY_N before enabling)"
