@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.155] — 2026-06-15
+
+### Fixed
+- Distribution-agent table: the version column's "update available" tag now wraps (and the column is
+  wider) instead of overflowing into the source-IP column.
+- Name and last-report columns are both flexible so they share the leftover width — the name column no
+  longer over-stretches on its own.
+
 ## [0.4.154] — 2026-06-15
 
 ### Changed
