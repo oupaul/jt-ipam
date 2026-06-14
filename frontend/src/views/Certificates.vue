@@ -280,8 +280,9 @@ const certPickerItems = computed(() => [
   { key: "actions", label: t("cols.actions") },
 ]);
 const certColsAll = computed<DataTableColumns<Certificate>>(() => autoSort([
-  { title: t("cols.name"), key: "name", width: 200, ellipsis: { tooltip: true } },
-  { title: t("certs.domains"), key: "domains", minWidth: 220,
+  // name 與 domains 都設 minWidth（彈性）→ 多餘寬度由兩欄平分，避免任一欄獨自撐爆。
+  { title: t("cols.name"), key: "name", minWidth: 160, ellipsis: { tooltip: true } },
+  { title: t("certs.domains"), key: "domains", minWidth: 200,
     sorter: (a, b) => (a.domains?.[0] ?? "").localeCompare(b.domains?.[0] ?? ""),
     render: (c) => h(NSpace, { size: 4 }, () => (c.domains ?? []).slice(0, 4).map(d =>
       h(NTag, { size: "small" }, () => d))) },
@@ -299,7 +300,7 @@ const certColsAll = computed<DataTableColumns<Certificate>>(() => autoSort([
         ? h("span", { style: "opacity:.5" }, "—")
         : h(NTag, { size: "small", type: c.last_fetch_error ? "error" : "info" },
             () => c.source_type.toUpperCase()) },
-  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 190,
+  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 210, fixed: "right",
     render: (c) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
       actBtn(ImportIcon, t("certs.upload_version"), () => openUpload(c)),
       actBtn(TokenIcon, t("certs.self_signed"), () => openSelf(c)),
@@ -361,7 +362,7 @@ const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
   { title: t("certs.deployed"), key: "reported", width: 90,
     sorter: (a, b) => (a.reported ?? []).length - (b.reported ?? []).length,
     render: (a) => `${(a.reported ?? []).filter(d => (d as any).status === "ok").length} / ${(a.reported ?? []).length}` },
-  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 100,
+  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 110, fixed: "right",
     render: (a) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
       actBtn(SyncIcon, t("certs.rotate_key"), () => doRotate(a)),
       h(NPopconfirm, { onPositiveClick: () => removeAgent(a) }, {
@@ -397,7 +398,7 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
           </n-space>
         </n-space>
         <n-data-table :columns="certCols" :data="certs" :loading="loading" size="small"
-                      :scroll-x="1010" :row-key="(r:Certificate) => r.id" />
+                      :scroll-x="970" :row-key="(r:Certificate) => r.id" />
       </n-tab-pane>
 
       <!-- 派送代理 -->
@@ -419,7 +420,7 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
             </n-button>
           </n-space>
         </n-space>
-        <n-data-table :columns="agentCols" :data="agents" size="small" :scroll-x="878" :row-key="(r:CertAgent) => r.id" />
+        <n-data-table :columns="agentCols" :data="agents" size="small" :scroll-x="888" :row-key="(r:CertAgent) => r.id" />
       </n-tab-pane>
     </n-tabs>
   </n-card>

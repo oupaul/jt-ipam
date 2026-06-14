@@ -2,7 +2,7 @@
 # jt-ipam 憑證派送代理（純 bash，相依只有 curl + coreutils，無 Python / jq / YAML）。
 #
 # 定期（或單次）向 jt-ipam 詢問「我負責的憑證有沒有新版」，有的話直接 curl 下載各段原始 PEM、
-# 原子寫入站台、config-test 通過才 reload，失敗自動回滾，最後把結果回報給 jt-ipam。
+# 以不中斷方式寫入站台、config-test 通過才 reload，失敗自動還原，最後把結果回報給 jt-ipam。
 #
 # 設定檔（預設 /etc/jt-ipam-cert-agent/config，KEY=VALUE，由本腳本 source）：
 #
@@ -164,7 +164,7 @@ apply_deployment() {  # cert profile fp not_after  + 透過 DCONF 取得覆寫
     return 0
   fi
 
-  # 下載 + 安裝（原子 + 備份，失敗回滾）
+  # 下載 + 安裝（不中斷換檔 + 備份，失敗還原）
   local tmpd; tmpd="$(mktemp -d)"; local -a written=() backed=()
   rollback() {
     local p
@@ -185,12 +185,12 @@ apply_deployment() {  # cert profile fp not_after  + 透過 DCONF 取得覆寫
 
   # config-test
   if [ -n "$PTEST" ] && ! eval "$PTEST" >/dev/null 2>&1; then
-    log "[$cert/$profile] config-test 失敗 → 回滾"; rollback
+    log "[$cert/$profile] config-test 失敗 → 還原"; rollback
     add_report "$cert" "$profile" failed "$fp" "$na" "config-test 失敗"; return 1
   fi
   # reload
   if [ -n "$PRELOAD" ] && ! eval "$PRELOAD" >/dev/null 2>&1; then
-    log "[$cert/$profile] reload 失敗 → 回滾"; rollback
+    log "[$cert/$profile] reload 失敗 → 還原"; rollback
     add_report "$cert" "$profile" failed "$fp" "$na" "reload 失敗"; return 1
   fi
   # 成功 → 清備份

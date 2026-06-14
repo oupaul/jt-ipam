@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.147] — 2026-06-14
+
+### Fixed
+- Certificate table layout: the action column is now `fixed: "right"` (pinned, never pushed off-screen on
+  narrow widths) and widened to fit all icons; name and domains are flexible and share the leftover width.
+- Traditional-Chinese copy now uses full-width punctuation and Taiwan-localized terms (rollback, one-time,
+  atomic-write wording) across the agent install help, source config, and agent script comments.
+
 ## [0.4.146] — 2026-06-14
 
 ### Changed — distribution agent is now pure bash (no Python / PyYAML)
