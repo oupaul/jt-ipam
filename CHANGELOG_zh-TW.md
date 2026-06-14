@@ -4,6 +4,12 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.154] — 2026-06-15
+
+### 變更
+- 派送代理設定檔範本重新分成兩區塊:**快速模式（優先）**與**手動模式**。快速模式的註解直接列出**每個 profile
+  會把 cert / key / chain 寫到哪個路徑與檔名**,並附上對應的 nginx / apache 指令,讓你知道要把服務設定指到哪。
+
 ## [0.4.153] — 2026-06-14
 
 ### 變更

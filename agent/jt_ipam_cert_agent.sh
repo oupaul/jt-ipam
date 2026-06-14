@@ -15,28 +15,29 @@
 #   TLS_BASE=/etc/ssl/jt-ipam  # default write directory for built-in profiles
 #
 #   # Each deployment is a group of DEPLOY_<N>_* lines (one setting per line). N = 1, 2, 3, ...
-#   # Pick the service via PROFILE; it provides the file paths AND the reload command:
-#   DEPLOY_1_CERT=wildcard-example-com          # which jt-ipam certificate
-#   DEPLOY_1_PROFILE=nginx
-#
-#   # Built-in PROFILE values (default paths use TLS_BASE; <cert> = the cert name):
-#   #   nginx    fullchain <base>/<cert>.fullchain.pem + key .key   reload: systemctl reload nginx
-#   #   apache   cert .crt + chain .chain.pem + key .key            reload: systemctl reload apache2 || httpd
-#   #   haproxy  combined <base>/<cert>.pem (cert+chain+key)        reload: systemctl reload haproxy
-#   #   postfix  fullchain <base>/<cert>.fullchain.pem + key .key   reload: systemctl reload postfix
-#   #   dovecot  fullchain <base>/<cert>.fullchain.pem + key .key   reload: systemctl reload dovecot
-#   #   pve      /etc/pve/local/pveproxy-ssl.pem + .key             reload: systemctl restart pveproxy
-#   #   pmg      /etc/pmg/pmg-api.pem (cert+chain+key)              reload: systemctl restart pmgproxy
-#   #   pbs      /etc/proxmox-backup/proxy.pem + .key               reload: systemctl reload proxmox-backup-proxy
-#   #   zimbra   Zimbra cert deployment
-#   #   generic  no fixed paths/reload - you set the paths + RELOAD yourself
-#
-#   # Optional: override where files go (keep PROFILE for the reload):
-#   #   DEPLOY_1_FULLCHAIN= (cert+chain)  DEPLOY_1_KEY=  DEPLOY_1_CRT= (leaf)  DEPLOY_1_CHAIN=  DEPLOY_1_COMBINED=
-#   # Advanced: DEPLOY_1_RELOAD= / DEPLOY_1_TEST= override the profile's reload / config-test command.
+#   #
+#   # QUICK MODE (preferred): name the cert + service; the agent writes fixed paths and reloads.
+#   #   DEPLOY_1_CERT=wildcard-example-com
+#   #   DEPLOY_1_PROFILE=nginx
+#   #   Where each profile writes (base = TLS_BASE, <cert> = DEPLOY_<N>_CERT):
+#   #     nginx    cert+chain <base>/<cert>.fullchain.pem  key <base>/<cert>.key   reload: systemctl reload nginx
+#   #     apache   cert <base>/<cert>.crt  chain .chain.pem  key .key              reload: systemctl reload apache2||httpd
+#   #     haproxy  combined <base>/<cert>.pem (cert+chain+key)                     reload: systemctl reload haproxy
+#   #     postfix  cert+chain <base>/<cert>.fullchain.pem  key .key                reload: systemctl reload postfix
+#   #     dovecot  cert+chain <base>/<cert>.fullchain.pem  key .key                reload: systemctl reload dovecot
+#   #     pve      /etc/pve/local/pveproxy-ssl.pem + .key      reload: systemctl restart pveproxy
+#   #     pmg      /etc/pmg/pmg-api.pem (cert+chain+key)       reload: systemctl restart pmgproxy
+#   #     pbs      /etc/proxmox-backup/proxy.pem + .key        reload: systemctl reload proxmox-backup-proxy
+#   #     zimbra   Zimbra cert deployment
+#   #   Then point your service config at the path(s) above.
+#   #
+#   # MANUAL MODE: choose exactly where each file goes (set RELOAD yourself or keep PROFILE for its reload):
+#   #   DEPLOY_1_CERT=wildcard-example-com
+#   #   DEPLOY_1_FULLCHAIN=/etc/nginx/ssl/site.pem  DEPLOY_1_KEY=/etc/nginx/ssl/site.key  DEPLOY_1_RELOAD=systemctl reload nginx
+#   #   Other path fields: DEPLOY_1_CRT= (leaf)  DEPLOY_1_CHAIN=  DEPLOY_1_COMBINED=  DEPLOY_1_TEST=
 #
 # Usage: jt_ipam_cert_agent.sh [--config PATH] [--dry-run] [--version]
-AGENT_VERSION=0.4.153
+AGENT_VERSION=0.4.154
 
 set -u
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"

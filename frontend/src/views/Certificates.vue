@@ -259,15 +259,17 @@ const installerOneLiner = computed(() =>
   `curl -fsSLk ${serverOrigin}/api/v1/cert-agents/installer.sh | sudo `
   + `JT_IPAM_URL=${serverOrigin} JT_IPAM_AGENT_KEY=${newKey.value || "<建立代理時的-KEY>"} JT_IPAM_INSECURE=1 bash`);
 const uninstallOneLiner = `curl -fsSLk ${serverOrigin}/api/v1/cert-agents/installer.sh | sudo JT_IPAM_UNINSTALL=1 bash`;
-const configExample = `# 一行一個設定。PROFILE 決定服務（含重載指令）
+const configExample = `# ── 快速模式（優先）：只設憑證 + 服務 ──
+# 代理會把憑證寫到固定路徑並自動重載，你再把服務設定指過去：
 DEPLOY_1_CERT=wildcard-example-com
 DEPLOY_1_PROFILE=nginx
-DEPLOY_1_FULLCHAIN=/etc/nginx/ssl/site.pem
-DEPLOY_1_KEY=/etc/nginx/ssl/site.key
+#   nginx → cert+chain /etc/ssl/jt-ipam/<cert>.fullchain.pem、key /etc/ssl/jt-ipam/<cert>.key
 
-# 最簡：只設憑證 + 服務（路徑用 profile 預設）
+# ── 手動模式：自己指定每個檔案路徑 ──
 DEPLOY_2_CERT=mail-cert
-DEPLOY_2_PROFILE=pmg`;
+DEPLOY_2_FULLCHAIN=/etc/postfix/tls/mail.pem
+DEPLOY_2_KEY=/etc/postfix/tls/mail.key
+DEPLOY_2_RELOAD=systemctl reload postfix`;
 
 // 來源類型選擇器：被選中的按鈕整顆填綠底白字，明顯看出目前選的是哪個。
 const radioGreen = {
