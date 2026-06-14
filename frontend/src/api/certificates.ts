@@ -133,6 +133,10 @@ export async function rotateCertAgentKey(id: string): Promise<CertAgentCreated> 
   const { data } = await apiClient.post(`/api/v1/cert-agents/${id}/rotate-key`);
   return data;
 }
+export async function getCertAgentKey(id: string): Promise<{ enroll_key: string }> {
+  const { data } = await apiClient.get(`/api/v1/cert-agents/${id}/key`);
+  return data;
+}
 export async function deleteCertAgent(id: string): Promise<void> {
   await apiClient.delete(`/api/v1/cert-agents/${id}`);
 }
