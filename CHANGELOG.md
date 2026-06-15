@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.177] — 2026-06-15
+
+### Changed
+- **Installer refreshes the apt index and retries before falling back to PGDG.** If no PostgreSQL
+  (>= 16) with a matching `postgresql-N-pgvector` is found in the default repos on the first look, the
+  script now runs `apt-get update` once and re-checks before adding the PGDG repo — so a transient/stale
+  apt index at install time (the likely reason a Debian 13 box with native PG 17 + pgvector wasn't picked
+  up) uses the native packages cleanly instead of needlessly pulling in PGDG. Install-script only.
+
 ## [0.4.176] — 2026-06-15
 
 ### Fixed

@@ -4,6 +4,14 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.177] — 2026-06-15
+
+### 變更
+- **安裝腳本在退回 PGDG 前先重整 apt 索引並重試。** 若第一次在預設庫找不到「PostgreSQL（>= 16）＋對應
+  `postgresql-N-pgvector` 成對」的版本，腳本會先跑一次 `apt-get update` 再檢查，仍找不到才補 PGDG ——
+  這樣「安裝當下 apt index 還沒更新好」的暫時狀況（Debian 13 明明有原生 PG 17＋pgvector 卻沒被選到的
+  推測主因）就會乾淨走原生套件，而不是白繞 PGDG。純安裝腳本改動。
+
 ## [0.4.176] — 2026-06-15
 
 ### 修正
