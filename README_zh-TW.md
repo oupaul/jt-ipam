@@ -1,5 +1,5 @@
-# jt-ipam v0.4.177
->>>>>>> e60dded (fix(install): refresh apt index and retry before falling back to PGDG [v0.4.177])
+# jt-ipam v0.4.178
+>>>>>>> 60d23d5 (fix(install): pipefail+grep -q SIGPIPE made multi-version pkgs look unavailable (Debian 13 root cause) [v0.4.178])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
