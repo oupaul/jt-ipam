@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.156] — 2026-06-15
+
+### Changed — installer pre-fills the certificate names this agent can deploy
+- At install time the installer asks the server (with the agent key) which certificates this agent may
+  deploy, and **lists the real names in the config comments and pre-fills the `DEPLOY_1_CERT` example**, so
+  you no longer have to guess what `DEPLOY_<N>_CERT` should be (it's the certificate name from jt-ipam).
+- The installer also prints the deployable certificate list at the end (it won't overwrite an existing
+  config, but still prints the list for reference).
+
 ## [0.4.155] — 2026-06-15
 
 ### Fixed

@@ -70,6 +70,19 @@ CURL_OPTS=(-fsSL); [[ -n "$JT_IPAM_INSECURE" ]] && CURL_OPTS+=(-k)
 curl "${CURL_OPTS[@]}" "${JT_IPAM_URL%/}/api/v1/cert-agents/agent.sh" -o "$AGENT"
 chmod 0755 "$AGENT"
 
+# ── Ask the server which certificates this agent is allowed to deploy (best-effort) ──
+# These are the valid values for DEPLOY_<N>_CERT.
+CERTS="$(curl "${CURL_OPTS[@]}" -H "X-Agent-Key: ${JT_IPAM_AGENT_KEY}" \
+        "${JT_IPAM_URL%/}/api/v1/cert-agents/check?format=text" 2>/dev/null \
+        | awk -F'\t' 'NF>=2{print $1}')"
+if [[ -n "$CERTS" ]]; then
+    EXAMPLE_CERT="$(printf '%s\n' "$CERTS" | head -1)"
+    CERT_HINT="$(printf '%s\n' "$CERTS" | sed 's/^/#     /')"
+else
+    EXAMPLE_CERT="your-certificate-name"
+    CERT_HINT="#     (none yet - add certificates to this agent's scope in jt-ipam, then re-run the installer)"
+fi
+
 # ── Config (create a template only if absent; never overwrite your deployments) ──
 if [[ ! -f "$CONF" ]]; then
     cat > "$CONF" <<EOF
@@ -81,13 +94,17 @@ TLS_BASE=/etc/ssl/jt-ipam
 
 # Each deployment is a group of DEPLOY_<N>_* lines (one setting per line). N = 1, 2, 3, ...
 #
+# DEPLOY_<N>_CERT must be a certificate NAME from jt-ipam (the "Name" column on the
+# Certificates page). This agent is allowed to deploy these certificate(s):
+${CERT_HINT}
+#
 # ══════════════════════════════════════════════════════════════════════════════
 #  QUICK MODE (preferred) - just name the certificate and the service.
 #  The agent writes the cert files to the fixed paths below and reloads the
 #  service. Then edit your service config (nginx/apache/...) to point at those
-#  exact paths (shown per profile).
+#  exact paths (shown per profile). Remove the leading '#' to enable.
 # ══════════════════════════════════════════════════════════════════════════════
-#DEPLOY_1_CERT=wildcard-example-com
+#DEPLOY_1_CERT=${EXAMPLE_CERT}
 #DEPLOY_1_PROFILE=nginx
 #
 # Where each PROFILE writes the files (base = TLS_BASE above = /etc/ssl/jt-ipam, <cert> = DEPLOY_<N>_CERT):
@@ -123,7 +140,7 @@ TLS_BASE=/etc/ssl/jt-ipam
 #  MANUAL MODE - you choose exactly where each file goes (set RELOAD yourself,
 #  or keep PROFILE for its reload command).
 # ══════════════════════════════════════════════════════════════════════════════
-#DEPLOY_1_CERT=wildcard-example-com
+#DEPLOY_1_CERT=${EXAMPLE_CERT}
 #DEPLOY_1_FULLCHAIN=/etc/nginx/ssl/site.pem   # cert + chain
 #DEPLOY_1_KEY=/etc/nginx/ssl/site.key         # private key
 #DEPLOY_1_RELOAD=systemctl reload nginx       # reload command
@@ -131,9 +148,17 @@ TLS_BASE=/etc/ssl/jt-ipam
 # DEPLOY_1_TEST= config-test command run before reload
 EOF
     chmod 0600 "$CONF"
-    echo "Created config template: $CONF (edit DEPLOY_N before enabling)"
+    echo "Created config template: $CONF (edit DEPLOY_1_* before enabling)"
 else
     echo "Config already exists, leaving it untouched: $CONF"
+fi
+
+# Show which certificates this agent can deploy (valid DEPLOY_<N>_CERT values).
+if [[ -n "$CERTS" ]]; then
+    echo "Certificates this agent can deploy (use as DEPLOY_<N>_CERT):"
+    printf '  %s\n' $CERTS
+else
+    echo "Note: this agent has no certificates in scope yet - add some in jt-ipam (the agent's scope)."
 fi
 
 # ── systemd service + timer (all distros use systemd) ──

@@ -4,6 +4,13 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.156] — 2026-06-15
+
+### 變更 — installer 自動帶出此代理可派送的憑證名稱
+- 安裝時 installer 會用代理金鑰向 server 查「這把代理可派送哪些憑證」，把實際的憑證名稱**列在設定檔註解
+  並預填到 `DEPLOY_1_CERT` 範例**，使用者不必再猜 `DEPLOY_<N>_CERT` 要填什麼（＝jt-ipam 憑證頁的名稱）。
+- 安裝/重跑結束時也會印出此代理可派送的憑證清單（設定檔已存在時不覆蓋，但會印清單供參考）。
+
 ## [0.4.155] — 2026-06-15
 
 ### 修正
