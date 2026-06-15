@@ -142,6 +142,14 @@
       <li><span class="leaf"><span class="zh">語系/時間偏好、表格欄位與釘選（跟著帳號存）</span><span class="en">Locale/time prefs, per-account table columns &amp; pins</span></span></li>
     </ul>
 
+    <div class="grp"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="9" r="6"/><path d="M9 14.5 8 22l4-2 4 2-1-7.5"/></svg><span class="zh">憑證集中保管與派送</span><span class="en">Certificate vault &amp; distribution</span></div>
+    <ul class="branch">
+      <li><span class="leaf"><span class="zh">集中保管憑證（私鑰 AES-GCM 加密）、自簽產生、上傳或貼上 PEM、到期/飄移告警</span><span class="en">Central cert vault (AES-GCM private keys), self-signed gen, upload or paste PEM, expiry/drift alerts</span></span></li>
+      <li><span class="leaf"><span class="zh">輕量代理（純 bash，只相依 curl）拉取派送：nginx / Apache / Caddy / Traefik / HAProxy / Postfix / Dovecot / Proxmox VE / PMG / PBS / PDM / Zimbra 等</span><span class="en">Lightweight agent (pure bash, curl-only) pulls &amp; deploys: nginx / Apache / Caddy / Traefik / HAProxy / Postfix / Dovecot / Proxmox VE / PMG / PBS / PDM / Zimbra and more</span></span></li>
+      <li><span class="leaf"><span class="zh">套用前設定測試、失敗自動還原、部署後重載服務</span><span class="en">Config-test before apply, auto-rollback on failure, service reload after deploy</span></span></li>
+      <li><span class="leaf"><span class="zh">URL / SFTP 來源定期自動同步、缺中繼/根憑證以系統信任庫自動補齊完整鏈</span><span class="en">Periodic URL / SFTP source sync, auto-complete missing intermediate/root chain from system trust store</span></span></li>
+    </ul>
+
     <div class="grp"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12H2M5.5 7 2 12l3.5 5M18.5 7 22 12l-3.5 5"/></svg><span class="zh">部署</span><span class="en">Deployment</span></div>
     <ul class="branch">
       <li><span class="leaf"><span class="zh">systemd + apt（可安裝於虛擬機 / 容器，實體機亦可）、預設強制 HTTPS、一行安裝/升級/移除腳本</span><span class="en">systemd + apt (installs on VMs / containers, or bare metal), HTTPS enforced, one-line install/upgrade/uninstall</span></span></li>

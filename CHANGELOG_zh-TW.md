@@ -5,6 +5,7 @@
 `frontend/package.json` / `backend/app/version.py`。
 
 <<<<<<< HEAD
+<<<<<<< HEAD
 ## [0.4.170] — 2026-06-15
 
 ### 修正
