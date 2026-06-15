@@ -10,14 +10,24 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
-from app.core.security import encrypt_secret
+from app.core.security import decrypt_secret, encrypt_secret
 from app.models.certificate import Certificate, CertVersion
 from app.schemas.base import Paginated
 from app.schemas.certificate import (
@@ -37,7 +47,13 @@ from app.services.cert_fetch import (
     probe_source_connection,
     save_cert_secret,
 )
-from app.services.cert_service import CertError, CertInfo, generate_self_signed, validate_bundle
+from app.services.cert_service import (
+    CertError,
+    CertInfo,
+    export_cert_file,
+    generate_self_signed,
+    validate_bundle,
+)
 
 router = APIRouter(prefix="/certificates", tags=["certificates"],
                    dependencies=[Depends(require_admin)])
@@ -204,6 +220,44 @@ async def list_versions(
         .order_by(CertVersion.created_at.desc())
     )).scalars().all()
     return [CertVersionRead.model_validate(r, from_attributes=True) for r in rows]
+
+
+@router.get("/{cert_id}/versions/{version_id}/file")
+async def download_version_file(
+    cert_id: uuid.UUID,
+    version_id: uuid.UUID,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    fmt: Annotated[str, Query(description="cert|key|chain|fullchain|combined|der|pfx")] = "fullchain",
+    password: Annotated[str, Query(description="pfx 加密密碼，選填")] = "",
+) -> Response:
+    """下載某版本憑證檔（多格式匯出）。含私鑰的格式（key/combined/pfx）逐次稽核。"""
+    cert = await session.get(Certificate, cert_id)
+    if cert is None:
+        raise HTTPException(404, detail="Not found")
+    ver = await session.get(CertVersion, version_id)
+    if ver is None or ver.certificate_id != cert_id:
+        raise HTTPException(404, detail="version not found")
+    key_pem = decrypt_secret(ver.key_enc, ver.key_nonce,
+                             aad=_key_aad(cert.id, ver.fingerprint_sha256)).decode("utf-8")
+    try:
+        data, media_type, filename = export_cert_file(
+            ver.cert_pem, key_pem, ver.chain_pem, fmt, name=cert.name, pfx_password=password)
+    except CertError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    if fmt in ("key", "combined", "pfx"):
+        await append_audit(
+            session, actor_user_id=str(user.id),
+            actor_ip=request.client.host if request.client else None,
+            actor_user_agent=request.headers.get("user-agent"),
+            object_type="certificate", object_id=str(cert.id), action="cert_export",
+            diff={"fmt": fmt, "fingerprint": ver.fingerprint_sha256},
+            request_id=getattr(request.state, "request_id", None),
+        )
+        await session.commit()
+    return Response(content=data, media_type=media_type,
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.post("/{cert_id}/versions", response_model=CertVersionRead, status_code=201)

@@ -117,6 +117,22 @@
     "run_real": "確認沒問題後正式跑一次：",
     "scope_hint": "這裡只列出此代理範圍內的憑證；要派送其它憑證，請先在憑證頁把它加入此代理的範圍。"
   },
+  "certFiles": {
+    "title": "憑證檔案 / 下載",
+    "empty": "尚無版本可下載",
+    "intro": "下載此憑證各版本的檔案，可選不同格式（PEM / DER / PKCS#12）。含私鑰的格式會記錄稽核。",
+    "no_version": "（尚無版本）",
+    "current": "目前",
+    "expires": "到期",
+    "download": "下載",
+    "f_fullchain": "完整鏈 fullchain（.fullchain.pem）",
+    "f_cert": "憑證（.crt，PEM）",
+    "f_chain": "中繼鏈（.chain.pem）",
+    "f_key": "私鑰（.key，PEM）",
+    "f_combined": "合併 cert + chain + key（.pem）",
+    "f_der": "DER（.der）",
+    "f_pfx": "PKCS#12 / PFX（.pfx）"
+  },
   "certs": {
     "tab_certs": "憑證",
     "tab_agents": "派送代理",

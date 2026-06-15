@@ -150,3 +150,47 @@ def validate_bundle(cert_pem: str, key_pem: str, chain_pem: str | None = None) -
         domains=domains,
         chain_len=len(chain_certs),
     )
+
+
+def export_cert_file(
+    cert_pem: str, key_pem: str, chain_pem: str | None, fmt: str,
+    *, name: str = "certificate", pfx_password: str = "",
+) -> tuple[bytes, str, str]:
+    """把版本 PEM 轉成可下載檔案。回 (bytes, media_type, filename)。
+
+    fmt：cert / key / chain / fullchain / combined（PEM）、der（leaf DER）、pfx（PKCS#12）。
+    pfx 可選密碼（空＝不加密）。私鑰相關格式由呼叫端做 admin 授權 + 稽核。
+    """
+    from cryptography.hazmat.primitives.serialization import (
+        BestAvailableEncryption,
+        load_pem_private_key,
+        pkcs12,
+    )
+    ch = (chain_pem or "")
+
+    def _nl(s: str) -> str:
+        return s if not s or s.endswith("\n") else s + "\n"
+
+    fullchain = _nl(cert_pem) + _nl(ch)
+    safe = "".join(c if (c.isalnum() or c in "-._") else "_" for c in name) or "certificate"
+    if fmt == "cert":
+        return _nl(cert_pem).encode(), "application/x-pem-file", f"{safe}.crt"
+    if fmt == "key":
+        return _nl(key_pem).encode(), "application/x-pem-file", f"{safe}.key"
+    if fmt == "chain":
+        return _nl(ch).encode(), "application/x-pem-file", f"{safe}.chain.pem"
+    if fmt == "fullchain":
+        return fullchain.encode(), "application/x-pem-file", f"{safe}.fullchain.pem"
+    if fmt == "combined":
+        return (fullchain + _nl(key_pem)).encode(), "application/x-pem-file", f"{safe}.pem"
+    if fmt == "der":
+        leaf = x509.load_pem_x509_certificate(cert_pem.encode())
+        return leaf.public_bytes(Encoding.DER), "application/x-x509-ca-cert", f"{safe}.der"
+    if fmt == "pfx":
+        leaf = x509.load_pem_x509_certificate(cert_pem.encode())
+        key = load_pem_private_key(key_pem.encode(), password=None)
+        cas = x509.load_pem_x509_certificates(ch.encode()) if ch.strip() else []
+        enc = BestAvailableEncryption(pfx_password.encode()) if pfx_password else NoEncryption()
+        data = pkcs12.serialize_key_and_certificates(safe.encode(), key, leaf, cas, enc)
+        return data, "application/x-pkcs12", f"{safe}.pfx"
+    raise CertError(f"unknown format: {fmt}")

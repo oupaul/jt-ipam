@@ -4,6 +4,13 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.161] — 2026-06-15
+
+### 新增 — 憑證檔案檢視與多格式下載
+- 憑證列操作欄新增**檔案**鈕：點開列出該憑證各版本（指紋 / 到期日 / 網域 / 目前版本），可逐版本**下載**並選
+  格式：完整鏈 / 憑證(.crt) / 中繼鏈 / 私鑰(.key) / 合併 / **DER** / **PKCS#12(.pfx)**（後端用 cryptography 轉檔）。
+  含私鑰的格式（key / combined / pfx）逐次寫稽核（`GET /certificates/{id}/versions/{vid}/file?fmt=`）。
+
 ## [0.4.160] — 2026-06-15
 
 ### 變更

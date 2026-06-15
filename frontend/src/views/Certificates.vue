@@ -6,21 +6,22 @@ import {
   NCard, NTabs, NTabPane, NDataTable, NSpace, NButton, NIcon, NTag, NModal, NForm,
   NFormItem, NInput, NInputNumber, NDynamicTags, NSelect, NPopconfirm, NAlert,
   NCheckbox, NCheckboxGroup, NRadioGroup, NRadioButton, NTooltip, NDivider, NCollapse,
-  NCollapseItem, NSwitch, useMessage, type DataTableColumns,
+  NCollapseItem, NSwitch, NDropdown, useMessage, type DataTableColumns,
 } from "naive-ui";
 import {
   PlusIcon, RefreshIcon, CopyIcon, LockIcon, InfoIcon, SaveIcon,
   ImportIcon, TokenIcon, SettingsIcon, SyncIcon, DeleteIcon, TestIcon, EyeIcon, ToolsIcon, CancelIcon, EditIcon,
+  ExportIcon,
 } from "@/icons";
 import { autoSort } from "@/composables/useTableSort";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import {
   listCertificates, createCertificate, deleteCertificate, uploadVersion, generateSelfSigned,
-  setCertSource, fetchCertNow, testCertSource, genCertSourceSshKey,
+  setCertSource, fetchCertNow, testCertSource, genCertSourceSshKey, listVersions, downloadVersionFile,
   listCertAgents, createCertAgent, rotateCertAgentKey, deleteCertAgent, getCertAgentKey, updateCertAgent,
   getServerAgentVersion,
-  type Certificate, type CertAgent,
+  type Certificate, type CertAgent, type CertVersion,
 } from "@/api/certificates";
 
 const { t } = useI18n();
@@ -135,6 +136,32 @@ function daysLeftCell(c: Certificate) {
   const type = d < 0 ? "error" : d <= 21 ? "warning" : "success";
   return h(NTag, { size: "small", type },
     () => d < 0 ? t("certs.expired") : t("certs.days_left", { n: d }));
+}
+
+// ── 憑證檔案 / 版本下載 ──
+const DL_FORMATS = [
+  { fmt: "fullchain", labelKey: "certFiles.f_fullchain" },
+  { fmt: "cert", labelKey: "certFiles.f_cert" },
+  { fmt: "chain", labelKey: "certFiles.f_chain" },
+  { fmt: "key", labelKey: "certFiles.f_key" },
+  { fmt: "combined", labelKey: "certFiles.f_combined" },
+  { fmt: "der", labelKey: "certFiles.f_der" },
+  { fmt: "pfx", labelKey: "certFiles.f_pfx" },
+];
+const showFiles = ref(false);
+const filesTarget = ref<Certificate | null>(null);
+const filesVersions = ref<CertVersion[]>([]);
+const dlOptions = computed(() => DL_FORMATS.map(f => ({ key: f.fmt, label: t(f.labelKey) })));
+async function openFiles(c: Certificate) {
+  filesTarget.value = c; filesVersions.value = [];
+  showFiles.value = true;
+  try { filesVersions.value = await listVersions(c.id); }
+  catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+}
+async function doDownload(v: CertVersion, fmt: string) {
+  if (!filesTarget.value) return;
+  try { await downloadVersionFile(filesTarget.value.id, v.id, fmt); }
+  catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
 
 // ── 新增憑證 ──
@@ -431,8 +458,11 @@ const certColsAll = computed<DataTableColumns<Certificate>>(() => autoSort([
         ? h("span", { style: "opacity:.5" }, "—")
         : h(NTag, { size: "small", type: c.last_fetch_error ? "error" : "info" },
             () => c.source_type.toUpperCase()) },
-  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 218, fixed: "right",
+  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 248, fixed: "right",
     render: (c) => h("div", { style: "padding-right:8px" }, h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
+      c.version_count > 0
+        ? actBtn(ExportIcon, t("certFiles.title"), () => openFiles(c))
+        : actBtn(ExportIcon, t("certFiles.empty"), () => {}, { disabled: true }),
       actBtn(ImportIcon, t("certs.upload_version"), () => openUpload(c)),
       // 已設來源或已有版本 → 停用「產生自簽」避免覆蓋現有憑證
       (c.source_type !== "none" || c.version_count > 0)
@@ -548,7 +578,7 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
           </n-space>
         </n-space>
         <n-data-table :columns="certCols" :data="certs" :loading="loading" size="small"
-                      :scroll-x="978" :row-key="(r:Certificate) => r.id" />
+                      :scroll-x="1008" :row-key="(r:Certificate) => r.id" />
       </n-tab-pane>
 
       <!-- 派送代理 -->
@@ -593,6 +623,33 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
         <template #icon><n-icon :component="SaveIcon" /></template>{{ t("common.save") }}
       </n-button>
     </template>
+  </n-modal>
+
+  <!-- 憑證檔案 / 下載 -->
+  <n-modal v-model:show="showFiles" preset="card"
+           :title="`${t('certFiles.title')} — ${filesTarget?.name}`" style="width: 640px; max-width: 94vw">
+    <n-alert type="info" :bordered="false" :show-icon="true" style="margin-bottom: 14px">
+      {{ t("certFiles.intro") }}
+    </n-alert>
+    <div v-if="!filesVersions.length" class="help-note">{{ t("certFiles.no_version") }}</div>
+    <div v-for="v in filesVersions" :key="v.id"
+         style="border:1px solid var(--n-border-color,#eee);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+      <n-space align="center" justify="space-between" :wrap="false">
+        <div style="min-width:0">
+          <n-space align="center" :size="6" :wrap="false">
+            <n-tag v-if="v.is_current" size="tiny" type="success" :bordered="false">{{ t("certFiles.current") }}</n-tag>
+            <code style="font-size:12px">{{ v.fingerprint_sha256.slice(0, 16) }}…</code>
+            <span style="font-size:12px;opacity:.6">{{ t("certFiles.expires") }} {{ fmtDateTime(v.not_after).slice(0, 10) }}</span>
+          </n-space>
+          <div style="font-size:12px;opacity:.7;margin-top:2px;word-break:break-all">{{ (v.domains ?? []).join("、") }}</div>
+        </div>
+        <n-dropdown trigger="click" :options="dlOptions" @select="(fmt:string) => doDownload(v, fmt)">
+          <n-button size="small" type="primary" secondary>
+            <template #icon><n-icon :component="ExportIcon" /></template>{{ t("certFiles.download") }}
+          </n-button>
+        </n-dropdown>
+      </n-space>
+    </div>
   </n-modal>
 
   <!-- 上傳新版 -->

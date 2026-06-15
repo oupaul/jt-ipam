@@ -117,6 +117,22 @@
     "run_real": "Then run it for real:",
     "scope_hint": "Only certificates within this agent's scope are listed; to deploy others, add them to the agent on the Certificates page."
   },
+  "certFiles": {
+    "title": "Certificate files / download",
+    "empty": "No version to download yet",
+    "intro": "Download this certificate's files per version, in different formats (PEM / DER / PKCS#12). Formats containing the private key are audited.",
+    "no_version": "(no versions yet)",
+    "current": "Current",
+    "expires": "Expires",
+    "download": "Download",
+    "f_fullchain": "Full chain (.fullchain.pem)",
+    "f_cert": "Certificate (.crt, PEM)",
+    "f_chain": "Chain (.chain.pem)",
+    "f_key": "Private key (.key, PEM)",
+    "f_combined": "Combined cert + chain + key (.pem)",
+    "f_der": "DER (.der)",
+    "f_pfx": "PKCS#12 / PFX (.pfx)"
+  },
   "certs": {
     "tab_certs": "Certificates",
     "tab_agents": "Distribution Agents",

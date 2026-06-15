@@ -177,6 +177,40 @@ async def test_gen_keypair_install_blocked_host(client, auth_headers):
     assert r.json()["message"]
 
 
+async def test_download_version_formats(client, auth_headers):
+    """版本檔多格式匯出：PEM(cert/key/chain/fullchain/combined) + DER + PKCS#12。"""
+    cid = await _create_cert(client, auth_headers)
+    cert_pem, key_pem = _make_cert(sans=("a.example.com",))
+    rv = await client.post(f"/api/v1/certificates/{cid}/versions", headers=auth_headers,
+                           files=_files(cert_pem, key_pem))
+    vid = rv.json()["id"]
+    base = f"/api/v1/certificates/{cid}/versions/{vid}/file"
+
+    rc = await client.get(f"{base}?fmt=cert", headers=auth_headers)
+    assert rc.status_code == 200, rc.text
+    assert "BEGIN CERTIFICATE" in rc.text
+    assert ".crt" in rc.headers["content-disposition"]
+
+    rk = await client.get(f"{base}?fmt=key", headers=auth_headers)
+    assert "PRIVATE KEY" in rk.text
+
+    rco = await client.get(f"{base}?fmt=combined", headers=auth_headers)
+    assert "BEGIN CERTIFICATE" in rco.text
+    assert "PRIVATE KEY" in rco.text
+
+    rd = await client.get(f"{base}?fmt=der", headers=auth_headers)
+    assert rd.status_code == 200
+    assert rd.content[:1] == b"\x30"  # DER SEQUENCE
+
+    rp = await client.get(f"{base}?fmt=pfx", headers=auth_headers)
+    assert rp.status_code == 200
+    assert len(rp.content) > 100
+    assert ".pfx" in rp.headers["content-disposition"]
+
+    rb = await client.get(f"{base}?fmt=evil", headers=auth_headers)
+    assert rb.status_code == 400
+
+
 async def test_requires_admin(client, db_session):
     u = User(username=f"na-{uuid.uuid4().hex[:6]}", email=f"{uuid.uuid4().hex[:6]}@t.local",
              display_name="NA", password_hash=hash_password("TestPassword2026!"),

@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.161] — 2026-06-15
+
+### Added — certificate file viewer & multi-format download
+- A **Files** button on each certificate row lists every version (fingerprint / expiry / domains / current)
+  and lets you **download** each one in a chosen format: full chain / cert (.crt) / chain / private key
+  (.key) / combined / **DER** / **PKCS#12 (.pfx)** (built server-side via cryptography). Formats containing
+  the private key (key / combined / pfx) are audited (`GET /certificates/{id}/versions/{vid}/file?fmt=`).
+
 ## [0.4.160] — 2026-06-15
 
 ### Changed

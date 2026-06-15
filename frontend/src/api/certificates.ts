@@ -77,6 +77,19 @@ export async function listVersions(id: string): Promise<CertVersion[]> {
   const { data } = await apiClient.get(`/api/v1/certificates/${id}/versions`);
   return data;
 }
+export async function downloadVersionFile(certId: string, versionId: string, fmt: string, password = ""): Promise<void> {
+  const res = await apiClient.get(`/api/v1/certificates/${certId}/versions/${versionId}/file`, {
+    params: { fmt, ...(password ? { password } : {}) },
+    responseType: "blob",
+  });
+  const cd = String(res.headers["content-disposition"] ?? "");
+  const m = cd.match(/filename="?([^"]+)"?/);
+  const filename = m ? m[1] : `cert.${fmt}`;
+  const url = URL.createObjectURL(res.data as Blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click();
+  a.remove(); URL.revokeObjectURL(url);
+}
 export async function uploadVersion(
   id: string, files: { cert: File; key: File; chain?: File | null }, allowExpired = false,
 ): Promise<CertVersion> {
