@@ -1,4 +1,5 @@
-# jt-ipam v0.4.170
+# jt-ipam v0.4.172
+>>>>>>> ab67c61 (fix(installer): add curl timeouts so the cert-agent installer fails fast instead of hanging [v0.4.172])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
