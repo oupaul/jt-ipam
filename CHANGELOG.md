@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.179] — 2026-06-15
+
+### Fixed
+- **Install silently aborting right after `Building frontend…` on hosts without `~/.nvm`** (same
+  `set -e` + `pipefail` class as v0.4.178). In `ensure_node`, `nb=$(find ~/.nvm/... | sort | head -1)`
+  fails the whole assignment when `find` hits a missing directory (or `head` SIGPIPEs `sort`), and under
+  `set -e` that exits the script with **no error message** — leaving Node uninstalled and the frontend
+  unbuilt while the run "looked" like it just stopped. Guarded that and the other pipe-in-`$()` spots
+  (nvm lookup, admin-password generation, backup-file lookup) with `|| true` so a failed/SIGPIPE'd
+  pipeline can no longer abort the install. The success path is unchanged (the guard is a no-op when the
+  pipeline succeeds), so working installs are unaffected. Install-script only.
+
 ## [0.4.178] — 2026-06-15
 
 ### Fixed

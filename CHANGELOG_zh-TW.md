@@ -4,6 +4,16 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.179] — 2026-06-15
+
+### 修正
+- **沒有 `~/.nvm` 的主機上，安裝在印完 `Building frontend…` 後靜默中斷**（與 v0.4.178 同一類 `set -e` +
+  `pipefail` 雷）。`ensure_node` 裡 `nb=$(find ~/.nvm/... | sort | head -1)`，當 `find` 遇到不存在的目錄
+  （或 `head` 對 `sort` SIGPIPE）整個賦值就失敗，`set -e` 下會**沒有任何錯誤訊息**直接結束腳本 —— Node 沒
+  裝、前端沒 build，但看起來只是「停住」。已對這行與其他 pipe-in-`$()` 之處（nvm 探測、admin 密碼產生、
+  備份檔查找）補上 `|| true`，讓失敗／SIGPIPE 的管線不再中斷安裝。成功路徑完全不變（管線成功時 `|| true`
+  為 no-op），原本能裝好的環境不受影響。純安裝腳本改動。
+
 ## [0.4.178] — 2026-06-15
 
 ### 修正

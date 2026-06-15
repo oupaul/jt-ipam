@@ -36,8 +36,11 @@ ensure_node() {
     fi
     if [[ -n "${SUDO_USER:-}" ]]; then
         local h nb
-        h=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-        nb=$(find "$h/.nvm/versions/node" -maxdepth 2 -name node -type f 2>/dev/null | sort -Vr | head -1)
+        # ⚠️ `set -e` + `pipefail`：`var=$(pipeline)` 若 pipeline 失敗，整個賦值就失敗 → 腳本「靜默」
+        # 結束（無錯誤訊息）。這裡 find 對不存在的 ~/.nvm 會非零、`| head` 也可能 SIGPIPE 上游 →
+        # 一定要 `|| true`。客戶 Debian 13 安裝「印完 Building frontend… 就回到提示字元」的真凶就是這行。
+        h=$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)
+        nb=$(find "$h/.nvm/versions/node" -maxdepth 2 -name node -type f 2>/dev/null | sort -Vr | head -1 || true)
         if [[ -n "$nb" ]] && [[ "$("$nb" -v 2>/dev/null | sed 's/^v//; s/\..*//')" -ge 18 ]]; then
             ln -sf "$nb" /usr/local/bin/node
             ln -sf "$(dirname "$nb")/npm" /usr/local/bin/npm 2>/dev/null || true
@@ -475,7 +478,9 @@ EOF
     INITIAL_ADMIN_PW=""
     if [[ ! -f "$ADMIN_PW_RECORD" ]]; then
         local _gen_pw _tmp_pw
-        _gen_pw="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 20)"
+        # `head -c 20` 提早關管線會 SIGPIPE 上游 tr → pipefail+set -e 會中斷安裝；20 字早已截到、
+        # 加 `|| true` 只消化退出碼、不影響已擷取的密碼內容。
+        _gen_pw="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 20 || true)"
         _tmp_pw="$(mktemp)"; chmod 600 "$_tmp_pw"; printf '%s' "$_gen_pw" > "$_tmp_pw"; chown "$JTIPAM_USER" "$_tmp_pw"
         # create-admin errors (non-zero) if an admin already exists → then we just skip silently
         if sudo -u "$JTIPAM_USER" --preserve-env=PATH bash -c \
@@ -666,7 +671,7 @@ cmd_upgrade() {
     if [[ -x "$ROOT/scripts/jt-ipam-backup.sh" ]]; then
       log "Backing up the database…"
       "$ROOT/scripts/jt-ipam-backup.sh"
-      DUMP_PATH="$(find /var/backups/jt-ipam -name '*.dump' -newermt '-2 min' 2>/dev/null | sort | tail -1)"
+      DUMP_PATH="$(find /var/backups/jt-ipam -name '*.dump' -newermt '-2 min' 2>/dev/null | sort | tail -1 || true)"
       [[ -n "$DUMP_PATH" ]] && log "Backup file: $DUMP_PATH"
     else
       warn "cannot find jt-ipam-backup.sh, skipping automatic backup (strongly recommend a manual pg_dump first)"
