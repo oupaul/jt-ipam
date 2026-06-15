@@ -1,7 +1,7 @@
 {
   "name": "jt-ipam-frontend",
-  "version": "0.4.171",
->>>>>>> f9d56cd (chore: English-only nginx site config + cert-agent Zimbra progress logs [v0.4.171])
+  "version": "0.4.173",
+>>>>>>> be4c7ff (feat(cert): auto-complete chain on source fetch + jitsi/coturn profiles [v0.4.173])
   "description": "jt-ipam — 可自架的整合型 IPAM 系統前端",
   "license": "AGPL-3.0-or-later",
   "private": true,

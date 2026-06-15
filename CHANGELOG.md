@@ -11,6 +11,7 @@ based on [Keep a Changelog](https://keepachangelog.com/); versions track
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 ## [0.4.170] — 2026-06-15
 
 ### Fixed
