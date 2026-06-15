@@ -1,5 +1,5 @@
-# jt-ipam v0.4.178
->>>>>>> 60d23d5 (fix(install): pipefail+grep -q SIGPIPE made multi-version pkgs look unavailable (Debian 13 root cause) [v0.4.178])
+# jt-ipam v0.4.171
+>>>>>>> f9d56cd (chore: English-only nginx site config + cert-agent Zimbra progress logs [v0.4.171])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
