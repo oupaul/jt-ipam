@@ -6,11 +6,11 @@ import {
   NCard, NTabs, NTabPane, NDataTable, NSpace, NButton, NIcon, NTag, NModal, NForm,
   NFormItem, NInput, NInputNumber, NDynamicTags, NSelect, NPopconfirm, NAlert,
   NCheckbox, NCheckboxGroup, NRadioGroup, NRadioButton, NTooltip, NDivider, NCollapse,
-  NCollapseItem, useMessage, type DataTableColumns,
+  NCollapseItem, NSwitch, useMessage, type DataTableColumns,
 } from "naive-ui";
 import {
   PlusIcon, RefreshIcon, CopyIcon, LockIcon, InfoIcon, SaveIcon,
-  ImportIcon, TokenIcon, SettingsIcon, SyncIcon, DeleteIcon, TestIcon, EyeIcon, ToolsIcon, CancelIcon,
+  ImportIcon, TokenIcon, SettingsIcon, SyncIcon, DeleteIcon, TestIcon, EyeIcon, ToolsIcon, CancelIcon, EditIcon,
 } from "@/icons";
 import { autoSort } from "@/composables/useTableSort";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
@@ -18,7 +18,7 @@ import ColumnPicker from "@/components/ColumnPicker.vue";
 import {
   listCertificates, createCertificate, deleteCertificate, uploadVersion, generateSelfSigned,
   setCertSource, fetchCertNow, testCertSource, genCertSourceSshKey,
-  listCertAgents, createCertAgent, rotateCertAgentKey, deleteCertAgent, getCertAgentKey,
+  listCertAgents, createCertAgent, rotateCertAgentKey, deleteCertAgent, getCertAgentKey, updateCertAgent,
   getServerAgentVersion,
   type Certificate, type CertAgent,
 } from "@/api/certificates";
@@ -49,6 +49,8 @@ onMounted(() => { loadCerts(); loadAgents(); loadServerVersion(); });
 
 // ── 設定檔產生器 ──
 const PROFILE_OPTIONS = ["nginx", "apache", "haproxy", "postfix", "dovecot", "pve", "pmg", "pbs", "zimbra"];
+const dryRunCmd = "sudo bash /usr/local/lib/jt-ipam-cert-agent/jt_ipam_cert_agent.sh --config /etc/jt-ipam-cert-agent/config --dry-run";
+const runCmd = "sudo bash /usr/local/lib/jt-ipam-cert-agent/jt_ipam_cert_agent.sh --config /etc/jt-ipam-cert-agent/config";
 const showGen = ref(false);
 const genAgentName = ref("");
 const genScopeIds = ref<string[]>([]);
@@ -80,14 +82,22 @@ function profileFiles(profile: string, cert: string): { kind: string; path: stri
     default: return [];
   }
 }
-const genFilePaths = computed(() => {
-  const out: { cert: string; prof: string; kind: string; path: string }[] = [];
-  for (const cert of genCerts.value)
-    for (const prof of genProfiles.value)
-      for (const f of profileFiles(prof, cert))
-        out.push({ cert, prof, kind: f.kind, path: f.path });
-  return out;
-});
+// 各 profile 對應的服務設定片段（指到上面寫入的路徑），給使用者貼進服務設定檔。
+function serviceSnippet(profile: string, cert: string): string {
+  const b = TLS_BASE;
+  switch (profile) {
+    case "nginx": return `ssl_certificate     ${b}/${cert}.fullchain.pem;\nssl_certificate_key ${b}/${cert}.key;`;
+    case "apache": return `SSLCertificateFile      ${b}/${cert}.crt\nSSLCertificateKeyFile   ${b}/${cert}.key\nSSLCertificateChainFile ${b}/${cert}.chain.pem`;
+    case "haproxy": return `bind *:443 ssl crt ${b}/${cert}.pem`;
+    case "postfix": return `smtpd_tls_cert_file = ${b}/${cert}.fullchain.pem\nsmtpd_tls_key_file  = ${b}/${cert}.key`;
+    case "dovecot": return `ssl_cert = <${b}/${cert}.fullchain.pem\nssl_key  = <${b}/${cert}.key`;
+    default: return "";  // pve/pmg/pbs/zimbra：讀固定路徑，不需改設定檔
+  }
+}
+const genServiceBlocks = computed(() =>
+  genCerts.value.flatMap(cert => genProfiles.value.map(prof => ({
+    cert, prof, files: profileFiles(prof, cert), snippet: serviceSnippet(prof, cert),
+  }))));
 const genConfig = computed(() => {
   const lines: string[] = [];
   let n = 1;
@@ -323,6 +333,29 @@ async function removeAgent(a: CertAgent) {
   try { await deleteCertAgent(a.id); await loadAgents(); msg.success(t("common.deleted")); }
   catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
+async function toggleAgent(a: CertAgent) {
+  try { await updateCertAgent(a.id, { enabled: !a.enabled }); await loadAgents(); }
+  catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+}
+const showEditAgent = ref(false);
+const editForm = ref({ id: "", name: "", description: "", scope_cert_ids: [] as string[], enabled: true });
+function editAgent(a: CertAgent) {
+  editForm.value = {
+    id: a.id, name: a.name, description: a.description ?? "",
+    scope_cert_ids: (a.scope_cert_ids ?? []).map(String), enabled: a.enabled,
+  };
+  showEditAgent.value = true;
+}
+async function saveEditAgent() {
+  if (!editForm.value.name.trim()) { msg.warning(t("certs.name_required")); return; }
+  try {
+    await updateCertAgent(editForm.value.id, {
+      name: editForm.value.name.trim(), description: editForm.value.description || null,
+      scope_cert_ids: editForm.value.scope_cert_ids, enabled: editForm.value.enabled,
+    });
+    showEditAgent.value = false; await loadAgents(); msg.success(t("common.saved"));
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+}
 function copy(s: string) { navigator.clipboard?.writeText(s); msg.success(t("common.copied")); }
 
 // ── 安裝說明 / 設定檔說明 ──
@@ -431,11 +464,19 @@ const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
   { title: t("cols.name"), key: "name", minWidth: 120, ellipsis: { tooltip: true } },
   { title: t("cols.enabled"), key: "enabled", width: 70,
     sorter: (a, b) => Number(a.enabled) - Number(b.enabled),
-    render: (a) => h(NTag, { size: "small", type: a.enabled ? "success" : "default" },
-      () => a.enabled ? "✓" : "—") },
-  { title: t("certs.scope"), key: "scope", width: 90,
+    render: (a) => h(NSwitch, { value: a.enabled, size: "small", onUpdateValue: () => toggleAgent(a) }) },
+  { title: t("certs.scope"), key: "scope", width: 100,
     sorter: (a, b) => (a.scope_cert_ids ?? []).length - (b.scope_cert_ids ?? []).length,
-    render: (a) => `${(a.scope_cert_ids ?? []).length} ${t("certs.certs_unit")}` },
+    render: (a) => {
+      const ids = (a.scope_cert_ids ?? []).map(String);
+      const names = certs.value.filter(c => ids.includes(c.id)).map(c => c.name);
+      const label = `${ids.length} ${t("certs.certs_unit")}`;
+      if (!names.length) return label;
+      return h(NTooltip, null, {
+        trigger: () => h("span", { style: "border-bottom:1px dotted currentColor;cursor:help" }, label),
+        default: () => names.join("、"),
+      });
+    } },
   { title: t("cols.version"), key: "agent_version", width: 130,
     render: (a) => {
       if (!a.agent_version) return "—";
@@ -465,9 +506,10 @@ const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
     }),
     sorter: (a, b) => (a.reported ?? []).length - (b.reported ?? []).length,
     render: (a) => `${(a.reported ?? []).filter(d => (d as any).status === "ok").length} / ${(a.reported ?? []).length}` },
-  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 170, fixed: "right",
+  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 205, fixed: "right",
     render: (a) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
       actBtn(ToolsIcon, t("certGen.title"), () => openGen(a), { type: "primary", ghost: true }),
+      actBtn(EditIcon, t("certs.edit_agent"), () => editAgent(a)),
       actBtn(EyeIcon, t("certs.view_key"), () => viewAgent(a)),
       actBtn(SyncIcon, t("certs.rotate_key"), () => doRotate(a)),
       h(NPopconfirm, { onPositiveClick: () => removeAgent(a) }, {
@@ -516,9 +558,6 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
             <n-button size="small" @click="showHelp = true">
               <template #icon><n-icon :component="InfoIcon" /></template>{{ t("certHelp.button") }}
             </n-button>
-            <n-button size="small" @click="showConfigHelp = true">
-              <template #icon><n-icon :component="InfoIcon" /></template>{{ t("certConfigHelp.button") }}
-            </n-button>
             <span v-if="serverAgentVersion" style="font-size:12px;opacity:.7">
               {{ t("certs.latest_agent_version") }}：<n-tag size="small" type="info" :bordered="false">v{{ serverAgentVersion }}</n-tag>
             </span>
@@ -531,7 +570,7 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
             </n-button>
           </n-space>
         </n-space>
-        <n-data-table :columns="agentCols" :data="agents" size="small" :scroll-x="988" :row-key="(r:CertAgent) => r.id" />
+        <n-data-table :columns="agentCols" :data="agents" size="small" :scroll-x="1033" :row-key="(r:CertAgent) => r.id" />
       </n-tab-pane>
     </n-tabs>
   </n-card>
@@ -730,6 +769,27 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
     </template>
   </n-modal>
 
+  <!-- 編輯代理 -->
+  <n-modal v-model:show="showEditAgent" preset="card" :title="t('certs.edit_agent')" style="max-width: 540px">
+    <n-form>
+      <n-form-item :label="t('cols.name')">
+        <n-input v-model:value="editForm.name" />
+      </n-form-item>
+      <n-form-item :label="t('certs.scope_certs')">
+        <n-select v-model:value="editForm.scope_cert_ids" multiple filterable :options="certOptions"
+                  :placeholder="t('certs.scope_hint')" />
+      </n-form-item>
+      <n-form-item :label="t('cols.enabled')">
+        <n-switch v-model:value="editForm.enabled" />
+      </n-form-item>
+    </n-form>
+    <template #footer>
+      <n-button type="primary" @click="saveEditAgent">
+        <template #icon><n-icon :component="SaveIcon" /></template>{{ t("common.save") }}
+      </n-button>
+    </template>
+  </n-modal>
+
   <!-- 安裝說明 -->
   <n-modal v-model:show="showHelp" preset="card" :title="t('certHelp.title')"
            style="width: 760px; max-width: 94vw">
@@ -765,7 +825,14 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
       <div class="help-step-num">3</div>
       <div class="help-step-body">
         <div class="help-step-title">{{ t("certHelp.step3") }}</div>
-        <div class="help-note" style="margin-top: 6px">{{ t("certHelp.step3_hint") }}</div>
+        <div class="help-note" style="margin-top: 6px; display:flex; align-items:center; gap:6px; flex-wrap:wrap">
+          <span>{{ t("certHelp.step3_gen_a") }}</span>
+          <n-tag size="small" :bordered="false" type="primary">
+            <template #icon><n-icon :component="ToolsIcon" /></template>{{ t("certGen.title") }}
+          </n-tag>
+          <span>{{ t("certHelp.step3_gen_b") }}</span>
+        </div>
+        <div class="help-note" style="margin-top: 4px">{{ t("certHelp.step3_hint") }}</div>
         <n-space :size="8" style="margin-top: 8px">
           <n-button size="small" secondary @click="showHelp = false; showConfigHelp = true">
             <template #icon><n-icon :component="InfoIcon" /></template>{{ t("certConfigHelp.button") }}
@@ -820,10 +887,10 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
     </n-form-item>
     <div class="help-note" style="margin:0 0 10px">{{ t("certGen.scope_hint") }}</div>
     <n-form-item :label="t('certGen.services')" :show-feedback="false">
-      <n-checkbox-group v-model:value="genProfiles">
-        <n-space :size="[14, 6]">
+      <n-checkbox-group v-model:value="genProfiles" style="width:100%">
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px 10px">
           <n-checkbox v-for="p in PROFILE_OPTIONS" :key="p" :value="p" :label="p" />
-        </n-space>
+        </div>
       </n-checkbox-group>
     </n-form-item>
 
@@ -853,27 +920,56 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
       </n-collapse-item>
     </n-collapse>
 
+    <!-- 步驟 1：產生的設定檔內容 -->
     <n-divider style="margin: 14px 0 10px" />
-    <div style="font-weight:600;margin-bottom:6px">{{ t("certGen.preview") }}</div>
-    <pre class="help-pre" style="min-height:60px">{{ genConfig || t("certGen.empty") }}</pre>
-    <n-space :size="8" style="margin-top:8px">
+    <div style="font-weight:600;margin-bottom:6px">① {{ t("certGen.preview") }}</div>
+    <div class="help-note" style="margin-bottom:6px">{{ t("certGen.paste_hint") }}</div>
+    <n-space align="start" :wrap="false" :size="8">
+      <pre class="help-pre" style="min-height:54px;flex:1;margin:0">{{ genConfig || t("certGen.empty") }}</pre>
       <n-button size="small" type="primary" secondary :disabled="!genConfig" @click="copy(genConfig)">
-        <template #icon><n-icon :component="CopyIcon" /></template>{{ t("certGen.copy_paste") }}
+        <template #icon><n-icon :component="CopyIcon" /></template>{{ t("certHelp.copy") }}
       </n-button>
     </n-space>
-    <div class="help-note" style="margin-top:8px">{{ t("certGen.paste_hint") }}</div>
 
-    <!-- 快速模式：列出憑證會寫到主機的完整路徑 -->
-    <template v-if="genFilePaths.length">
+    <!-- 步驟 2：服務設定 + 寫入路徑（每個服務一塊） -->
+    <template v-if="genServiceBlocks.length">
       <n-divider style="margin: 14px 0 10px" />
-      <div style="font-weight:600;margin-bottom:4px">{{ t("certGen.files_title") }}</div>
-      <div class="help-note" style="margin-bottom:8px">{{ t("certGen.files_hint") }}</div>
-      <div v-for="(g, i) in genFilePaths" :key="i" style="font-size:12px;line-height:1.8">
-        <n-tag size="tiny" :bordered="false" type="info">{{ g.cert }} / {{ g.prof }}</n-tag>
-        <span style="opacity:.6">{{ g.kind }}：</span>
-        <code style="font-family:monospace">{{ g.path }}</code>
+      <div style="font-weight:600;margin-bottom:4px">② {{ t("certGen.files_title") }}</div>
+      <div class="help-note" style="margin-bottom:10px">{{ t("certGen.files_hint") }}</div>
+      <div v-for="(blk, i) in genServiceBlocks" :key="i"
+           style="margin-bottom:14px;border:1px solid var(--n-border-color,#eee);border-radius:8px;padding:10px 12px">
+        <n-tag size="small" :bordered="false" type="info" style="margin-bottom:6px">{{ blk.cert }} / {{ blk.prof }}</n-tag>
+        <div v-for="(f, j) in blk.files" :key="j" style="font-size:12px;line-height:1.9;display:flex;align-items:center;gap:6px">
+          <span style="opacity:.6;flex:0 0 96px">{{ f.kind }}</span>
+          <code style="font-family:monospace;flex:1;word-break:break-all">{{ f.path }}</code>
+          <n-button size="tiny" quaternary @click="copy(f.path)"><template #icon><n-icon :component="CopyIcon" /></template></n-button>
+        </div>
+        <template v-if="blk.snippet">
+          <div class="help-subtle" style="margin:8px 0 4px">{{ t("certGen.service_config") }}</div>
+          <n-space align="start" :wrap="false" :size="8">
+            <pre class="help-pre" style="flex:1;margin:0">{{ blk.snippet }}</pre>
+            <n-button size="small" secondary @click="copy(blk.snippet)">
+              <template #icon><n-icon :component="CopyIcon" /></template>{{ t("certHelp.copy") }}
+            </n-button>
+          </n-space>
+        </template>
+        <div v-else class="help-note" style="margin-top:6px">{{ t("certGen.no_config_needed") }}</div>
       </div>
     </template>
+
+    <!-- 步驟 3：在主機上試跑 / 正式跑 -->
+    <n-divider style="margin: 14px 0 10px" />
+    <div style="font-weight:600;margin-bottom:6px">③ {{ t("certGen.run_title") }}</div>
+    <div class="help-note" style="margin-bottom:4px">{{ t("certGen.run_dry") }}</div>
+    <n-space align="start" :wrap="false" :size="8" style="margin-bottom:8px">
+      <code class="help-code">{{ dryRunCmd }}</code>
+      <n-button size="small" secondary @click="copy(dryRunCmd)"><template #icon><n-icon :component="CopyIcon" /></template>{{ t("certHelp.copy") }}</n-button>
+    </n-space>
+    <div class="help-note" style="margin-bottom:4px">{{ t("certGen.run_real") }}</div>
+    <n-space align="start" :wrap="false" :size="8">
+      <code class="help-code">{{ runCmd }}</code>
+      <n-button size="small" secondary @click="copy(runCmd)"><template #icon><n-icon :component="CopyIcon" /></template>{{ t("certHelp.copy") }}</n-button>
+    </n-space>
   </n-modal>
 </template>
 

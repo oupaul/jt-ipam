@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.159] — 2026-06-15
+
+### Changed — richer config generator
+- Each "certificate / service" block now **generates the service's SSL config snippet** (e.g. nginx
+  ssl_certificate / ssl_certificate_key, apache SSLCertificate*), with a **copy button on every write path
+  and on each snippet**. Services that read fixed paths (pve/pmg/pbs) show "no service config change".
+- Added the **full dry-run / real-run commands** (with the complete sudo bash path) plus copy buttons.
+- The service checkboxes are now laid out in a tidy grid.
+
+### Added — edit agent / enable toggle
+- The distribution-agent action column gains an **Edit** button: rename, **adjust the deployable-certificate
+  scope** (add more later for more sites), and toggle enabled.
+- The "Enabled" column is now a **switch** for one-click enable/disable.
+- The "Deployable certs" column shows **which certificates** (names) on hover.
+- "Rotate key" / "View key" tooltips clarify it's the **agent connection key (not the SSL cert)**.
+- Install help step 3 points to the "Generate config" tool (with its icon); the toolbar "Config help"
+  button was removed (reachable from inside the install help).
+
 ## [0.4.158] — 2026-06-15
 
 ### Added — distribution-agents page improvements
