@@ -227,29 +227,31 @@ cmd_install() {
             > /etc/apt/sources.list.d/pgdg.list
         apt-get update -qq
     }
-    local PG_VER="" v
-    for v in 16 17 18 19 20; do
-        if apt-cache madison "postgresql-$v" 2>/dev/null | grep -q .; then PG_VER="$v"; break; fi
-    done
+    # 關鍵：只挑「server 套件」與「對應 postgresql-N-pgvector」**兩者都裝得到**的 PG 版本。
+    # 不能只看 server 再硬退回 16：客戶 Debian 13（trixie）回報——native 未被選到、退回 PGDG 16，
+    # 但 PGDG 對 trixie 目前只出 17/18 的 pgvector、沒有 postgresql-16-pgvector → 整支安裝 FATAL。
+    # 改成：先在預設庫找「server+pgvector 成對」的版本（16→17→18，app 三者皆相容），
+    # 找不到才補 PGDG 再找一次（PGDG/trixie 會給 17+pgvector）。
+    _pick_pg() {   # echo 第一個 server 與 pgvector 都可安裝的版本，否則回非零
+        local v
+        for v in 16 17 18; do
+            apt-cache madison "postgresql-$v"          2>/dev/null | grep -q . || continue
+            apt-cache madison "postgresql-$v-pgvector" 2>/dev/null | grep -q . || continue
+            echo "$v"; return 0
+        done
+        return 1
+    }
+    local PG_VER
+    PG_VER="$(_pick_pg || true)"
     if [[ -z "$PG_VER" ]]; then
-        warn "no postgresql-NN (>=16) in default repos; adding PGDG repo for postgresql-16…"
-        _add_pgdg_repo || die "apt-get update failed after adding the PGDG repo for codename '$(lsb_release -cs)'. PGDG may not carry this Ubuntu release yet — install PostgreSQL >= 16 + matching pgvector manually, then re-run install."
-        PG_VER=16
+        warn "no PostgreSQL (>=16) with a matching pgvector in default repos; adding PGDG…"
+        _add_pgdg_repo || die "apt-get update failed after adding the PGDG repo for codename '$(lsb_release -cs)'. PGDG may not carry this release yet — install PostgreSQL >= 16 + matching pgvector manually, then re-run install."
+        PG_VER="$(_pick_pg || true)"
+        [[ -n "$PG_VER" ]] || die "no PostgreSQL 16/17/18 with a matching postgresql-N-pgvector is installable, even after adding PGDG (codename '$(lsb_release -cs)'). Install PostgreSQL + pgvector manually, then re-run install."
     fi
-    log "Using PostgreSQL $PG_VER"
+    log "Using PostgreSQL $PG_VER (with pgvector)"
 
-    local PG_PKGS=("postgresql-$PG_VER" "postgresql-contrib-$PG_VER")
-    if apt-cache madison "postgresql-$PG_VER-pgvector" 2>/dev/null | grep -q .; then
-        PG_PKGS+=("postgresql-$PG_VER-pgvector")
-    else
-        warn "postgresql-$PG_VER-pgvector not in current repos; adding PGDG repo for pgvector…"
-        _add_pgdg_repo || true
-        if apt-cache madison "postgresql-$PG_VER-pgvector" 2>/dev/null | grep -q .; then
-            PG_PKGS+=("postgresql-$PG_VER-pgvector")
-        else
-            die "pgvector for PostgreSQL $PG_VER not installable (package postgresql-$PG_VER-pgvector). Install it manually, then re-run install."
-        fi
-    fi
+    local PG_PKGS=("postgresql-$PG_VER" "postgresql-contrib-$PG_VER" "postgresql-$PG_VER-pgvector")
 
     local PKGS=(
         "${PG_PKGS[@]}"
