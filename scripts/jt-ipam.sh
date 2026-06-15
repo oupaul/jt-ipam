@@ -244,7 +244,15 @@ cmd_install() {
     local PG_VER
     PG_VER="$(_pick_pg || true)"
     if [[ -z "$PG_VER" ]]; then
-        warn "no PostgreSQL (>=16) with a matching pgvector in default repos; adding PGDG…"
+        # 預設庫沒找到成對版本，先重跑一次 apt-get update 再試：涵蓋「安裝當下 apt index 還沒
+        # 更新好/上一輪抓取暫時失敗」的情況——客戶 Debian 13 native 明明有 postgresql-17 +
+        # postgresql-17-pgvector 卻沒被選到、白繞 PGDG 退回 16。重整索引後多半就能直接走原生。
+        warn "no PostgreSQL (>=16) with matching pgvector yet; refreshing apt index and retrying…"
+        apt-get update -qq || true
+        PG_VER="$(_pick_pg || true)"
+    fi
+    if [[ -z "$PG_VER" ]]; then
+        warn "still none in default repos; adding PGDG…"
         _add_pgdg_repo || die "apt-get update failed after adding the PGDG repo for codename '$(lsb_release -cs)'. PGDG may not carry this release yet — install PostgreSQL >= 16 + matching pgvector manually, then re-run install."
         PG_VER="$(_pick_pg || true)"
         [[ -n "$PG_VER" ]] || die "no PostgreSQL 16/17/18 with a matching postgresql-N-pgvector is installable, even after adding PGDG (codename '$(lsb_release -cs)'). Install PostgreSQL + pgvector manually, then re-run install."
