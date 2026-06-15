@@ -1,5 +1,5 @@
-# jt-ipam v0.4.179
->>>>>>> 11faad0 (fix(install): guard pipe-in-$() against set -e+pipefail silent abort (Building frontend… hang) [v0.4.179])
+# jt-ipam v0.4.180
+>>>>>>> eca5cad (fix(nginx): move server_tokens into server{} blocks (Debian 13 duplicate directive) [v0.4.180])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
