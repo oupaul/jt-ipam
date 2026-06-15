@@ -1,7 +1,7 @@
 {
   "name": "jt-ipam-frontend",
-  "version": "0.4.174",
->>>>>>> 32acc14 (feat(cert): hide jitsi/coturn deploy profiles for now; refresh docs gallery + feature map [v0.4.174])
+  "version": "0.4.175",
+>>>>>>> 8882fdb (fix(cert): keep service-picker labels on one line; clarify upload-or-sync wording [v0.4.175])
   "description": "jt-ipam — 可自架的整合型 IPAM 系統前端",
   "license": "AGPL-3.0-or-later",
   "private": true,

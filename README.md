@@ -1,5 +1,5 @@
-# jt-ipam v0.4.174
->>>>>>> 32acc14 (feat(cert): hide jitsi/coturn deploy profiles for now; refresh docs gallery + feature map [v0.4.174])
+# jt-ipam v0.4.175
+>>>>>>> 8882fdb (fix(cert): keep service-picker labels on one line; clarify upload-or-sync wording [v0.4.175])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)

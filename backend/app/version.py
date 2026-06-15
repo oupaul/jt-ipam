@@ -3,5 +3,5 @@
 發版時請與 frontend/package.json 的 version 一起更新。
 """
 
-__version__ = "0.4.174"
->>>>>>> 32acc14 (feat(cert): hide jitsi/coturn deploy profiles for now; refresh docs gallery + feature map [v0.4.174])
+__version__ = "0.4.175"
+>>>>>>> 8882fdb (fix(cert): keep service-picker labels on one line; clarify upload-or-sync wording [v0.4.175])
