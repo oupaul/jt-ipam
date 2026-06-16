@@ -1,5 +1,5 @@
-# jt-ipam v0.4.182
->>>>>>> fe20a7c (ui: conditional SSO buttons + login logo, webhook event picker, scope layout, import spacing; feat: LLM num_ctx [v0.4.182])
+# jt-ipam v0.4.183
+>>>>>>> cfe50a0 (ui: login language switcher, notification bell icons + scroll cap, zh IP-request notifications, scan-agent column widths [v0.4.183])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)

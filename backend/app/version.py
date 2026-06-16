@@ -3,5 +3,5 @@
 發版時請與 frontend/package.json 的 version 一起更新。
 """
 
-__version__ = "0.4.182"
->>>>>>> fe20a7c (ui: conditional SSO buttons + login logo, webhook event picker, scope layout, import spacing; feat: LLM num_ctx [v0.4.182])
+__version__ = "0.4.183"
+>>>>>>> cfe50a0 (ui: login language switcher, notification bell icons + scroll cap, zh IP-request notifications, scan-agent column widths [v0.4.183])
