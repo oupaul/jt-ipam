@@ -1,5 +1,5 @@
-# jt-ipam v0.4.184
->>>>>>> 07a3124 (ui: login language switcher as a dropdown; add save icon to source-precedence Save-order buttons [v0.4.184])
+# jt-ipam v0.4.185
+>>>>>>> d62e932 (feat(scan): implement real NetBIOS (nmblookup) + mDNS (avahi) name probes as distinct hostname sources [v0.4.185])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)

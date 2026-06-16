@@ -1,7 +1,7 @@
 {
   "name": "jt-ipam-frontend",
-  "version": "0.4.184",
->>>>>>> 07a3124 (ui: login language switcher as a dropdown; add save icon to source-precedence Save-order buttons [v0.4.184])
+  "version": "0.4.185",
+>>>>>>> d62e932 (feat(scan): implement real NetBIOS (nmblookup) + mDNS (avahi) name probes as distinct hostname sources [v0.4.185])
   "description": "jt-ipam — 可自架的整合型 IPAM 系統前端",
   "license": "AGPL-3.0-or-later",
   "private": true,
