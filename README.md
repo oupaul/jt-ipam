@@ -1,5 +1,5 @@
-# jt-ipam v0.4.180
->>>>>>> eca5cad (fix(nginx): move server_tokens into server{} blocks (Debian 13 duplicate directive) [v0.4.180])
+# jt-ipam v0.4.181
+>>>>>>> a5162bd (ui(certs): align the certificate version detail panel into a two-column grid [v0.4.181])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)

@@ -1,7 +1,7 @@
 {
   "name": "jt-ipam-frontend",
-  "version": "0.4.180",
->>>>>>> eca5cad (fix(nginx): move server_tokens into server{} blocks (Debian 13 duplicate directive) [v0.4.180])
+  "version": "0.4.181",
+>>>>>>> a5162bd (ui(certs): align the certificate version detail panel into a two-column grid [v0.4.181])
   "description": "jt-ipam — 可自架的整合型 IPAM 系統前端",
   "license": "AGPL-3.0-or-later",
   "private": true,
