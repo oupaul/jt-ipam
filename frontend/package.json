@@ -1,7 +1,7 @@
 {
   "name": "jt-ipam-frontend",
-  "version": "0.4.181",
->>>>>>> a5162bd (ui(certs): align the certificate version detail panel into a two-column grid [v0.4.181])
+  "version": "0.4.182",
+>>>>>>> fe20a7c (ui: conditional SSO buttons + login logo, webhook event picker, scope layout, import spacing; feat: LLM num_ctx [v0.4.182])
   "description": "jt-ipam — 可自架的整合型 IPAM 系統前端",
   "license": "AGPL-3.0-or-later",
   "private": true,

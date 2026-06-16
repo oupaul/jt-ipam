@@ -3,5 +3,5 @@
 發版時請與 frontend/package.json 的 version 一起更新。
 """
 
-__version__ = "0.4.181"
->>>>>>> a5162bd (ui(certs): align the certificate version detail panel into a two-column grid [v0.4.181])
+__version__ = "0.4.182"
+>>>>>>> fe20a7c (ui: conditional SSO buttons + login logo, webhook event picker, scope layout, import spacing; feat: LLM num_ctx [v0.4.182])
