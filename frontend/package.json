@@ -1,7 +1,7 @@
 {
   "name": "jt-ipam-frontend",
-  "version": "0.4.188",
->>>>>>> a7eeaea (chore(agent): make mDNS/avahi opt-in (JT_IPAM_ENABLE_MDNS) so the installer no longer pulls avahi-daemon by default [v0.4.188])
+  "version": "0.4.189",
+>>>>>>> 3ad2c90 (security(deps): pin patched form-data/vite/js-yaml via pnpm overrides to clear Dependabot alerts [v0.4.189])
   "description": "jt-ipam — 可自架的整合型 IPAM 系統前端",
   "license": "AGPL-3.0-or-later",
   "private": true,
@@ -60,7 +60,10 @@
   "packageManager": "pnpm@9.15.9",
   "pnpm": {
     "overrides": {
-      "esbuild": ">=0.28.1"
+      "esbuild": ">=0.28.1",
+      "form-data@<4.0.6": ">=4.0.6",
+      "vite@<6.4.3": ">=6.4.3 <7",
+      "js-yaml@<4.2.0": ">=4.2.0"
     }
   }
 }
