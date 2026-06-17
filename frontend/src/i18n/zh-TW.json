@@ -1524,6 +1524,7 @@
     "monthly_fee": "月費 (分)",
     "install_date": "開通日",
     "contract_end": "合約到期",
+    "bandwidth": "速率",
     "ip_address": "固定 IP / CIDR",
     "gateway": "閘道",
     "netmask": "子網路遮罩",

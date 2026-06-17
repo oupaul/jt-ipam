@@ -1526,6 +1526,7 @@
     "monthly_fee": "Monthly fee (cents)",
     "install_date": "Install date",
     "contract_end": "Contract end",
+    "bandwidth": "Bandwidth",
     "ip_address": "Static IP / CIDR",
     "gateway": "Gateway",
     "netmask": "Netmask",

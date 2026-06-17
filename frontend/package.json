@@ -1,7 +1,7 @@
 {
   "name": "jt-ipam-frontend",
-  "version": "0.4.189",
->>>>>>> 3ad2c90 (security(deps): pin patched form-data/vite/js-yaml via pnpm overrides to clear Dependabot alerts [v0.4.189])
+  "version": "0.4.190",
+>>>>>>> 1a1544b (ui(circuits): surface bandwidth / static IP / gateway columns in the circuits table [v0.4.190])
   "description": "jt-ipam — 可自架的整合型 IPAM 系統前端",
   "license": "AGPL-3.0-or-later",
   "private": true,

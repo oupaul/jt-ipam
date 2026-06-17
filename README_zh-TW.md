@@ -1,5 +1,5 @@
-# jt-ipam v0.4.189
->>>>>>> 3ad2c90 (security(deps): pin patched form-data/vite/js-yaml via pnpm overrides to clear Dependabot alerts [v0.4.189])
+# jt-ipam v0.4.190
+>>>>>>> 1a1544b (ui(circuits): surface bandwidth / static IP / gateway columns in the circuits table [v0.4.190])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
