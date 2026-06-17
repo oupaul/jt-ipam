@@ -68,7 +68,7 @@ const PROBE_INSTALL: Record<string, string> = {
   os: `${SUDO} apt install nmap`,
   ports: `${SUDO} apt install nmap`,
   netbios: `${SUDO} apt install samba-common-bin   # 提供 nmblookup`,
-  mdns: `${SUDO} apt install avahi-utils   # 提供 avahi-resolve`,
+  mdns: `${SUDO} apt install avahi-utils   # 提供 avahi-resolve（會一併啟動 avahi-daemon，監聽 UDP 5353）`,
 };
 function probeInstall(key: string): string {
   return (

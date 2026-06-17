@@ -1,5 +1,5 @@
-# jt-ipam v0.4.187
->>>>>>> 0a7c199 (ui(scan): localized NetBIOS/mDNS source labels in IP detail + regression test for distinct sources [v0.4.187])
+# jt-ipam v0.4.188
+>>>>>>> a7eeaea (chore(agent): make mDNS/avahi opt-in (JT_IPAM_ENABLE_MDNS) so the installer no longer pulls avahi-daemon by default [v0.4.188])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
