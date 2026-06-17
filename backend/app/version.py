@@ -3,5 +3,5 @@
 發版時請與 frontend/package.json 的 version 一起更新。
 """
 
-__version__ = "0.4.207"
->>>>>>> 1ecaa57 (feat(docker): gen-env auto-generates admin password; split deployment docs into two zones (systemd vs docker) [v0.4.207])
+__version__ = "0.4.186"
+>>>>>>> 09a6b0c (fix: IP edit modal Save fired stale handler (issue #6); allow Python 3.14 for Ubuntu 26 (issue #5) [v0.4.186])

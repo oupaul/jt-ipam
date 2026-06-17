@@ -1,5 +1,5 @@
-# jt-ipam v0.4.207
->>>>>>> 1ecaa57 (feat(docker): gen-env auto-generates admin password; split deployment docs into two zones (systemd vs docker) [v0.4.207])
+# jt-ipam v0.4.186
+>>>>>>> 09a6b0c (fix: IP edit modal Save fired stale handler (issue #6); allow Python 3.14 for Ubuntu 26 (issue #5) [v0.4.186])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
