@@ -14,6 +14,7 @@ import {
 import { ExportIcon, SaveIcon, RefreshIcon, CopyIcon, InfoIcon } from "@/icons";
 import { getGraylogDsv, putGraylogDsv, type GraylogDsv } from "@/api/system";
 import { listFirewalls } from "@/api/integrations";
+import { Virt } from "@/api/phase3";
 import { autoSort } from "@/composables/useTableSort";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
@@ -30,15 +31,16 @@ const DSV_HTTP_PORT = 8088;
 
 // 防火牆 DSV：每台啟用「對外提供 DSV」的 OPNsense
 const fwDsv = ref<{ id: string; name: string }[]>([]);
+const pveClusters = ref<{ id: string; name: string }[]>([]);
 function fwLookupUrl(id: string, kind: "rule-aliases" | "aliases", http = false): string {
   if (!dsv.value.token) return "";
   const base = http ? `http://${location.hostname}:${DSV_HTTP_PORT}` : location.origin;
   return `${base}/api/v1/lookup/firewall/${id}/${kind}?token=${dsv.value.token}`;
 }
-function proxmoxVmsUrl(http = false): string {
+function proxmoxVmsUrl(clusterId: string, http = false): string {
   if (!dsv.value.token) return "";
   const base = http ? `http://${location.hostname}:${DSV_HTTP_PORT}` : location.origin;
-  return `${base}/api/v1/lookup/proxmox/vms?token=${dsv.value.token}`;
+  return `${base}/api/v1/lookup/proxmox/${clusterId}/vms?token=${dsv.value.token}`;
 }
 function slugify(s: string): string {
   return (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "fw";
@@ -80,19 +82,24 @@ const dsvSources = computed<DsvSource[]>(() => {
     http: dsvUrlHttp.value,
     notes: t("settings.system.graylog_hint"),
     editable: true,
-  }, {
-    id: "pve_vms",
-    name: t("settings.system.graylog_src_pve_vms"),
-    kind: "pve_vms",
-    mapping: "vmid → vm name",
-    base: "jt_ipam_pve_vms",
-    defaultField: "vmid",
-    enabled: true,
-    https: proxmoxVmsUrl(),
-    http: proxmoxVmsUrl(true),
-    notes: t("settings.system.graylog_pve_hint"),
-    editable: false,
   }];
+  // 每個 PVE 叢集 / 獨立節點各一筆（vmid 跨叢集會重複，分開才不混淆；比照 OPNsense 多防火牆）
+  for (const c of pveClusters.value) {
+    const sl = slugify(c.name);
+    out.push({
+      id: `pve:${c.id}`,
+      name: `${c.name} · ${t("settings.system.graylog_src_pve_vms")}`,
+      kind: "pve_vms",
+      mapping: "vmid → vm name",
+      base: `jt_ipam_pve_${sl}`,
+      defaultField: "vmid",
+      enabled: true,
+      https: proxmoxVmsUrl(c.id),
+      http: proxmoxVmsUrl(c.id, true),
+      notes: t("settings.system.graylog_pve_hint"),
+      editable: false,
+    });
+  }
   for (const fw of fwDsv.value) {
     const sl = slugify(fw.name);
     out.push({
@@ -174,6 +181,9 @@ async function load() {
   try {
     const r = await listFirewalls(200, 0);
     fwDsv.value = r.items.filter((f) => f.expose_dsv).map((f) => ({ id: f.id, name: f.name }));
+  } catch { /* ignore */ }
+  try {
+    pveClusters.value = (await Virt.clusters()).map((c) => ({ id: c.id, name: c.name }));
   } catch { /* ignore */ }
   // 選取的來源若已不存在（防火牆關閉 DSV），退回第一筆
   if (!dsvSources.value.some((s) => s.id === selectedId.value)) selectedId.value = "hostname";

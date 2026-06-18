@@ -4,6 +4,14 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.203] — 2026-06-18
+
+### 變更
+- **Proxmox VE VM DSV 改為每叢集一個（支援多個 PVE 叢集 / 獨立節點）。** 因為 vmid 在不同叢集間會重複，
+  全域單一 DSV 會混淆。新增每叢集端點 `GET /api/v1/lookup/proxmox/{cluster_id}/vms`；Graylog DSV 設定頁
+  的來源表格會**每個叢集各列一筆**（比照 OPNsense 多防火牆），各自獨立網址 / Lookup Table。
+  全域 `…/proxmox/vms`（所有叢集、去重）仍保留，單叢集環境可直接用。
+
 ## [0.4.202] — 2026-06-18
 
 ### 新增

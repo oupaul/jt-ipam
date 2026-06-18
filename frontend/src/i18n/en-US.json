@@ -1908,7 +1908,7 @@
       "graylog_detail": "URLs / settings",
       "graylog_tbl_hint": "Click a row to show its setup guide below; click “URLs / settings” for the full URLs (HTTPS / intranet HTTP) and per-source settings (the IP→hostname enable/path live there too). Firewall DSVs are enabled per firewall under Integrations → OPNsense (“Expose firewall DSV”).",
       "graylog_src_hostname": "IP → hostname (global)",
-      "graylog_src_pve_vms": "Proxmox VM (vmid → name)",
+      "graylog_src_pve_vms": "VM names",
       "graylog_pve_hint": "key = Proxmox VMID, value = VM name (from synced Proxmox VE virtual machines). On the Graylog side add a “DSV File from HTTP” adapter + lookup table to turn a log's vmid field into the VM name. If vmids collide across clusters, only the first per vmid is emitted.",
       "graylog_src_fw_rules": "rules",
       "graylog_src_fw_aliases": "aliases",

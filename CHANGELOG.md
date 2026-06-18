@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.203] — 2026-06-18
+
+### Changed
+- **Proxmox VE VM DSV is now per-cluster (supports multiple PVE clusters / standalone nodes).** Since vmids
+  repeat across clusters, a single global DSV would conflate them. Added a per-cluster endpoint
+  `GET /api/v1/lookup/proxmox/{cluster_id}/vms`; the Graylog DSV settings page lists **one row per cluster**
+  (mirroring OPNsense's multiple firewalls), each with its own URL / lookup table. The global
+  `…/proxmox/vms` (all clusters, de-duplicated) is kept for single-cluster setups.
+
 ## [0.4.202] — 2026-06-18
 
 ### Added
