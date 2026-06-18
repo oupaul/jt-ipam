@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.199] — 2026-06-18
+
+### Fixed
+- **Graylog DSV guide had the wrong Key/Value column indices.** Graylog's "DSV File from HTTP" adapter uses
+  **0-based** column indices, so the correct values are **Key column = 0, Value column = 1**; the guide page
+  and README previously said 1/2.
+
 ## [0.4.198] — 2026-06-18
 
 ### Fixed

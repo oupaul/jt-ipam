@@ -4,6 +4,12 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.199] — 2026-06-18
+
+### 修正
+- **Graylog DSV 教學的 Key／Value column 索引寫錯。** Graylog「DSV File from HTTP」配接器的欄位索引是
+  **從 0 起算**，正確值是 **Key column = 0、Value column = 1**；教學頁與 README 原本誤寫成 1／2。
+
 ## [0.4.198] — 2026-06-18
 
 ### 修正
