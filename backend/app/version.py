@@ -3,5 +3,5 @@
 發版時請與 frontend/package.json 的 version 一起更新。
 """
 
-__version__ = "0.4.200"
->>>>>>> 9fbbb8f (fix(version): compare versions numerically and read latest from main version.py; harden librenms auto-create subnet pick; move check button [v0.4.200])
+__version__ = "0.4.201"
+>>>>>>> 467241c (feat(subnets): add Delete button to the subnet detail page toolbar [v0.4.201])

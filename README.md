@@ -1,5 +1,5 @@
-# jt-ipam v0.4.200
->>>>>>> 9fbbb8f (fix(version): compare versions numerically and read latest from main version.py; harden librenms auto-create subnet pick; move check button [v0.4.200])
+# jt-ipam v0.4.201
+>>>>>>> 467241c (feat(subnets): add Delete button to the subnet detail page toolbar [v0.4.201])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)

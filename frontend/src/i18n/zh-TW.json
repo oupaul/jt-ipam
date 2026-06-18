@@ -2075,6 +2075,7 @@
     "scan_agent": "掃描代理",
     "scan_agent_ph": "跨網段時指定；留空＝由 jt-ipam 主機直接掃",
     "add_child": "新增下層子網路",
+    "delete_confirm": "確定刪除此子網路？此動作無法復原。若其下還有 IP 或下層子網路，請先清空。",
     "add_address": "新增位址"
   },
   "device_detail": {

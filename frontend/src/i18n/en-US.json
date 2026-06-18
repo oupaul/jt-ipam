@@ -2077,6 +2077,7 @@
     "scan_agent": "Scan agent",
     "scan_agent_ph": "Specify for cross-subnet scanning; blank = scan from the jt-ipam host directly",
     "add_child": "Add child subnet",
+    "delete_confirm": "Delete this subnet? This cannot be undone. If it still has IPs or child subnets, clear them first.",
     "add_address": "Add address"
   },
   "device_detail": {
