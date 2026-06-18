@@ -1,5 +1,5 @@
-# jt-ipam v0.4.198
->>>>>>> 2092fcd (fix(opnsense): capture UUID-format rule labels in firewall DSV (rid -> alias) [v0.4.198])
+# jt-ipam v0.4.199
+>>>>>>> 90ab2c8 (fix(graylog): correct DSV Key/Value column indices to 0-based (0 and 1) [v0.4.199])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
@@ -46,7 +46,7 @@ jt-ipam 會**即時**產生一份 IP → 主機名稱 / FQDN 的對照表，讓 
   "10.1.1.145","mg-host"
   ```
 
-- 在 Graylog 的「DSV File from HTTP」配接器：URL 填上方網址、分隔符依格式選逗號或 Tab、**Key column = 1、Value column = 2**
+- 在 Graylog 的「DSV File from HTTP」配接器：URL 填上方網址、分隔符依格式選逗號或 Tab、**Key column = 0、Value column = 1**（Graylog 欄位索引從 0 起算）
 - token 逐次驗證、可隨時重新產生；設定頁直接提供可複製的完整對照表網址
 
 ## 權限（RBAC）

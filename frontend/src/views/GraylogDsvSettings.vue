@@ -366,8 +366,8 @@ onMounted(() => { void load(); });
             <tr><td>Line Separator</td><td><code>\n</code></td></tr>
             <tr><td>Quote character</td><td><code>"</code>（TSV 可留空）</td></tr>
             <tr><td>Ignore characters</td><td><code>#</code></td></tr>
-            <tr><td>Key column</td><td><code>1</code>（{{ gKeyDesc }}）</td></tr>
-            <tr><td>Value column</td><td><code>2</code>（{{ gValDesc }}）</td></tr>
+            <tr><td>Key column</td><td><code>0</code>（{{ gKeyDesc }}）</td></tr>
+            <tr><td>Value column</td><td><code>1</code>（{{ gValDesc }}）</td></tr>
             <tr><td>Refresh interval</td><td><code>300</code> 秒（多久重抓一次）</td></tr>
           </table>
 

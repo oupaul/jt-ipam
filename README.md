@@ -1,5 +1,5 @@
-# jt-ipam v0.4.198
->>>>>>> 2092fcd (fix(opnsense): capture UUID-format rule labels in firewall DSV (rid -> alias) [v0.4.198])
+# jt-ipam v0.4.199
+>>>>>>> 90ab2c8 (fix(graylog): correct DSV Key/Value column indices to 0-based (0 and 1) [v0.4.199])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
@@ -46,7 +46,7 @@ jt-ipam generates a **live** IP → hostname / FQDN lookup table that Graylog's 
   "10.1.1.145","mg-host"
   ```
 
-- In Graylog's "DSV File from HTTP" adapter: set the URL above, separator to comma or tab per format, and **Key column = 1, Value column = 2**
+- In Graylog's "DSV File from HTTP" adapter: set the URL above, separator to comma or tab per format, and **Key column = 0, Value column = 1** (Graylog's column indices are 0-based)
 - The token is validated per request and can be regenerated anytime; the settings page shows a ready-to-copy full lookup URL
 
 ## Core entities
