@@ -6,7 +6,10 @@
  */
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { NCard, NSpace, NIcon, NInput, NSelect, NSwitch, NButton, NAlert, useMessage } from "naive-ui";
+import {
+  NCard, NSpace, NIcon, NInput, NSelect, NSwitch, NButton, NAlert, NTag,
+  NDrawer, NDrawerContent, useMessage,
+} from "naive-ui";
 import { ExportIcon, SaveIcon, RefreshIcon, CopyIcon, InfoIcon } from "@/icons";
 import { getGraylogDsv, putGraylogDsv, type GraylogDsv } from "@/api/system";
 import { listFirewalls } from "@/api/integrations";
@@ -40,6 +43,61 @@ const dsvUrlHttp = computed(() =>
 const sampleUrl = computed(() => dsvUrl.value || "https://<jt-ipam>/api/v1/lookup/ip-fqdn?token=<token>");
 const sampleUrlHttp = computed(() => dsvUrlHttp.value || `http://<jt-ipam>:${DSV_HTTP_PORT}/api/v1/lookup/ip-fqdn?token=<token>`);
 const sep = computed(() => (dsv.value.fmt === "tsv" ? "\\t" : ","));
+
+// 可擴充的 DSV 來源清單：未來新增 DSV 類型只要往這裡 push 一筆，下方表格＋詳情抽屜會自動帶出。
+interface DsvSource {
+  id: string;
+  name: string;
+  mapping: string;       // key → value 對照說明
+  enabled: boolean;
+  https: string;
+  http: string;
+  notes: string;
+  editable: boolean;     // 全域 IP→主機名稱 那筆，可在抽屜內改開關 / 路徑
+}
+const dsvSources = computed<DsvSource[]>(() => {
+  const out: DsvSource[] = [{
+    id: "hostname",
+    name: t("settings.system.graylog_src_hostname"),
+    mapping: "IP → hostname / FQDN",
+    enabled: dsv.value.enabled,
+    https: dsvUrl.value,
+    http: dsvUrlHttp.value,
+    notes: t("settings.system.graylog_hint"),
+    editable: true,
+  }];
+  for (const fw of fwDsv.value) {
+    out.push({
+      id: `fw:${fw.id}:rules`,
+      name: `${fw.name} · ${t("settings.system.graylog_src_fw_rules")}`,
+      mapping: "filterlog rid → alias",
+      enabled: true,
+      https: fwLookupUrl(fw.id, "rule-aliases"),
+      http: fwLookupUrl(fw.id, "rule-aliases", true),
+      notes: t("settings.system.graylog_fw_hint"),
+      editable: false,
+    });
+    out.push({
+      id: `fw:${fw.id}:aliases`,
+      name: `${fw.name} · ${t("settings.system.graylog_src_fw_aliases")}`,
+      mapping: "alias → members",
+      enabled: true,
+      https: fwLookupUrl(fw.id, "aliases"),
+      http: fwLookupUrl(fw.id, "aliases", true),
+      notes: t("settings.system.graylog_fw_hint"),
+      editable: false,
+    });
+  }
+  return out;
+});
+const detailId = ref<string | null>(null);
+const detail = computed<DsvSource | null>(
+  () => dsvSources.value.find((s) => s.id === detailId.value) ?? null);
+function openDetail(id: string) { detailId.value = id; }
+const detailOpen = computed({
+  get: () => detailId.value !== null,
+  set: (v: boolean) => { if (!v) detailId.value = null; },
+});
 
 async function load() {
   try { dsv.value = await getGraylogDsv(); } catch { /* ignore */ }
@@ -104,93 +162,109 @@ onMounted(() => { void load(); });
       </template>
       <p class="gd-intro">{{ t("settings.system.graylog_page_intro") }}</p>
 
-      <div class="gd-row">
-        <n-switch v-model:value="dsv.enabled" @update:value="() => save()" />
-        <span class="gd-switch-label">{{ t("settings.system.graylog_enable") }}</span>
-      </div>
-
+      <!-- 全域：格式 + 權杖（所有 DSV 共用同一把）-->
       <div class="gd-grid">
         <div class="fld">
-          <label>{{ t("settings.system.graylog_path") }}</label>
-          <n-input v-model:value="dsv.path" placeholder="ip-fqdn" />
-        </div>
-        <div class="fld">
           <label>{{ t("settings.system.graylog_format") }}</label>
-          <n-select v-model:value="dsv.fmt" :options="fmtOpts" />
+          <n-select v-model:value="dsv.fmt" :options="fmtOpts" @update:value="() => save()" />
         </div>
-      </div>
-
-      <n-space style="margin-top:12px">
-        <n-button type="primary" size="small" :loading="saving" @click="() => save()">
-          <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
-        </n-button>
-        <n-button size="small" :loading="saving" @click="() => save(true)">
-          <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("settings.system.graylog_regen") }}
-        </n-button>
-      </n-space>
-
-      <div v-if="dsvUrl" class="fld" style="margin-top:14px">
-        <label>{{ t("settings.system.graylog_url") }}</label>
-        <div class="gd-url">
-          <n-input :value="dsvUrl" readonly style="flex:1" />
-          <n-button size="small" type="primary" ghost @click="copy(dsvUrl)">
-            <template #icon><n-icon><CopyIcon /></n-icon></template>{{ t("settings.system.graylog_copy") }}
-          </n-button>
-        </div>
-      </div>
-      <div v-if="dsvUrlHttp" class="fld" style="margin-top:10px">
-        <label>{{ t("settings.system.graylog_url_http") }}</label>
-        <div class="gd-url">
-          <n-input :value="dsvUrlHttp" readonly style="flex:1" />
-          <n-button size="small" type="primary" ghost @click="copy(dsvUrlHttp)">
-            <template #icon><n-icon><CopyIcon /></n-icon></template>{{ t("settings.system.graylog_copy") }}
-          </n-button>
-        </div>
-        <div class="hint" style="margin-top:4px">{{ t("settings.system.graylog_url_http_hint") }}</div>
-      </div>
-      <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.graylog_hint") }}</div>
-    </n-card>
-
-    <!-- ── OPNsense 防火牆 DSV（規則 label→alias、alias→成員）── -->
-    <n-card style="margin-top:16px">
-      <template #header>
-        <n-space align="center" :wrap-item="false">
-          <n-icon :size="20"><ExportIcon /></n-icon>
-          <span>{{ t("settings.system.graylog_fw_title") }}</span>
-        </n-space>
-      </template>
-      <p class="gd-intro">{{ t("settings.system.graylog_fw_intro") }}</p>
-
-      <n-alert v-if="!dsv.token" type="warning" :show-icon="true">
-        {{ t("settings.system.graylog_fw_need_token") }}
-      </n-alert>
-      <n-alert v-else-if="!fwDsv.length" type="info" :show-icon="true">
-        {{ t("settings.system.graylog_fw_none") }}
-      </n-alert>
-
-      <div v-for="fw in fwDsv" v-else :key="fw.id" class="gd-fw">
-        <div class="gd-fw-name">🛡 {{ fw.name }}</div>
         <div class="fld">
-          <label>{{ t("settings.system.graylog_fw_rules_url") }}</label>
-          <div class="gd-url">
-            <n-input :value="fwLookupUrl(fw.id, 'rule-aliases')" readonly style="flex:1" />
-            <n-button size="small" type="primary" ghost @click="copy(fwLookupUrl(fw.id, 'rule-aliases'))">
-              <template #icon><n-icon><CopyIcon /></n-icon></template>{{ t("settings.system.graylog_copy") }}
-            </n-button>
-          </div>
-        </div>
-        <div class="fld" style="margin-top:8px">
-          <label>{{ t("settings.system.graylog_fw_aliases_url") }}</label>
-          <div class="gd-url">
-            <n-input :value="fwLookupUrl(fw.id, 'aliases')" readonly style="flex:1" />
-            <n-button size="small" type="primary" ghost @click="copy(fwLookupUrl(fw.id, 'aliases'))">
-              <template #icon><n-icon><CopyIcon /></n-icon></template>{{ t("settings.system.graylog_copy") }}
-            </n-button>
-          </div>
+          <label>{{ t("settings.system.graylog_token_label") }}</label>
+          <n-button size="small" :loading="saving" @click="() => save(true)">
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("settings.system.graylog_regen") }}
+          </n-button>
         </div>
       </div>
-      <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.graylog_fw_hint") }}</div>
+
+      <n-alert v-if="!dsv.token" type="warning" :show-icon="true" style="margin-top:14px">
+        {{ t("settings.system.graylog_need_token") }}
+        <n-button size="tiny" type="primary" style="margin-left:8px" :loading="saving" @click="() => save(true)">
+          {{ t("settings.system.graylog_gen_token") }}
+        </n-button>
+      </n-alert>
+
+      <!-- DSV 端點清單（可擴充：新 DSV 類型只要進 dsvSources 就會出現在這）-->
+      <table v-else class="dsv-tbl">
+        <thead>
+          <tr>
+            <th>{{ t("settings.system.graylog_tbl_name") }}</th>
+            <th>{{ t("settings.system.graylog_tbl_mapping") }}</th>
+            <th style="width:84px">{{ t("common.status") }}</th>
+            <th style="width:154px">{{ t("common.actions") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="s in dsvSources" :key="s.id">
+            <td>{{ s.name }}</td>
+            <td><code>{{ s.mapping }}</code></td>
+            <td>
+              <n-tag size="small" :bordered="false" :type="s.enabled ? 'success' : 'default'">
+                {{ s.enabled ? t("settings.system.graylog_status_on") : t("settings.system.graylog_status_off") }}
+              </n-tag>
+            </td>
+            <td class="dsv-act">
+              <n-button size="tiny" tertiary :disabled="!s.https" @click="copy(s.https)">
+                <template #icon><n-icon><CopyIcon /></n-icon></template>{{ t("settings.system.graylog_copy") }}
+              </n-button>
+              <n-button size="tiny" tertiary @click="openDetail(s.id)">
+                <template #icon><n-icon><InfoIcon /></n-icon></template>{{ t("settings.system.graylog_detail") }}
+              </n-button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.graylog_tbl_hint") }}</div>
     </n-card>
+
+    <!-- ── DSV 詳情抽屜 ── -->
+    <n-drawer v-model:show="detailOpen" :width="540" placement="right">
+      <n-drawer-content :title="detail?.name ?? ''" closable>
+        <template v-if="detail">
+          <div class="fld">
+            <label>{{ t("settings.system.graylog_tbl_mapping") }}</label>
+            <code>{{ detail.mapping }}</code>
+          </div>
+
+          <!-- 全域 IP→主機名稱：開關 / 路徑 在這裡改 -->
+          <template v-if="detail.editable">
+            <div class="gd-row" style="margin-top:14px">
+              <n-switch v-model:value="dsv.enabled" @update:value="() => save()" />
+              <span class="gd-switch-label">{{ t("settings.system.graylog_enable") }}</span>
+            </div>
+            <div class="fld" style="margin-top:12px">
+              <label>{{ t("settings.system.graylog_path") }}</label>
+              <div class="gd-url">
+                <n-input v-model:value="dsv.path" placeholder="ip-fqdn" style="flex:1" />
+                <n-button size="small" type="primary" :loading="saving" @click="() => save()">
+                  <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
+                </n-button>
+              </div>
+            </div>
+          </template>
+
+          <div class="fld" style="margin-top:14px">
+            <label>{{ t("settings.system.graylog_url") }}</label>
+            <div class="gd-url">
+              <n-input :value="detail.https" readonly style="flex:1" />
+              <n-button size="small" type="primary" ghost :disabled="!detail.https" @click="copy(detail.https)">
+                <template #icon><n-icon><CopyIcon /></n-icon></template>{{ t("settings.system.graylog_copy") }}
+              </n-button>
+            </div>
+          </div>
+          <div class="fld" style="margin-top:10px">
+            <label>{{ t("settings.system.graylog_url_http") }}</label>
+            <div class="gd-url">
+              <n-input :value="detail.http" readonly style="flex:1" />
+              <n-button size="small" type="primary" ghost :disabled="!detail.http" @click="copy(detail.http)">
+                <template #icon><n-icon><CopyIcon /></n-icon></template>{{ t("settings.system.graylog_copy") }}
+              </n-button>
+            </div>
+            <div class="hint" style="margin-top:4px">{{ t("settings.system.graylog_url_http_hint") }}</div>
+          </div>
+          <div class="hint" style="line-height:1.7; margin-top:14px">{{ detail.notes }}</div>
+        </template>
+      </n-drawer-content>
+    </n-drawer>
 
     <!-- ── Graylog 串接教學 ── -->
     <n-card style="margin-top:16px">
@@ -286,9 +360,11 @@ onMounted(() => { void load(); });
 .gd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .fld label { display: block; font-size: 12px; opacity: .8; margin-bottom: 4px; }
 .gd-url { display: flex; gap: 8px; align-items: center; }
-.gd-fw { padding: 10px 0; border-top: 1px solid var(--n-border-color, rgba(128,128,128,.15)); }
-.gd-fw:first-of-type { border-top: none; padding-top: 4px; }
-.gd-fw-name { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+/* DSV 端點表 */
+.dsv-tbl { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 14px; }
+.dsv-tbl th, .dsv-tbl td { padding: 8px 10px; border: 1px solid rgba(128,128,128,.18); text-align: left; vertical-align: middle; }
+.dsv-tbl th { font-weight: 600; opacity: .8; font-size: 12px; background: rgba(128,128,128,.06); }
+.dsv-act { white-space: nowrap; display: flex; gap: 6px; }
 .hint { font-size: 11px; opacity: .65; }
 .gd-h { font-size: 14px; margin: 22px 0 6px; padding-top: 14px; border-top: 1px solid var(--n-border-color, rgba(128,128,128,.15)); }
 .gd-h:first-of-type { border-top: none; padding-top: 0; }
