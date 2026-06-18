@@ -1,5 +1,5 @@
-# jt-ipam v0.4.192
->>>>>>> c5a925d (ui(graylog): unify DSV sources into one extensible endpoint table + detail drawer [v0.4.192])
+# jt-ipam v0.4.193
+>>>>>>> d8430f0 (ui(graylog): DSV table (sort/columns/filter/refresh) drives a source-aware guide with transition; full width [v0.4.193])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
