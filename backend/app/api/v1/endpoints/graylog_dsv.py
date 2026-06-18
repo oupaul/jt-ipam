@@ -22,8 +22,51 @@ from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.address import IPAddress
+from app.models.firewall import OPNsenseFirewall, OPNsenseRuleLabel, OPNsenseSyncedAlias
 from app.schemas.base import StrictModel
 from app.services.system_config import get_graylog_dsv, set_graylog_dsv
+
+# 單一 alias→成員 DSV 每列成員數上限（crowdsec 類 alias 可達數萬筆，避免單格爆量）
+_ALIAS_MEMBER_CAP = 1000
+
+
+def _dsv_lines(pairs: list[tuple[str, str]], fmt: str) -> str:
+    """把 (key, value) 串成 CSV（RFC 4180 雙引號跳脫）或 TSV（不加引號）。key 去重保留第一筆。"""
+    is_csv = fmt != "tsv"
+    sep = "\t" if not is_csv else ","
+    lines: list[str] = []
+    seen: set[str] = set()
+    for k, v in pairs:
+        k = (k or "").strip()
+        v = (v or "").strip()
+        if not k or k in seen:
+            continue
+        if "\n" in k or "\r" in k or "\n" in v or "\r" in v:
+            continue
+        seen.add(k)
+        if is_csv:
+            qk = '"' + k.replace('"', '""') + '"'
+            qv = '"' + v.replace('"', '""') + '"'
+            lines.append(f"{qk}{sep}{qv}")
+        else:
+            if sep in k or sep in v or '"' in k or '"' in v:
+                continue
+            lines.append(f"{k}{sep}{v}")
+    media = "text/tab-separated-values" if fmt == "tsv" else "text/csv"
+    return media, "\n".join(lines) + ("\n" if lines else "")
+
+
+async def _fw_dsv_guard(
+    firewall_id: uuid.UUID, token: str, session: AsyncSession,
+) -> tuple[OPNsenseFirewall, dict[str, Any]]:
+    """防火牆 DSV 共用守門：token（沿用 graylog_dsv）+ 該防火牆 expose_dsv。"""
+    cfg = await get_graylog_dsv(session)
+    if not cfg["token"] or token != cfg["token"]:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    fw = await session.get(OPNsenseFirewall, firewall_id)
+    if fw is None or not fw.expose_dsv:
+        raise HTTPException(status_code=404, detail="Not found")
+    return fw, cfg
 
 # 公開（token 保護）— 不掛使用者驗證，給 Graylog 機器抓取
 public_router = APIRouter(prefix="/lookup", tags=["lookup"])
@@ -73,6 +116,51 @@ async def dsv_lookup(
     media = "text/tab-separated-values" if cfg["fmt"] == "tsv" else "text/csv"
     return PlainTextResponse("\n".join(lines) + ("\n" if lines else ""),
                              media_type=f"{media}; charset=utf-8")
+
+
+@public_router.get("/firewall/{firewall_id}/rule-aliases")
+async def fw_rule_aliases_dsv(
+    firewall_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    token: str = Query("", description="存取權杖（沿用 Graylog DSV token）"),
+) -> PlainTextResponse:
+    """防火牆規則 DSV：key = filterlog rid（pf 規則 label），value = 引用的 alias 名。"""
+    fw, cfg = await _fw_dsv_guard(firewall_id, token, session)
+    rows = (await session.execute(
+        select(OPNsenseRuleLabel.label, OPNsenseRuleLabel.alias_names)
+        .where(OPNsenseRuleLabel.firewall_id == fw.id)
+        .order_by(OPNsenseRuleLabel.label)
+    )).all()
+    pairs = [
+        (label, " ".join(aliases or []))
+        for label, aliases in rows if aliases
+    ]
+    media, body = _dsv_lines(pairs, cfg["fmt"])
+    return PlainTextResponse(body, media_type=f"{media}; charset=utf-8")
+
+
+@public_router.get("/firewall/{firewall_id}/aliases")
+async def fw_aliases_dsv(
+    firewall_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    token: str = Query("", description="存取權杖（沿用 Graylog DSV token）"),
+) -> PlainTextResponse:
+    """別名 DSV：key = alias 名，value = 成員清單（空白分隔，超量截斷）。"""
+    fw, cfg = await _fw_dsv_guard(firewall_id, token, session)
+    rows = (await session.execute(
+        select(OPNsenseSyncedAlias.name, OPNsenseSyncedAlias.content)
+        .where(OPNsenseSyncedAlias.firewall_id == fw.id)
+        .order_by(OPNsenseSyncedAlias.name)
+    )).all()
+    pairs: list[tuple[str, str]] = []
+    for name, content in rows:
+        members = [str(m) for m in (content or []) if m]
+        val = " ".join(members[:_ALIAS_MEMBER_CAP])
+        if len(members) > _ALIAS_MEMBER_CAP:
+            val += f" …(+{len(members) - _ALIAS_MEMBER_CAP})"
+        pairs.append((name, val))
+    media, body = _dsv_lines(pairs, cfg["fmt"])
+    return PlainTextResponse(body, media_type=f"{media}; charset=utf-8")
 
 
 class GraylogDsvOut(StrictModel):

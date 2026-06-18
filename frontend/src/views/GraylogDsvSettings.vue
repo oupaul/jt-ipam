@@ -9,9 +9,20 @@ import { useI18n } from "vue-i18n";
 import { NCard, NSpace, NIcon, NInput, NSelect, NSwitch, NButton, NAlert, useMessage } from "naive-ui";
 import { ExportIcon, SaveIcon, RefreshIcon, CopyIcon, InfoIcon } from "@/icons";
 import { getGraylogDsv, putGraylogDsv, type GraylogDsv } from "@/api/system";
+import { listFirewalls } from "@/api/integrations";
 
 const { t } = useI18n();
 const msg = useMessage();
+
+// 防火牆 DSV：每台啟用「對外提供 DSV」的 OPNsense → 兩支查表（規則 label→alias、alias→成員）
+const fwDsv = ref<{ id: string; name: string }[]>([]);
+function fwLookupUrl(id: string, kind: "rule-aliases" | "aliases", http = false): string {
+  if (!dsv.value.token) return "";
+  const base = http
+    ? `http://${location.hostname}:${DSV_HTTP_PORT}`
+    : location.origin;
+  return `${base}/api/v1/lookup/firewall/${id}/${kind}?token=${dsv.value.token}`;
+}
 
 const dsv = ref<GraylogDsv>({ enabled: false, fmt: "csv", path: "ip-fqdn", token: "" });
 const saving = ref(false);
@@ -30,7 +41,13 @@ const sampleUrl = computed(() => dsvUrl.value || "https://<jt-ipam>/api/v1/looku
 const sampleUrlHttp = computed(() => dsvUrlHttp.value || `http://<jt-ipam>:${DSV_HTTP_PORT}/api/v1/lookup/ip-fqdn?token=<token>`);
 const sep = computed(() => (dsv.value.fmt === "tsv" ? "\\t" : ","));
 
-async function load() { try { dsv.value = await getGraylogDsv(); } catch { /* ignore */ } }
+async function load() {
+  try { dsv.value = await getGraylogDsv(); } catch { /* ignore */ }
+  try {
+    const r = await listFirewalls(200, 0);
+    fwDsv.value = r.items.filter((f) => f.expose_dsv).map((f) => ({ id: f.id, name: f.name }));
+  } catch { /* ignore */ }
+}
 async function save(regenerate = false) {
   saving.value = true;
   try {
@@ -134,6 +151,47 @@ onMounted(() => { void load(); });
       <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.graylog_hint") }}</div>
     </n-card>
 
+    <!-- ── OPNsense 防火牆 DSV（規則 label→alias、alias→成員）── -->
+    <n-card style="margin-top:16px">
+      <template #header>
+        <n-space align="center" :wrap-item="false">
+          <n-icon :size="20"><ExportIcon /></n-icon>
+          <span>{{ t("settings.system.graylog_fw_title") }}</span>
+        </n-space>
+      </template>
+      <p class="gd-intro">{{ t("settings.system.graylog_fw_intro") }}</p>
+
+      <n-alert v-if="!dsv.token" type="warning" :show-icon="true">
+        {{ t("settings.system.graylog_fw_need_token") }}
+      </n-alert>
+      <n-alert v-else-if="!fwDsv.length" type="info" :show-icon="true">
+        {{ t("settings.system.graylog_fw_none") }}
+      </n-alert>
+
+      <div v-for="fw in fwDsv" v-else :key="fw.id" class="gd-fw">
+        <div class="gd-fw-name">🛡 {{ fw.name }}</div>
+        <div class="fld">
+          <label>{{ t("settings.system.graylog_fw_rules_url") }}</label>
+          <div class="gd-url">
+            <n-input :value="fwLookupUrl(fw.id, 'rule-aliases')" readonly style="flex:1" />
+            <n-button size="small" type="primary" ghost @click="copy(fwLookupUrl(fw.id, 'rule-aliases'))">
+              <template #icon><n-icon><CopyIcon /></n-icon></template>{{ t("settings.system.graylog_copy") }}
+            </n-button>
+          </div>
+        </div>
+        <div class="fld" style="margin-top:8px">
+          <label>{{ t("settings.system.graylog_fw_aliases_url") }}</label>
+          <div class="gd-url">
+            <n-input :value="fwLookupUrl(fw.id, 'aliases')" readonly style="flex:1" />
+            <n-button size="small" type="primary" ghost @click="copy(fwLookupUrl(fw.id, 'aliases'))">
+              <template #icon><n-icon><CopyIcon /></n-icon></template>{{ t("settings.system.graylog_copy") }}
+            </n-button>
+          </div>
+        </div>
+      </div>
+      <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.graylog_fw_hint") }}</div>
+    </n-card>
+
     <!-- ── Graylog 串接教學 ── -->
     <n-card style="margin-top:16px">
       <template #header>
@@ -228,6 +286,9 @@ onMounted(() => { void load(); });
 .gd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .fld label { display: block; font-size: 12px; opacity: .8; margin-bottom: 4px; }
 .gd-url { display: flex; gap: 8px; align-items: center; }
+.gd-fw { padding: 10px 0; border-top: 1px solid var(--n-border-color, rgba(128,128,128,.15)); }
+.gd-fw:first-of-type { border-top: none; padding-top: 4px; }
+.gd-fw-name { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
 .hint { font-size: 11px; opacity: .65; }
 .gd-h { font-size: 14px; margin: 22px 0 6px; padding-top: 14px; border-top: 1px solid var(--n-border-color, rgba(128,128,128,.15)); }
 .gd-h:first-of-type { border-top: none; padding-top: 0; }

@@ -184,6 +184,8 @@ export interface OPNsenseFirewall {
   sync_openvpn: boolean;
   sync_rules: boolean;
   sync_nat: boolean;
+  sync_aliases?: boolean;
+  expose_dsv?: boolean;
   description: string | null;
   scope_location_id?: string | null;
   scope_customer_id?: string | null;
@@ -207,6 +209,8 @@ export interface OPNsenseFirewallCreate {
   sync_openvpn?: boolean;
   sync_rules?: boolean;
   sync_nat?: boolean;
+  sync_aliases?: boolean;
+  expose_dsv?: boolean;
   description?: string;
   scope_location_id?: string | null;
   scope_customer_id?: string | null;

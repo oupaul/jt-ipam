@@ -27,7 +27,12 @@ from app.models.device import Device
 from app.models.dhcp import DHCPPoolRange
 from app.models.dns import DNSRecord, DNSServer, DNSZone
 from app.models.encrypted_secret import EncryptedSecret
-from app.models.firewall import OPNsenseAliasMapping, OPNsenseFirewall, OPNsenseSyncedAlias
+from app.models.firewall import (
+    OPNsenseAliasMapping,
+    OPNsenseFirewall,
+    OPNsenseRuleLabel,
+    OPNsenseSyncedAlias,
+)
 from app.models.firewall_rule import OPNsenseRule
 from app.models.ip_change_log import IPChangeLog
 from app.models.ip_hostname import IPHostnameObservation
@@ -110,6 +115,7 @@ __all__ = [
     "Notification",
     "OPNsenseAliasMapping",
     "OPNsenseFirewall",
+    "OPNsenseRuleLabel",
     "OPNsenseSyncedAlias",
     "Permission",
     "PhpIPAMMigrationMapping",

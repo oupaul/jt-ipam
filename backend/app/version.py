@@ -3,5 +3,5 @@
 發版時請與 frontend/package.json 的 version 一起更新。
 """
 
-__version__ = "0.4.190"
->>>>>>> 1a1544b (ui(circuits): surface bandwidth / static IP / gateway columns in the circuits table [v0.4.190])
+__version__ = "0.4.191"
+>>>>>>> b4eeaec (feat(graylog): per-firewall OPNsense DSV — rule label->alias + alias->members lookups [v0.4.191])

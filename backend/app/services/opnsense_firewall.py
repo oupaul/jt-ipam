@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import ipaddress
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -1320,6 +1321,72 @@ async def sync_aliases(session: AsyncSession, fw: OPNsenseFirewall) -> dict[str,
     return {"count": len(seen)}
 
 
+# pf 規則文字解析（給 Graylog DSV）：label "<rid>"、alias 引用 <name:count>、action、interface
+_RL_LABEL = re.compile(r'label "([0-9A-Za-z]+)"')
+_RL_ALIAS = re.compile(r"<([^>:\s]+)(?::\d+)?>")
+_RL_ACTION = re.compile(r"^@\d+\s+(\w+)")
+_RL_IFACE = re.compile(r"\bon\s+!?\s*([A-Za-z0-9_.]+)")
+
+
+def _parse_pf_rule_labels(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """pf_statistics/rules → {label: {action, interface, alias_names[]}}；只收有引用 alias 的規則。
+
+    規則文字是 dict 的 key（例：'@55 pass in log quick on pppoe0 inet proto tcp from
+    <jasontools:1> to (pppoe0:1) port = 39443 ... label "7df315ceb66d..."'）。
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for _grp, rules in (data.get("rules") or {}).items():
+        if not isinstance(rules, dict):
+            continue
+        for txt in rules:
+            m = _RL_LABEL.search(txt)
+            if not m:
+                continue
+            aliases = [a for a in _RL_ALIAS.findall(txt) if a != "self"]
+            if not aliases:
+                continue
+            ent = out.setdefault(m.group(1), {"action": None, "interface": None, "alias_names": []})
+            am = _RL_ACTION.search(txt)
+            if am and not ent["action"]:
+                ent["action"] = am.group(1)
+            fm = _RL_IFACE.search(txt)
+            if fm and not ent["interface"]:
+                ent["interface"] = fm.group(1)
+            for a in aliases:
+                if a not in ent["alias_names"]:
+                    ent["alias_names"].append(a)
+    return out
+
+
+async def sync_rule_labels(session: AsyncSession, fw: OPNsenseFirewall) -> dict[str, Any]:
+    """抓 pf_statistics 規則、解析 label→alias，upsert 進 opnsense_rule_labels（Graylog DSV 用）。"""
+    from app.models.firewall import OPNsenseRuleLabel
+
+    data = await _api_get(fw, "/api/diagnostics/firewall/pf_statistics/rules", timeout=20.0)
+    parsed = _parse_pf_rule_labels(data if isinstance(data, dict) else {})
+    now = datetime.now(UTC)
+    existing = {
+        r.label: r for r in (await session.execute(
+            select(OPNsenseRuleLabel).where(OPNsenseRuleLabel.firewall_id == fw.id)
+        )).scalars().all()
+    }
+    seen: set[str] = set()
+    for label, e in parsed.items():
+        seen.add(label)
+        row = existing.get(label)
+        if row is None:
+            row = OPNsenseRuleLabel(firewall_id=fw.id, label=label)
+            session.add(row)
+        row.action = e["action"]
+        row.interface = e["interface"]
+        row.alias_names = e["alias_names"]
+        row.last_seen_at = now
+    for label, row in existing.items():
+        if label not in seen:
+            await session.delete(row)
+    return {"count": len(seen)}
+
+
 async def sync_all_for_firewall(
     session: AsyncSession, fw: OPNsenseFirewall,
 ) -> list[dict[str, Any]]:
@@ -1363,12 +1430,18 @@ async def sync_all_for_firewall(
             out.append({"task": "nat", **(await sync_nat_rules(session, fw))})
         except OPNsenseError as exc:
             out.append({"task": "nat", "error": str(exc)})
-    # alias 定義（唯讀檢視）；可由 sync_aliases 開關控制；失敗只記錄
-    if fw.sync_aliases:
+    # alias 定義（唯讀檢視）；sync_aliases 開關或 expose_dsv（alias DSV 需要 alias 內容）控制
+    if fw.sync_aliases or fw.expose_dsv:
         try:
             out.append({"task": "aliases", **(await sync_aliases(session, fw))})
         except OPNsenseError as exc:
             out.append({"task": "aliases", "error": str(exc)})
+    # pf 規則 label→alias（Graylog DSV 用）；expose_dsv 開才抓；失敗只記錄
+    if fw.expose_dsv:
+        try:
+            out.append({"task": "rule_labels", **(await sync_rule_labels(session, fw))})
+        except OPNsenseError as exc:
+            out.append({"task": "rule_labels", "error": str(exc)})
     # DHCP 發放範圍（Kea pools，多段都抓）；失敗只記錄
     try:
         out.append({"task": "dhcp_ranges", **(await sync_dhcp_ranges(session, fw))})
