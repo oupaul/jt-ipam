@@ -1,7 +1,7 @@
 {
   "name": "jt-ipam-frontend",
-  "version": "0.4.193",
->>>>>>> d8430f0 (ui(graylog): DSV table (sort/columns/filter/refresh) drives a source-aware guide with transition; full width [v0.4.193])
+  "version": "0.4.194",
+>>>>>>> bc66a29 (ui(graylog): numbered step circles, Extractor+Pipeline for every source, tinted label column, click-to-copy values [v0.4.194])
   "description": "jt-ipam — 可自架的整合型 IPAM 系統前端",
   "license": "AGPL-3.0-or-later",
   "private": true,

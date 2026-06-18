@@ -3,5 +3,5 @@
 發版時請與 frontend/package.json 的 version 一起更新。
 """
 
-__version__ = "0.4.193"
->>>>>>> d8430f0 (ui(graylog): DSV table (sort/columns/filter/refresh) drives a source-aware guide with transition; full width [v0.4.193])
+__version__ = "0.4.194"
+>>>>>>> bc66a29 (ui(graylog): numbered step circles, Extractor+Pipeline for every source, tinted label column, click-to-copy values [v0.4.194])
