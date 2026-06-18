@@ -1,5 +1,5 @@
-# jt-ipam v0.4.194
->>>>>>> bc66a29 (ui(graylog): numbered step circles, Extractor+Pipeline for every source, tinted label column, click-to-copy values [v0.4.194])
+# jt-ipam v0.4.195
+>>>>>>> 68371ef (ui(graylog): drop redundant copy button, rename detail to URLs/settings, move log-field input into Extractor step [v0.4.195])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
