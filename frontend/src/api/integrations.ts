@@ -87,6 +87,7 @@ export interface LibreNMSInstance {
   scope_subnet_ids: string[] | null;
   use_for_status: boolean;
   auto_add_devices: boolean;
+  auto_create_ips: boolean;
   sync_interval_seconds: number;
   last_sync_at: string | null;
   last_error: string | null;
@@ -116,6 +117,7 @@ export interface LibreNMSInstanceCreate {
   scope_subnet_ids?: string[] | null;
   use_for_status?: boolean;
   auto_add_devices?: boolean;
+  auto_create_ips?: boolean;
   sync_interval_seconds?: number;
 }
 
@@ -159,6 +161,7 @@ export interface LibreNMSInstanceUpdate {
   scope_subnet_ids?: string[] | null;
   use_for_status?: boolean;
   auto_add_devices?: boolean;
+  auto_create_ips?: boolean;
   sync_interval_seconds?: number;
 }
 export async function updateLibreNMS(

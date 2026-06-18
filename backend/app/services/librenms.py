@@ -10,6 +10,7 @@ OWASP 對應：
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ from app.models.librenms import (
     LibreNMSInstance,
 )
 from app.models.physical import DevicePort
+from app.models.subnet import Subnet
 from app.models.vlan import VLAN, DeviceVLAN, VLANDomain
 from app.services.hostname import apply_observation
 from app.services.ip_history import log_change
@@ -266,6 +268,26 @@ async def link_librenms_device(
 # ─────────────────── 同步：裝置 ───────────────────
 
 
+async def _addable_subnets(
+    session: AsyncSession, scope_ids: set[Any],
+) -> list[tuple[Any, Any]]:
+    """回傳可自動建立 IP 的候選子網路 [(ip_network, subnet_id)]，依首碼長度由長到短排序
+    （最精確的子網路優先），給 auto_create_ips 用 longest-prefix 比對落點子網路。
+    scope_ids 有值＝只在這些子網路內建（重疊網段安全）；空＝全部既有子網路。"""
+    stmt = select(Subnet.id, Subnet.cidr)
+    if scope_ids:
+        stmt = stmt.where(Subnet.id.in_(scope_ids))
+    rows = (await session.execute(stmt)).all()
+    nets: list[tuple[Any, Any]] = []
+    for sid, cidr in rows:
+        try:
+            nets.append((ipaddress.ip_network(str(cidr), strict=False), sid))
+        except ValueError:
+            continue
+    nets.sort(key=lambda x: x[0].prefixlen, reverse=True)
+    return nets
+
+
 async def sync_devices(
     session: AsyncSession, instance: LibreNMSInstance,
 ) -> tuple[int, int, int]:
@@ -276,6 +298,10 @@ async def sync_devices(
     # 重疊網段：同一 IP 可能存在多個子網路。限定 instance 的 scope_subnet_ids
     # （留空＝全域）並一律取第一筆，避免 scalar_one_or_none 在重複 IP 上炸掉整個 sync。
     scope_ids = _scope_uuids(instance)
+
+    # auto_create_ips：把裝置主 IP（落在既有且符合 scope 的子網路）自動建成 IPAddress。
+    # 只在開啟時才查候選子網路（省掉一次 query）。
+    addable_nets = await _addable_subnets(session, scope_ids) if instance.auto_create_ips else []
 
     for d in devices:
         legacy = int(d.get("device_id"))
@@ -307,6 +333,30 @@ async def sync_devices(
                     .limit(1)
                 )
             ).scalars().first()
+            # auto_create_ips：IPAM 還沒有這個裝置主 IP，且它落在既有/符合 scope 的子網路
+            # → 自動建一筆（discovery_source='librenms'）。只建裝置主 IP、不碰 ARP 鄰居。
+            if ipa is None and instance.auto_create_ips and addable_nets:
+                try:
+                    aip = ipaddress.ip_address(str(primary_ip).split("/")[0])
+                except ValueError:
+                    aip = None
+                sub_id = (
+                    next((sid for net, sid in addable_nets if aip in net), None)
+                    if aip is not None else None
+                )
+                if sub_id is not None:
+                    ipa = IPAddress(
+                        subnet_id=sub_id, ip=str(primary_ip).split("/")[0],
+                        state="active", discovery_source="librenms",
+                        description="LibreNMS 自動探索新增",
+                        note=(f"此 IP 由 LibreNMS 整合「{instance.name}」於 "
+                              f"{datetime.now(UTC).astimezone().strftime('%Y-%m-%d %H:%M')} "
+                              f"同步裝置時，依裝置主 IP 自動建立。"),
+                    )
+                    session.add(ipa)
+                    # session 設 autoflush=False；不 flush 則 ipa.id 仍 None，
+                    # 下面 apply_observation 會用 ip_id=None 建 FK → NOT NULL 違規 500。
+                    await session.flush()
             if ipa is not None:
                 if is_up:
                     ipa.last_seen_librenms = datetime.now(UTC)

@@ -1,5 +1,5 @@
-# jt-ipam v0.4.195
->>>>>>> 68371ef (ui(graylog): drop redundant copy button, rename detail to URLs/settings, move log-field input into Extractor step [v0.4.195])
+# jt-ipam v0.4.196
+>>>>>>> a06d260 (feat(librenms): auto-create discovered device IPs into matching subnets; fix dashboard online-status count; default chat model gemma4:26b [v0.4.196])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
