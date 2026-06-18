@@ -1918,7 +1918,7 @@
       "graylog_detail": "網址 / 設定",
       "graylog_tbl_hint": "點某一列即在下方顯示它的串接教學；按「網址 / 設定」看完整網址（HTTPS / 內網 HTTP）與該來源的設定（IP→主機名稱的開關 / 路徑也在裡面調整）。防火牆 DSV 的啟用在「整合 → OPNsense」逐台勾選「提供防火牆 DSV」。",
       "graylog_src_hostname": "IP → 主機名稱（全域）",
-      "graylog_src_pve_vms": "Proxmox VM（vmid → 名稱）",
+      "graylog_src_pve_vms": "VM 名稱",
       "graylog_pve_hint": "key = Proxmox VMID、value = VM 名稱（來自已同步的 Proxmox VE 虛擬機）。Graylog 端再開一個「DSV File from HTTP」配接器 + Lookup Table，把記錄裡的 vmid 欄位查成 VM 名稱。跨叢集 vmid 若重複，每個 vmid 只輸出第一筆。",
       "graylog_src_fw_rules": "規則",
       "graylog_src_fw_aliases": "別名",

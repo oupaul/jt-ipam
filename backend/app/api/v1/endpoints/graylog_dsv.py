@@ -23,7 +23,7 @@ from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.address import IPAddress
 from app.models.firewall import OPNsenseFirewall, OPNsenseRuleLabel, OPNsenseSyncedAlias
-from app.models.virt import VirtualMachine
+from app.models.virt import VirtCluster, VirtualMachine
 from app.schemas.base import StrictModel
 from app.services.system_config import get_graylog_dsv, set_graylog_dsv
 
@@ -164,25 +164,55 @@ async def fw_aliases_dsv(
     return PlainTextResponse(body, media_type=f"{media}; charset=utf-8")
 
 
+async def _proxmox_vms_pairs(
+    session: AsyncSession, token: str, cluster_id: uuid.UUID | None,
+) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+    """共用：token 守門 + 撈 vmid→名稱。cluster_id=None 表示全部叢集（去重）。"""
+    cfg = await get_graylog_dsv(session)
+    if not cfg["token"] or token != cfg["token"]:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    stmt = (
+        select(VirtualMachine.legacy_vmid, VirtualMachine.name)
+        .where(VirtualMachine.legacy_vmid.is_not(None))
+        .order_by(VirtualMachine.legacy_vmid)
+    )
+    if cluster_id is not None:
+        stmt = stmt.where(VirtualMachine.cluster_id == cluster_id)
+    rows = (await session.execute(stmt)).all()
+    return [(str(vmid), name or "") for vmid, name in rows], cfg
+
+
 @public_router.get("/proxmox/vms")
 async def proxmox_vms_dsv(
     session: Annotated[AsyncSession, Depends(get_session)],
     token: str = Query("", description="存取權杖（沿用 Graylog DSV token）"),
 ) -> PlainTextResponse:
-    """Proxmox VE VM DSV：key = vmid，value = VM 名稱（沿用 graylog_dsv token）。
+    """全部 PVE 叢集的 VM DSV：key = vmid，value = VM 名稱（沿用 graylog_dsv token）。
 
-    跨叢集 vmid 可能重複 → _dsv_lines 自動去重保留第一筆（key 必須唯一）。
-    路徑兩段，不會撞到 dsv_lookup 的單段 `/{name}`。
+    多叢集時 vmid 會跨叢集重複 → _dsv_lines 去重只保留第一筆；要正確區分請改用每叢集端點
+    `/proxmox/{cluster_id}/vms`（比照 OPNsense 多防火牆）。路徑兩段，不撞 dsv_lookup 的單段 `/{name}`。
     """
-    cfg = await get_graylog_dsv(session)
-    if not cfg["token"] or token != cfg["token"]:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    rows = (await session.execute(
-        select(VirtualMachine.legacy_vmid, VirtualMachine.name)
-        .where(VirtualMachine.legacy_vmid.is_not(None))
-        .order_by(VirtualMachine.legacy_vmid)
-    )).all()
-    pairs = [(str(vmid), name or "") for vmid, name in rows]
+    pairs, cfg = await _proxmox_vms_pairs(session, token, None)
+    media, body = _dsv_lines(pairs, cfg["fmt"])
+    return PlainTextResponse(body, media_type=f"{media}; charset=utf-8")
+
+
+@public_router.get("/proxmox/{cluster_id}/vms")
+async def proxmox_cluster_vms_dsv(
+    cluster_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    token: str = Query("", description="存取權杖（沿用 Graylog DSV token）"),
+) -> PlainTextResponse:
+    """單一 PVE 叢集 / 獨立節點的 VM DSV：key = vmid，value = VM 名稱。
+
+    多個 cluster / standalone node 時 vmid 會跨叢集重複，每個叢集各自一個 DSV 才不會混淆。
+    """
+    cluster = await session.get(VirtCluster, cluster_id)
+    if cluster is None:
+        # token 仍要先驗（避免用此端點探測叢集是否存在）
+        await _proxmox_vms_pairs(session, token, cluster_id)
+        raise HTTPException(status_code=404, detail="Not found")
+    pairs, cfg = await _proxmox_vms_pairs(session, token, cluster_id)
     media, body = _dsv_lines(pairs, cfg["fmt"])
     return PlainTextResponse(body, media_type=f"{media}; charset=utf-8")
 
