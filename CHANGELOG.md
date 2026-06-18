@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.201] — 2026-06-18
+
+### Changed
+- **Added a "Delete" button to the subnet detail page toolbar** (with a confirm prompt). Previously you had to
+  go back to the "All subnets" list and use the row trash icon or batch delete — and the actions column is
+  often pushed off the right edge. Now you can delete a subnet straight from its detail page; it refreshes the
+  sidebar subnet tree and returns to the list.
+
 ## [0.4.200] — 2026-06-18
 
 ### Fixed
