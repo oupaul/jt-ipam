@@ -3,5 +3,5 @@
 發版時請與 frontend/package.json 的 version 一起更新。
 """
 
-__version__ = "0.4.196"
->>>>>>> a06d260 (feat(librenms): auto-create discovered device IPs into matching subnets; fix dashboard online-status count; default chat model gemma4:26b [v0.4.196])
+__version__ = "0.4.197"
+>>>>>>> b8a1c92 (feat(cert-agents): link distribution agents to a device; name+source-IP become clickable; graylog DSV guide tweaks [v0.4.197])

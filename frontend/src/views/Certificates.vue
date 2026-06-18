@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import { fmtDateTime } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
+import { useEntityLinks } from "@/composables/useEntityLinks";
+import { listDevices } from "@/api/basic";
 import {
   NCard, NTabs, NTabPane, NDataTable, NSpace, NButton, NIcon, NTag, NModal, NForm,
   NFormItem, NInput, NInputNumber, NDynamicTags, NSelect, NPopconfirm, NAlert,
@@ -29,10 +32,22 @@ import {
 
 const { t } = useI18n();
 const msg = useMessage();
+const router = useRouter();
+const links = useEntityLinks(router);
 
 const certs = ref<Certificate[]>([]);
 const agents = ref<CertAgent[]>([]);
 const loading = ref(false);
+
+// 對應裝置下拉（編輯代理用）
+const deviceOptions = ref<{ label: string; value: string }[]>([]);
+async function loadDeviceOptions() {
+  try {
+    const r = await listDevices({ page: 1, pageSize: 500 });
+    deviceOptions.value = r.items.map((d) => ({
+      label: d.ip ? `${d.name}（${d.ip}）` : d.name, value: d.id }));
+  } catch { /* silent */ }
+}
 
 // ── 篩選 ──
 const certFilter = ref("");
@@ -69,7 +84,7 @@ async function loadServerVersion() {
   try { serverAgentVersion.value = (await getServerAgentVersion()).version; }
   catch { /* 非致命 */ }
 }
-onMounted(() => { loadCerts(); loadAgents(); loadServerVersion(); });
+onMounted(() => { loadCerts(); loadAgents(); loadServerVersion(); loadDeviceOptions(); });
 
 // 安裝說明：支援的 OS / 發行版（醒目標籤呈現）
 const SUPPORTED_OS = [
@@ -443,11 +458,13 @@ async function toggleAgent(a: CertAgent) {
   catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
 const showEditAgent = ref(false);
-const editForm = ref({ id: "", name: "", description: "", scope_cert_ids: [] as string[], enabled: true });
+const editForm = ref({ id: "", name: "", description: "", scope_cert_ids: [] as string[], enabled: true,
+  device_id: null as string | null });
 function editAgent(a: CertAgent) {
   editForm.value = {
     id: a.id, name: a.name, description: a.description ?? "",
     scope_cert_ids: (a.scope_cert_ids ?? []).map(String), enabled: a.enabled,
+    device_id: a.device_id,
   };
   showEditAgent.value = true;
 }
@@ -457,6 +474,7 @@ async function saveEditAgent() {
     await updateCertAgent(editForm.value.id, {
       name: editForm.value.name.trim(), description: editForm.value.description || null,
       scope_cert_ids: editForm.value.scope_cert_ids, enabled: editForm.value.enabled,
+      device_id: editForm.value.device_id,
     });
     showEditAgent.value = false; await loadAgents(); msg.success(t("common.saved"));
   } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
@@ -615,7 +633,14 @@ const agentExportRows = computed(() => agentsFiltered.value.map((a) => {
   };
 }));
 const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
-  { title: t("cols.name"), key: "name", minWidth: 120, ellipsis: { tooltip: true } },
+  { title: t("cols.name"), key: "name", minWidth: 120, ellipsis: { tooltip: true },
+    // 有對應裝置時，名稱可點去裝置詳情；未對應則純文字
+    render: (a) => a.device_id
+      ? h(NTooltip, null, {
+          trigger: () => links.device(a.device_id, a.name),
+          default: () => t("certs.go_device", { name: a.device_name ?? a.name }),
+        })
+      : a.name },
   { title: t("cols.enabled"), key: "enabled", width: 70,
     sorter: (a, b) => Number(a.enabled) - Number(b.enabled),
     render: (a) => h(NSwitch, { value: a.enabled, size: "small", onUpdateValue: () => toggleAgent(a) }) },
@@ -651,7 +676,10 @@ const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
   { title: t("cols.source_ip"), key: "source_ip", minWidth: 150,
     render: (a) => a.last_source_ip
       ? h("div", { style: "display:flex;align-items:center;gap:4px;flex-wrap:wrap" }, [
-          h("span", { style: "font-family:monospace" }, a.last_source_ip),
+          // 來源 IP 若對到 IPAM 的 IPAddress → 可點進該位址詳情；否則純文字
+          a.source_ip_id
+            ? h("span", { style: "font-family:monospace" }, [links.ipById(a.source_ip_id, a.last_source_ip)])
+            : h("span", { style: "font-family:monospace" }, a.last_source_ip),
           a.multi_source_recent
             ? h(NTooltip, null, {
                 trigger: () => h(NTag, { size: "tiny", type: "warning", round: true, bordered: false },
@@ -1047,6 +1075,13 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
       <n-form-item :label="t('certs.scope_certs')">
         <n-select v-model:value="editForm.scope_cert_ids" multiple filterable :options="editCertOptions"
                   :placeholder="t('certs.scope_hint')" />
+      </n-form-item>
+      <n-form-item :label="t('certs.device')">
+        <div style="width:100%">
+          <n-select v-model:value="editForm.device_id" filterable clearable :options="deviceOptions"
+                    :placeholder="t('certs.device_hint')" />
+          <div style="margin-top:4px;font-size:12px;color:#94a3b8;line-height:1.5">{{ t("certs.device_help") }}</div>
+        </div>
       </n-form-item>
       <n-form-item :label="t('cols.enabled')">
         <n-switch v-model:value="editForm.enabled" />

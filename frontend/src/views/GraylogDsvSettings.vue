@@ -172,14 +172,14 @@ async function save(regenerate = false) {
   } catch { msg.error(t("errors.network")); } finally { saving.value = false; }
 }
 function copy(text: string) {
-  if (text) { void navigator.clipboard.writeText(text); msg.success(t("common.ok")); }
+  if (text) { void navigator.clipboard.writeText(text); msg.success(t("common.copied_clipboard")); }
 }
 // 教學表格內任何 <code>（要貼進 Graylog 的值）點一下就複製
 function onCodeCopy(e: MouseEvent) {
   const el = e.target as HTMLElement;
   if (el && el.tagName === "CODE") {
     const txt = (el.innerText || el.textContent || "").trim();
-    if (txt) { void navigator.clipboard.writeText(txt); msg.success(t("common.ok")); }
+    if (txt) { void navigator.clipboard.writeText(txt); msg.success(t("common.copied_clipboard")); }
   }
 }
 
@@ -250,18 +250,16 @@ onMounted(() => { void load(); });
       </template>
       <p class="gd-intro">{{ t("settings.system.graylog_page_intro") }}</p>
 
-      <!-- 全域：格式 + 權杖（所有 DSV 共用同一把）-->
-      <div class="gd-grid">
-        <div class="fld">
-          <label>{{ t("settings.system.graylog_format") }}</label>
-          <n-select v-model:value="dsv.fmt" :options="fmtOpts" @update:value="() => save()" />
-        </div>
-        <div class="fld">
-          <label>{{ t("settings.system.graylog_token_label") }}</label>
-          <n-button size="small" :loading="saving" @click="() => save(true)">
-            <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("settings.system.graylog_regen") }}
-          </n-button>
-        </div>
+      <!-- 格式（輸出格式設定）與 權杖（存取金鑰，與格式無關）是兩回事，分開放 -->
+      <div class="fld gd-format">
+        <label>{{ t("settings.system.graylog_format") }}</label>
+        <n-select v-model:value="dsv.fmt" :options="fmtOpts" @update:value="() => save()" />
+      </div>
+      <div class="fld gd-token">
+        <label>{{ t("settings.system.graylog_token_label") }}</label>
+        <n-button size="small" :loading="saving" @click="() => save(true)">
+          <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("settings.system.graylog_regen") }}
+        </n-button>
       </div>
 
       <n-alert v-if="!dsv.token" type="warning" :show-icon="true" style="margin-top:14px">
@@ -392,11 +390,11 @@ onMounted(() => { void load(); });
             <tr><td>Default multi value</td><td>{{ t("settings.system.graylog_g_leave_empty") }}</td></tr>
           </table>
 
-          <!-- 步驟 2：Extractor（最簡單）-->
+          <!-- 步驟 2：套用到記錄（Extractor 或 Pipeline 擇一，不是兩步驟）-->
           <div class="gd-step"><span class="gd-step-num">2</span>
-            <span class="gd-step-title">{{ t("settings.system.graylog_g_ex_title") }}</span></div>
-          <p class="gd-p">{{ t("settings.system.graylog_g_ex") }}</p>
-          <!-- 要查的 log 欄位（步驟 2、3 共用，放在 Extractor 第一個用到它的地方）-->
+            <span class="gd-step-title">{{ t("settings.system.graylog_g_apply_title") }}</span></div>
+          <p class="gd-p">{{ t("settings.system.graylog_g_apply_intro") }}</p>
+          <!-- 要查的 log 欄位（兩種做法共用）-->
           <div class="gd-ipfield">
             <span>{{ t("settings.system.graylog_g_field_label") }}</span>
             <n-input v-model:value="gField" size="small" :placeholder="selected.defaultField" style="max-width: 200px"
@@ -404,15 +402,18 @@ onMounted(() => { void load(); });
             <span v-if="gFieldError" class="gd-field-err">{{ gFieldError }}</span>
             <span v-else class="gd-note" style="margin:0">→ <code>$message.{{ gFieldClean }}</code> → <code>{{ gOutField }}</code></span>
           </div>
+
+          <!-- 做法 A：Extractor -->
+          <div class="gd-alt">{{ t("settings.system.graylog_g_alt_ex") }}</div>
+          <p class="gd-p">{{ t("settings.system.graylog_g_ex") }}</p>
           <table class="gd-tbl">
             <tr><td>Source field</td><td><code>{{ gFieldClean }}</code></td></tr>
             <tr><td>Lookup Table</td><td><code>{{ gTable }}</code></td></tr>
             <tr><td>Store as</td><td><code>{{ gOutField }}</code></td></tr>
           </table>
 
-          <!-- 步驟 3：Pipeline（較彈性）-->
-          <div class="gd-step"><span class="gd-step-num">3</span>
-            <span class="gd-step-title">{{ t("settings.system.graylog_g_pl_title") }}</span></div>
+          <!-- 做法 B：Pipeline -->
+          <div class="gd-alt">{{ t("settings.system.graylog_g_alt_pl") }}</div>
           <p class="gd-p">{{ isHostname ? t("settings.system.graylog_g_pl") : t("settings.system.graylog_g_pl_fw") }}</p>
           <div class="gd-code-head">
             <span>Pipeline rule</span>
@@ -433,8 +434,13 @@ onMounted(() => { void load(); });
 .gd-intro { font-size: 13px; opacity: .75; margin: 0 0 14px; line-height: 1.6; }
 .gd-row { display: flex; align-items: center; gap: 8px; }
 .gd-switch-label { font-size: 13px; }
-.gd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; max-width: 640px; }
 .fld label { display: block; font-size: 12px; opacity: .8; margin-bottom: 4px; }
+/* 格式（輸出設定）與權杖（金鑰）是兩回事，分開放、不同列 */
+.gd-format { max-width: 300px; margin-top: 12px; }
+.gd-token { margin-top: 18px; }
+/* Extractor / Pipeline 是擇一的兩種做法（非連續步驟）→ 用左邊條的小標，不用數字圓圈 */
+.gd-alt { font-size: 13px; font-weight: 700; margin: 18px 0 6px; padding-left: 10px;
+  border-left: 3px solid var(--primary-color, #18a058); }
 .gd-url { display: flex; gap: 8px; align-items: center; }
 .dsv-map { font-size: 12px; }
 :deep(.dsv-row-selected td) { background: rgba(64,128,255,0.10) !important; }
