@@ -272,8 +272,9 @@ onMounted(() => { void load(); });
       </n-alert>
 
       <template v-else>
-        <!-- 工具列：篩選 / 重新整理 / 選欄 -->
-        <n-space align="center" style="margin:14px 0 8px">
+        <!-- 工具列：篩選 / 重新整理 / 選欄（與上方「格式 / 權杖」區隔開，加分隔線）-->
+        <n-space align="center" class="gd-toolbar"
+                 style="margin:28px 0 8px; padding-top:22px; border-top:1px solid rgba(128,128,128,.18)">
           <n-input v-model:value="query" clearable style="width:220px" :placeholder="t('common.filter')" />
           <n-button :loading="loading" @click="load">
             <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("common.refresh") }}

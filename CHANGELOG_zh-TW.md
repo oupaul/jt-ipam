@@ -4,6 +4,26 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.196] — 2026-06-18
+
+### 新增
+- **LibreNMS 同步可自動建立探索到的 IP。** 每個 LibreNMS 實例新增「自動建立探索到的 IP」開關
+  （預設開啟）：同步裝置時，會把受監控裝置的**主 IP**自動建進對應的既有子網路
+  （標 `discovery_source=librenms`）。只建裝置主 IP、不含 ARP 鄰居；若該實例設了限定子網路範圍，
+  只在範圍內建立；子網路若尚未在 IPAM 建立則略過。解決「只接 LibreNMS、未佈掃描代理」時，子網路內
+  0 個 IP、即時狀態與使用率全 0 的困惑（LibreNMS 進來的是裝置，原本只 stamp 既有 IP、不建立）。
+
+### 修正
+- **儀表板「即時狀態」把掃描代理／LibreNMS 判定的上線誤算成「未知」。** 計數時比對的是大小寫不符的
+  固定字串（`Online (scanner)` 等），但實際寫入值是小寫帶來源後綴（`online (scanner)`／
+  `online (librenms)`）→ 改用 `startswith("online")` 比對（比照 `recompute_effective_status`）。
+
+### 變更
+- **預設對話模型改為 `gemma4:26b`**（原 `gpt-oss:120b`）——與 README 既有建議一致；未在 LLM 設定頁
+  覆寫的環境（含全新安裝）即以此為預設。已覆寫者不受影響。
+- **文件：** 本地 AI 加值區塊加註「本套件無內建 LLM Server，請在有 GPU 算力的主機安裝好 LLM Server
+  後再提供給 jt-ipam 接取使用」。
+
 ## [0.4.195] — 2026-06-18
 
 ### 變更

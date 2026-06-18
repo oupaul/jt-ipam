@@ -1293,6 +1293,8 @@
     "scope_hint": "重疊網段時用：只在這些子網路內比對 IP。空=全域比對。",
     "use_for_status": "納入上線狀態判定",
     "auto_add_devices": "自動加入新裝置",
+    "auto_create_ips": "自動建立探索到的 IP",
+    "auto_create_ips_hint": "開啟後，同步時會把 LibreNMS 監控裝置的主 IP，自動建進對應的既有子網路（標來源為 LibreNMS）。只建裝置主 IP、不含 ARP 鄰居；若有設定限定子網路範圍，只會建在範圍內。子網路若尚未建立則略過。",
     "sync_interval": "同步週期 (秒)",
     "error_name_required": "請填名稱",
     "error_token_too_short": "API token 至少 8 字元",

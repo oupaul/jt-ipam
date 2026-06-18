@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.196] — 2026-06-18
+
+### Added
+- **LibreNMS sync can auto-create discovered IPs.** Each LibreNMS instance gains an "Auto-create
+  discovered IPs" toggle (default on): on sync, each monitored device's **primary IP** is auto-created
+  as an IPAddress inside the matching existing subnet (tagged `discovery_source=librenms`). Device
+  primary IPs only — not ARP neighbours; if the instance has a subnet scope, only within that scope; and
+  skipped if the subnet does not exist in IPAM yet. Fixes the confusing "0 used / live status all zero"
+  state when only LibreNMS is connected (no scan agent): LibreNMS imports devices and previously only
+  stamped liveness onto pre-existing IPs, never creating them.
+
+### Fixed
+- **Dashboard "live status" miscounted scanner/LibreNMS-confirmed online IPs as "unknown".** The counter
+  matched against case-mismatched literals (`Online (scanner)` etc.), but the values actually written are
+  lowercase with a source suffix (`online (scanner)` / `online (librenms)`) → now uses
+  `startswith("online")` (matching `recompute_effective_status`).
+
+### Changed
+- **Default chat model is now `gemma4:26b`** (was `gpt-oss:120b`) — aligning the compiled default with
+  the README's existing recommendation; applies to anything that hasn't overridden it in LLM settings
+  (including fresh installs). Existing overrides are unaffected.
+- **Docs:** the Local AI section now notes that no LLM Server is bundled — set one up on a GPU-capable
+  host and point jt-ipam at it.
+
 ## [0.4.195] — 2026-06-18
 
 ### Changed
