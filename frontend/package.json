@@ -1,7 +1,7 @@
 {
   "name": "jt-ipam-frontend",
-  "version": "0.4.199",
->>>>>>> 90ab2c8 (fix(graylog): correct DSV Key/Value column indices to 0-based (0 and 1) [v0.4.199])
+  "version": "0.4.200",
+>>>>>>> 9fbbb8f (fix(version): compare versions numerically and read latest from main version.py; harden librenms auto-create subnet pick; move check button [v0.4.200])
   "description": "jt-ipam — 可自架的整合型 IPAM 系統前端",
   "license": "AGPL-3.0-or-later",
   "private": true,
