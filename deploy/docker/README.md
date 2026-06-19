@@ -1,78 +1,89 @@
-# Docker Compose 部署（可選）
+# Docker Compose deployment (optional)
 
-> ⚠️ 這是**次要 / 可選**的部署方式。jt-ipam 主要支援的安裝方式仍是 **systemd + apt**
-> （`scripts/jt-ipam.sh install`，見專案 README）。docker-compose 適合快速試用 / 評估，或你本來就以容器為主的環境。
+> 繁體中文：[README_zh-TW.md](README_zh-TW.md)
 
-整組會起這些服務：`postgres`（pgvector）、`redis`、`backend`（FastAPI/uvicorn）、`sync`（背景同步迴圈，取代 systemd timer）、`web`（nginx：服務前端 + 反代 `/api`、終結 HTTPS）。
+> ⚠️ This is a **secondary / optional** deployment path. The primary, supported install for jt-ipam is
+> still **systemd + apt** (`scripts/jt-ipam.sh install`, see the project README). Use Docker Compose for a
+> quick trial / evaluation, or if your environment is already container-first.
 
-## 快速開始
+The stack brings up: `postgres` (pgvector), `redis`, `backend` (FastAPI/uvicorn), `sync` (a background sync
+loop that replaces the systemd timer), and `web` (nginx serving the frontend + reverse-proxying `/api`,
+terminating HTTPS).
 
-`gen-env.sh`、`docker-compose.yml` 等檔案都在 repo 的 `deploy/docker/` 內，所以**先 git clone 取得專案**：
+## Quick start
+
+`gen-env.sh`, `docker-compose.yml` and the rest live in the repo under `deploy/docker/`, so **clone the repo
+first**:
 
 ```bash
 git clone https://github.com/jasoncheng7115/jt-ipam.git
 cd jt-ipam/deploy/docker
-./gen-env.sh                    # 產生 .env 並填入隨機密鑰（只需一次）
-docker compose up -d --build    # 建置映像並啟動
+./gen-env.sh                    # create .env with random secrets (once)
+docker compose up -d --build    # build images and start
 ```
 
-開瀏覽器到 `https://localhost`（首次啟動會自動產生自簽憑證；瀏覽器會跳安全警告，自行信任即可）。
+Open `https://localhost` (a self-signed cert is generated on first run; trust the browser warning).
 
-- 想換對外網域 / 連接埠：編輯 `.env` 的 `JT_IPAM_SERVER_NAME`、`HTTP_PORT`、`HTTPS_PORT`，並把 `APP_PUBLIC_URL` / `API_PUBLIC_URL` / `CORS_ORIGINS` 一起改成相符的 `https://...`。
-- 想用**正式憑證**：把 `server.crt` / `server.key` 放到 `deploy/docker/certs/`（會蓋過自簽）。
+- **Change domain / ports:** edit `JT_IPAM_SERVER_NAME`, `HTTP_PORT`, `HTTPS_PORT` in `.env`, and set
+  `APP_PUBLIC_URL` / `API_PUBLIC_URL` / `CORS_ORIGINS` to the matching `https://...`.
+- **Use a real cert:** drop `server.crt` / `server.key` into `deploy/docker/certs/` (overrides the self-signed one).
 
-### 第一個管理員
+### First admin
 
-在 `.env` 設 `JT_IPAM_ADMIN_PASSWORD`（搭配 `JT_IPAM_ADMIN_USERNAME` / `JT_IPAM_ADMIN_EMAIL`），backend 首次啟動就會自動建立管理員。或留空、之後自己用 CLI 建：
+Set `JT_IPAM_ADMIN_PASSWORD` in `.env` (with `JT_IPAM_ADMIN_USERNAME` / `JT_IPAM_ADMIN_EMAIL`) and the backend
+creates the admin on first boot. Or leave it empty and create one later:
 
 ```bash
 docker compose exec backend python -m app.cli.bootstrap \
   create-admin --username admin --email admin@example.com --password-stdin
-# 接著輸入密碼（≥ 12 字元）
+# then type the password (>= 12 chars)
 ```
 
-## 怎麼更新版本
+## How to update
 
-最方便的方式——在本目錄跑：
+The easiest way — run in this directory:
 
 ```bash
 ./update.sh
 ```
 
-它會做：`git pull` → `docker compose build`（重建映像）→ `docker compose up -d`（重建容器）。
-**資料庫遷移會自動執行**：backend 容器的 entrypoint 每次啟動都會跑 `alembic upgrade head`，所以你不需要手動跑 migration。
+It runs: `git pull` → `docker compose build` (rebuild images) → `docker compose up -d` (recreate containers).
+**Migrations run automatically:** the backend container's entrypoint runs `alembic upgrade head` on every
+start, so there is no manual migration step.
 
-等同手動：
+Equivalent manual steps:
 
 ```bash
 git pull
 docker compose build
 docker compose up -d
-docker compose logs -f backend   # 看遷移 / 啟動記錄
+docker compose logs -f backend   # watch migration / boot logs
 ```
 
-> 版本號跟著原始碼走（`backend/app/version.py` / `frontend/package.json`），所以 `git pull` + 重建就是升版。
+> The version tracks the source (`backend/app/version.py` / `frontend/package.json`), so `git pull` + rebuild
+> *is* the upgrade.
 
-## 常用指令
+## Common commands
 
 ```bash
-docker compose ps                  # 看狀態
-docker compose logs -f backend     # 後端記錄（含遷移）
-docker compose down                # 停止（保留資料 volume）
-docker compose down -v             # 停止並刪除資料（⚠️ 連 DB 一起刪）
+docker compose ps                  # status
+docker compose logs -f backend     # backend logs (incl. migrations)
+docker compose down                # stop (keeps the data volume)
+docker compose down -v             # stop and DELETE data (⚠️ drops the DB too)
 ```
 
-## 備份
+## Backup
 
-資料都在 `pgdata` volume，備份範例：
+All data is in the `pgdata` volume; example backup:
 
 ```bash
 docker compose exec -T postgres pg_dump -U jt_ipam jt_ipam | gzip > jt-ipam-$(date +%F).sql.gz
 ```
 
-## 與 systemd 版的差異 / 注意事項
+## Differences from the systemd install / notes
 
-- 背景同步用 `sync` 服務的迴圈取代 `jt-ipam-sync.timer`（間隔由 `.env` 的 `SYNC_INTERVAL_SECONDS` 控制）。
-- 未包含 Graylog DSV 的明文 8088 埠（容器內建議直接用 HTTPS 那條 DSV 網址）。
-- GeoIP / OUI 等排程更新未內建，需要可自行加 cron 或另跑。
-- 強制 HTTPS：app 會送 Secure cookie、公開 URL 為 https，請勿改成純 http 對外。
+- Background sync uses the `sync` service loop instead of `jt-ipam-sync.timer` (interval via
+  `SYNC_INTERVAL_SECONDS` in `.env`).
+- The plaintext Graylog DSV port 8088 is not included (use the HTTPS DSV URL inside containers).
+- GeoIP / OUI scheduled refreshes are not bundled — add a cron or run them separately if needed.
+- HTTPS is enforced: the app sets Secure cookies and https public URLs; do not expose plain http externally.
