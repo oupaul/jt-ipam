@@ -1,7 +1,7 @@
 {
   "name": "jt-ipam-frontend",
-  "version": "0.4.206",
->>>>>>> 9437720 (ui(graylog): format & token as two side-by-side cards for clearer separation [v0.4.206])
+  "version": "0.4.207",
+>>>>>>> 1ecaa57 (feat(docker): gen-env auto-generates admin password; split deployment docs into two zones (systemd vs docker) [v0.4.207])
   "description": "jt-ipam — 可自架的整合型 IPAM 系統前端",
   "license": "AGPL-3.0-or-later",
   "private": true,

@@ -1,5 +1,5 @@
-# jt-ipam v0.4.206
->>>>>>> 9437720 (ui(graylog): format & token as two side-by-side cards for clearer separation [v0.4.206])
+# jt-ipam v0.4.207
+>>>>>>> 1ecaa57 (feat(docker): gen-env auto-generates admin password; split deployment docs into two zones (systemd vs docker) [v0.4.207])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
