@@ -3,5 +3,5 @@
 發版時請與 frontend/package.json 的 version 一起更新。
 """
 
-__version__ = "0.4.205"
->>>>>>> f21436f (fix(docker): loopback bind for nginx mode + backend healthcheck so sync/web wait for migrations [v0.4.205])
+__version__ = "0.4.206"
+>>>>>>> 9437720 (ui(graylog): format & token as two side-by-side cards for clearer separation [v0.4.206])

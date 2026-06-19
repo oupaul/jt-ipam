@@ -1,5 +1,5 @@
-# jt-ipam v0.4.205
->>>>>>> f21436f (fix(docker): loopback bind for nginx mode + backend healthcheck so sync/web wait for migrations [v0.4.205])
+# jt-ipam v0.4.206
+>>>>>>> 9437720 (ui(graylog): format & token as two side-by-side cards for clearer separation [v0.4.206])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
