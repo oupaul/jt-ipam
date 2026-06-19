@@ -1,5 +1,5 @@
-# jt-ipam v0.4.203
->>>>>>> d67c55f (feat(graylog): per-cluster Proxmox VM DSV for multiple PVE clusters/nodes [v0.4.203])
+# jt-ipam v0.4.204
+>>>>>>> fe4cd20 (feat(deploy): optional Docker Compose deployment with auto-migrate + update.sh [v0.4.204])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
@@ -75,6 +75,8 @@ curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-ipam/main/scripts
 ```
 
 升級：`sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade`（**腳本內含 `git pull`**，直接跑即可）。詳見 [`docs/INSTALL.md`](docs/INSTALL.md)。
+
+> **可選：Docker Compose。** 另有一條次要部署路徑在 [`deploy/docker/`](deploy/docker/)（`./gen-env.sh` 後 `docker compose up -d --build`；之後用 `./update.sh` 升版）。主力且完整支援的仍是 systemd + apt。
 
 ### 首次登入與重置管理員密碼
 

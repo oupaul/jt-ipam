@@ -1,7 +1,7 @@
 {
   "name": "jt-ipam-frontend",
-  "version": "0.4.203",
->>>>>>> d67c55f (feat(graylog): per-cluster Proxmox VM DSV for multiple PVE clusters/nodes [v0.4.203])
+  "version": "0.4.204",
+>>>>>>> fe4cd20 (feat(deploy): optional Docker Compose deployment with auto-migrate + update.sh [v0.4.204])
   "description": "jt-ipam — 可自架的整合型 IPAM 系統前端",
   "license": "AGPL-3.0-or-later",
   "private": true,
