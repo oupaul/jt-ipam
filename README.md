@@ -1,5 +1,5 @@
-# jt-ipam v0.4.204
->>>>>>> fe4cd20 (feat(deploy): optional Docker Compose deployment with auto-migrate + update.sh [v0.4.204])
+# jt-ipam v0.4.205
+>>>>>>> f21436f (fix(docker): loopback bind for nginx mode + backend healthcheck so sync/web wait for migrations [v0.4.205])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
