@@ -3,7 +3,7 @@
 > English: [INSTALL.md](INSTALL.md)
 
 針對 **Proxmox LXC、裸機、虛擬機**（Ubuntu 22.04+/Debian 12+）。**主力且建議**的安裝方式是
-**systemd + apt** 直裝（不使用 Docker）。另有 Docker Compose 路徑，但**屬可選 / 次要、並非優先模式**——見下方 §2.6。
+**systemd + apt** 直裝（不使用 Docker）。另有 Docker Compose 路徑，但**屬可選 / 次要、並非優先模式**——見下方 §2.7。
 
 > 安全為 day-one 需求：所有環境強制 HTTPS；憑證可走 nginx 反代或
 > uvicorn 直接吃自簽。SSL 沒設好 backend **不會啟動**（A02）。
@@ -162,7 +162,7 @@ openssl s_client -connect ipam.example.com:443 -servername ipam.example.com </de
 > 想自己重新產自簽憑證：`sudo bash /opt/jt-ipam/scripts/generate-self-signed-cert.sh` 後 `systemctl restart jt-ipam-backend`。
 > 從 direct 改走 nginx 反代：把 `/etc/jt-ipam/backend.env` 的 `BACKEND_TLS_MODE` 改成 `nginx`、裝好 nginx site，再重啟 backend + reload nginx。
 
-### 2.6 可選：Docker Compose（非本專案優先使用模式）
+### 2.7 可選：Docker Compose（非本專案優先使用模式）
 
 > ⚠️ **Docker Compose 是次要 / 可選的部署路徑，並非本專案優先或主力的部署模式。** 受支援且建議的安裝方式是
 > **systemd + apt**（上面各節）。Compose 適合快速試用或本來就以容器為主的環境；systemd 路徑測試最完整。
@@ -194,7 +194,7 @@ docker compose up -d --build   # 建置映像並啟動
 backend 容器啟動時會**自動**跑資料庫遷移（entrypoint 執行 `alembic upgrade head`），不需另外手動跑 migration。
 
 > Compose 版未內含：Graylog DSV 的明文 8088 埠、以及 GeoIP / OUI 排程更新。完整說明見
-> [`deploy/docker/README.md`](https://github.com/jasoncheng7115/jt-ipam/blob/main/deploy/docker/README.md)。
+> [`deploy/docker/README.md`](https://github.com/jasoncheng7115/jt-ipam/blob/main/deploy/docker/README_zh-TW.md)。
 
 ---
 

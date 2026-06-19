@@ -4,7 +4,7 @@
 
 For **Proxmox LXC, bare metal, and VMs** (Ubuntu 22.04+/Debian 12+). The **primary, recommended** install
 uses **systemd + apt** directly (no Docker). A Docker Compose path exists but is **optional / secondary, not
-the preferred mode** — see [§2.6](#26-optional-docker-compose-not-the-preferred-mode).
+the preferred mode** — see [§2.7](#27-optional-docker-compose-not-the-preferred-mode).
 
 > Security is a day-one requirement: HTTPS is enforced in all environments; the cert can be
 > served via an nginx reverse proxy or a self-signed cert served directly by uvicorn. If SSL
@@ -164,7 +164,7 @@ openssl s_client -connect ipam.example.com:443 -servername ipam.example.com </de
 > To regenerate a self-signed cert yourself: `sudo bash /opt/jt-ipam/scripts/generate-self-signed-cert.sh` then `systemctl restart jt-ipam-backend`.
 > To move from direct to an nginx reverse proxy: set `BACKEND_TLS_MODE=nginx` in `/etc/jt-ipam/backend.env`, install the nginx site, then restart the backend + reload nginx.
 
-### 2.6 Optional: Docker Compose (NOT the preferred mode)
+### 2.7 Optional: Docker Compose (NOT the preferred mode)
 
 > ⚠️ **Docker Compose is a secondary / optional path — it is NOT the project's preferred or primary
 > deployment mode.** The supported, recommended install is **systemd + apt** (sections above). Use Compose
