@@ -1,5 +1,5 @@
-# jt-ipam v0.4.208
->>>>>>> 4774191 (feat(ssh): in-page xterm.js SSH terminal for IP addresses [v0.4.208])
+# jt-ipam v0.4.210
+>>>>>>> c5fbea8 (feat(ssh): connections page, saved per-user credentials, live disconnect detection [v0.4.210])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
