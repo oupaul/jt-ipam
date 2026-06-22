@@ -2211,7 +2211,8 @@
   "relations": {
     "title": "關係圖（上下層物件）",
     "wrap_hint": "接續到下一排",
-    "vm": "虛擬機"
+    "vm": "虛擬機",
+    "pve_node": "PVE 節點"
   },
   "version": {
     "title": "版本資訊",
