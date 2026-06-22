@@ -710,19 +710,25 @@ async def list_roles(
 _GITHUB_REPO = "jasoncheng7115/jt-ipam"
 
 
-@router.get("/version")
-async def get_version_info() -> dict[str, Any]:
-    """現行版本 + Python 與主要套件版本（管理頁顯示用）。"""
+def _gather_version_info() -> dict[str, Any]:
+    """同步蒐集版本資訊（檔案讀取 / subprocess）→ 由 async 端以 to_thread 呼叫，不擋事件迴圈。"""
+    import json
+    import platform
+    import re
+    import shutil
+    import subprocess
     import sys
     from importlib.metadata import PackageNotFoundError
     from importlib.metadata import version as _pkgver
+    from pathlib import Path
 
     from app.version import __version__
 
+    # 後端 Python 套件（含 SSH/RDP/VNC 連線管理用：asyncssh、aardwolf〔選用〕、Pillow）
     pkgs = [
         "fastapi", "starlette", "sqlalchemy", "pydantic", "asyncpg", "alembic",
         "uvicorn", "httpx", "redis", "argon2-cffi", "cryptography", "defusedxml",
-        "authlib", "mcp",
+        "authlib", "mcp", "asyncssh", "aardwolf", "pillow",
     ]
     versions: dict[str, str | None] = {}
     for p in pkgs:
@@ -730,11 +736,78 @@ async def get_version_info() -> dict[str, Any]:
             versions[p] = _pkgver(p)
         except PackageNotFoundError:
             versions[p] = None
+
+    # 前端框架版本（讀 frontend/node_modules/<pkg>/package.json 的實裝版本）
+    frontend: dict[str, str | None] = {}
+    fe_root = Path(__file__).resolve().parents[5] / "frontend" / "node_modules"
+    for p in ["vue", "naive-ui", "vite", "typescript", "pinia", "vue-router",
+              "vue-i18n", "axios", "@xterm/xterm", "@iconoir/vue"]:
+        ver: str | None = None
+        try:
+            ver = json.loads((fe_root / p / "package.json").read_text(encoding="utf-8")).get("version")
+        except (OSError, ValueError):
+            ver = None
+        frontend[p] = ver
+
+    def _bin_ver(names: list[str], args: list[str], rx: str) -> str | None:
+        for n in names:
+            path = shutil.which(n) or (n if Path(n).exists() else None)
+            if not path:
+                continue
+            try:
+                out = subprocess.run([path, *args], capture_output=True, text=True, timeout=4)  # noqa: S603
+            except (OSError, subprocess.SubprocessError):
+                continue
+            m = re.search(rx, (out.stdout or "") + (out.stderr or ""))
+            if m:
+                return m.group(1)
+        return None
+
+    os_name: str | None = None
+    try:
+        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+            if line.startswith("PRETTY_NAME="):
+                os_name = line.split("=", 1)[1].strip().strip('"')
+                break
+    except OSError:
+        os_name = None
+
+    host: dict[str, str | None] = {
+        "os": os_name,
+        "kernel": platform.release(),
+        "nginx": _bin_ver(["nginx", "/usr/sbin/nginx", "/usr/bin/nginx"], ["-v"], r"nginx/([\d.]+)"),
+        "node": _bin_ver(["node", "/usr/local/bin/node", "/usr/bin/node"], ["-v"], r"v?([\d.]+)"),
+        "postgres": None,
+    }
     return {
         "current": __version__,
         "python": sys.version.split()[0],
         "packages": versions,
+        "frontend": frontend,
+        "host": host,
     }
+
+
+@router.get("/version")
+async def get_version_info() -> dict[str, Any]:
+    """現行版本 + Python/後端套件/前端框架/本機環境（OS·kernel·nginx·node·PostgreSQL）版本。
+
+    僅管理員可看（router 已掛 require_admin）；本機環境資訊不對外。
+    """
+    import asyncio
+
+    info = await asyncio.to_thread(_gather_version_info)
+    try:
+        from sqlalchemy import text as _sqltext
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from app.core.db import SessionLocal
+        async with SessionLocal() as s:
+            _pg = (await s.execute(_sqltext("SHOW server_version"))).scalar()
+            info["host"]["postgres"] = str(_pg).split()[0] if _pg else None
+    except SQLAlchemyError:
+        pass
+    return info
 
 
 def _ver_tuple(v: str | None) -> tuple[int, ...]:

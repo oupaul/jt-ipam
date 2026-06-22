@@ -366,6 +366,7 @@ onBeforeUnmount(teardown);
           <span class="ssh-state-label">{{ t(`ssh.state_${phase}`) }}</span>
           <span class="ssh-ip">{{ ip }}</span>
           <n-tag v-if="hostname" size="small" :bordered="false" round>{{ hostname }}</n-tag>
+          <span class="conn-proto conn-proto--ssh">SSH</span>
           <n-tag v-if="deviceName" size="small" type="info" :bordered="false" round>{{ deviceName }}</n-tag>
         </span>
         <n-space :size="8" align="center">
@@ -438,6 +439,10 @@ onBeforeUnmount(teardown);
 .ssh-saved-label { width: 92px; flex: none; box-sizing: border-box; text-align: right;
   padding-right: 12px; font-size: 14px; }
 .ssh-saved-row :deep(.n-button) { margin-left: 6px; }
+/* 協定標籤（主機名稱右邊）：SSH */
+.conn-proto { font-weight: 700; font-size: 11px; letter-spacing: .4px; line-height: 1;
+  padding: 2px 7px; border-radius: 999px; }
+.conn-proto--ssh { color: #18a058; background: rgba(24,160,88,.16); }
 .ssh-fp { display: block; margin: 8px 0; padding: 6px 8px; background: rgba(128,128,128,.12);
   border-radius: 4px; word-break: break-all; font-size: 13px; }
 </style>
