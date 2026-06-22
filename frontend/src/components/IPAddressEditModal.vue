@@ -578,7 +578,7 @@ async function remove() {
                   <span v-if="!consoleCompact">{{ t("ssh.connect") }}</span>
                 </n-button>
                 <n-dropdown trigger="click" :options="sshMenuOptions" @select="onSshMenu">
-                  <n-button type="info" size="small" style="padding:0 6px;border-left:1px solid rgba(255,255,255,.45)">
+                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
                     <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
                   </n-button>
                 </n-dropdown>
@@ -592,7 +592,7 @@ async function remove() {
                   <span v-if="!consoleCompact">{{ t("rdp.connect") }}</span>
                 </n-button>
                 <n-dropdown trigger="click" :options="rdpMenuOptions" @select="onRdpMenu">
-                  <n-button type="info" size="small" style="padding:0 6px;border-left:1px solid rgba(255,255,255,.45)">
+                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
                     <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
                   </n-button>
                 </n-dropdown>
@@ -607,7 +607,7 @@ async function remove() {
                   <span v-if="!consoleCompact">{{ t("vnc.connect") }}</span>
                 </n-button>
                 <n-dropdown trigger="click" :options="vncMenuOptions" @select="onVncMenu">
-                  <n-button type="info" size="small" style="padding:0 6px;border-left:1px solid rgba(255,255,255,.45)">
+                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
                     <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
                   </n-button>
                 </n-dropdown>
