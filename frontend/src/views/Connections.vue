@@ -56,7 +56,13 @@ const displayRows = computed(() =>
 
 // 寬度不夠時操作欄按鈕只顯示 icon（量測卡片容器寬度）
 const rootRef = ref<any>(null);
-const compact = ref(false);
+const elWidth = ref(99999);
+// 門檻隨「列中最多連線種類」放大：一列有越多種連線（SSH/RDP/VNC），帶文字按鈕越寬，需要更多容器寬度
+const compact = computed(() => {
+  const mp = Math.max(1, ...rows.value.map((r) =>
+    (r.ssh_available ? 1 : 0) + (r.rdp_available ? 1 : 0) + (r.vnc_available ? 1 : 0)));
+  return elWidth.value < 740 + mp * 115;
+});
 let ro: ResizeObserver | null = null;
 
 function sshHref(row: IPAddress) {
@@ -94,7 +100,7 @@ onMounted(() => {
   void ensureCustomers();   // 確保「單位」名稱可解析（否則 labelFor 退回顯示 UUID 片段）
   const el = rootRef.value?.$el as HTMLElement | undefined;
   if (el) {
-    ro = new ResizeObserver(() => { compact.value = el.clientWidth < 860; });
+    ro = new ResizeObserver(() => { elWidth.value = el.clientWidth; });
     ro.observe(el);
   }
 });
@@ -137,11 +143,10 @@ const allColumns = computed<DataTableColumns<IPAddress>>(() => {
         { style: "display:inline-flex;align-items:center;gap:5px;white-space:nowrap" },
         [h(OsIcon, { family: r.os_family }), r.os_guess || "—"]) },
     {
-      title: t("connections.col_actions"), key: "actions", width: cz ? 150 : 210,
+      title: t("connections.col_actions"), key: "actions", width: cz ? 190 : 300,
       render: (r) => {
-        // 該列有幾種連線；≥2 種或卡片窄時，按鈕收成只有 icon 才塞得下不換行
-        const n = (r.ssh_available ? 1 : 0) + (r.rdp_available ? 1 : 0) + (r.vnc_available ? 1 : 0);
-        const ic = cz || n >= 2;
+        // 只有頁面（卡片）真的窄時才收成 icon；寬度夠就顯示文字（欄寬已留可容 3 組帶文字按鈕）
+        const ic = cz;
         const grp = (key: string, icon: any, label: string, title: string, onMain: () => void,
                      menu: any, onMenu: (k: string) => void) =>
           h(NButtonGroup, { key }, () => [
@@ -149,7 +154,7 @@ const allColumns = computed<DataTableColumns<IPAddress>>(() => {
               ic ? { icon: () => h(NIcon, null, () => h(icon)) }
                  : { icon: () => h(NIcon, null, () => h(icon)), default: () => label }),
             h(NDropdown, { trigger: "click", options: menu, onSelect: onMenu },
-              () => h(NButton, { type: "info", size: "small", style: "padding:0 2px" },
+              () => h(NButton, { type: "info", size: "small", style: "padding:0 2px;border-left:1px solid rgba(255,255,255,.45)" },
                 { icon: () => h(NIcon, null, () => h(ChevronDownIcon)) })),
           ]);
         const groups = [];

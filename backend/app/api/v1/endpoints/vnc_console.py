@@ -62,7 +62,9 @@ _VNC_KEYSYMS: dict[str, int] = {
     "Delete": 0xFFFF, "Home": 0xFF50, "End": 0xFF57, "PageUp": 0xFF55,
     "PageDown": 0xFF56, "Insert": 0xFF63, "ArrowUp": 0xFF52, "ArrowDown": 0xFF54,
     "ArrowLeft": 0xFF51, "ArrowRight": 0xFF53,
-    "Control": 0xFFE3, "Shift": 0xFFE1, "Alt": 0xFFE9, " ": 0x20,
+    "Control": 0xFFE3, "Shift": 0xFFE1, "Alt": 0xFFE9, "Meta": 0xFFEB, " ": 0x20,  # Meta = Super_L (Win/⌘)
+    "F1": 0xFFBE, "F2": 0xFFBF, "F3": 0xFFC0, "F4": 0xFFC1, "F5": 0xFFC2, "F6": 0xFFC3,
+    "F7": 0xFFC4, "F8": 0xFFC5, "F9": 0xFFC6, "F10": 0xFFC7, "F11": 0xFFC8, "F12": 0xFFC9,
 }
 
 _active_sessions = 0

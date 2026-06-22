@@ -77,7 +77,10 @@ _SPECIAL_KEYS: dict[str, tuple[int, bool]] = {
     "Insert": (0x52, True), "ArrowUp": (0x48, True), "ArrowDown": (0x50, True),
     "ArrowLeft": (0x4B, True), "ArrowRight": (0x4D, True),
     "Control": (0x1D, False), "Shift": (0x2A, False), "Alt": (0x38, False),
-    " ": (0x39, False),
+    "Meta": (0x5B, True), " ": (0x39, False),  # Meta = 左 Windows 鍵（extended）
+    "F1": (0x3B, False), "F2": (0x3C, False), "F3": (0x3D, False), "F4": (0x3E, False),
+    "F5": (0x3F, False), "F6": (0x40, False), "F7": (0x41, False), "F8": (0x42, False),
+    "F9": (0x43, False), "F10": (0x44, False), "F11": (0x57, False), "F12": (0x58, False),
 }
 
 # 同時在線 session 計數（單核 GIL 下限制並發；0 = 不限）

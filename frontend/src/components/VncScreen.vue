@@ -8,13 +8,14 @@ import { nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NForm, NFormItem, NInput, NInputNumber, NButton, NButtonGroup, NSpace, NAlert, NIcon, NSpin, NTag,
-  NSelect, NSwitch, NPopconfirm, NCard, useMessage,
+  NSelect, NSwitch, NPopconfirm, NCard, NDropdown, useMessage,
 } from "naive-ui";
 import {
   requestVncTicket, buildVncWsUrl,
   listVncCredentials, createVncCredential, deleteVncCredential, type VncCredential,
 } from "@/api/vnc";
-import { VncIcon, CancelIcon, RefreshIcon, DeleteIcon } from "@/icons";
+import { buildSendKeysMenu, makeSendCombo } from "@/composables/useSendKeys";
+import { VncIcon, CancelIcon, RefreshIcon, DeleteIcon, ChevronDownIcon, KeyIcon, ExpandIcon, ReduceIcon } from "@/icons";
 
 const props = withDefaults(defineProps<{
   addressId: string;
@@ -104,6 +105,11 @@ function mapXY(e: MouseEvent): { x: number; y: number } {
 function wsSend(obj: Record<string, unknown>) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
+
+// 送出特殊按鍵（VNC 目標可能是 Win/Mac/Linux → 含 macOS 組合）
+const sendKeysMenu = buildSendKeysMenu(true);
+const _sendCombo = makeSendCombo(wsSend);
+function onSendKey(key: string) { _sendCombo(key); canvasEl.value?.focus(); }
 function stopHeartbeat() {
   if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
@@ -323,17 +329,26 @@ onBeforeUnmount(teardown);
           <span>{{ t(`vnc.state_${phase}`) }}</span>
           <span class="vnc-ip">{{ ip }}</span>
           <n-tag v-if="hostname" size="small" :bordered="false" round>{{ hostname }}</n-tag>
+          <span class="conn-proto conn-proto--vnc">VNC</span>
           <n-tag v-if="deviceName" size="small" type="info" :bordered="false" round>{{ deviceName }}</n-tag>
           <n-tag size="small" type="warning" :bordered="false" round>{{ t("vnc.beta") }}</n-tag>
         </span>
         <n-space :size="8" align="center">
+          <!-- 送出特殊按鍵 -->
+          <n-dropdown v-if="phase === 'connected'" trigger="click" :options="sendKeysMenu"
+                      size="small" @select="onSendKey">
+            <n-button size="tiny">
+              <template #icon><n-icon :component="KeyIcon" /></template>
+              {{ t("vnc.send_keys") }}<n-icon :component="ChevronDownIcon" style="margin-left:2px" />
+            </n-button>
+          </n-dropdown>
           <!-- 畫面縮放：自動縮放（符合視窗、不出捲軸） / 原始解析度（1:1） -->
           <n-button-group v-if="phase === 'connected'" size="tiny">
             <n-button :type="scaleMode === 'fit' ? 'primary' : 'default'" @click="setScale('fit')">
-              {{ t("vnc.scale_fit") }}
+              <template #icon><n-icon :component="ExpandIcon" /></template>{{ t("vnc.scale_fit") }}
             </n-button>
             <n-button :type="scaleMode === 'native' ? 'primary' : 'default'" @click="setScale('native')">
-              {{ t("vnc.scale_native") }}
+              <template #icon><n-icon :component="ReduceIcon" /></template>{{ t("vnc.scale_native") }}
             </n-button>
           </n-button-group>
           <n-button v-if="phase === 'connected'" size="tiny" type="error" ghost @click="disconnect">
@@ -382,8 +397,12 @@ onBeforeUnmount(teardown);
   70%  { box-shadow: 0 0 0 6px rgba(24, 160, 88, 0); }
   100% { box-shadow: 0 0 0 0 rgba(24, 160, 88, 0); }
 }
-.vnc-canvas-box { background: #000; padding: 0; border-radius: 8px; border: 1px solid #2b2b30;
-  box-shadow: 0 1px 3px rgba(0,0,0,.18); overflow: auto; display: inline-block; max-width: 100%; }
+.vnc-canvas-box { background: #000; padding: 0; border-radius: 10px; border: 1px solid #2b2b30;
+  box-shadow: 0 10px 30px rgba(0,0,0,.30), 0 3px 10px rgba(0,0,0,.20); overflow: auto; display: inline-block; max-width: 100%; }
+/* 協定標籤（主機名稱右邊）：VNC */
+.conn-proto { font-weight: 700; font-size: 11px; letter-spacing: .4px; line-height: 1;
+  padding: 2px 7px; border-radius: 999px; }
+.conn-proto--vnc { color: #8a63d2; background: rgba(138,99,210,.16); }
 .vnc-canvas-box.vnc-full { flex: 1; min-height: 0; display: block; }
 .vnc-canvas { display: block; outline: none; background: #000; }
 /* 自動縮放：置中、不出捲軸（canvas 由 JS 設 CSS 尺寸符合容器）。原始解析度：1:1、超出可捲。 */

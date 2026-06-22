@@ -176,6 +176,14 @@ export interface VersionInfo {
   current: string;
   python: string;
   packages: Record<string, string | null>;
+  frontend?: Record<string, string | null>;
+  host?: {
+    os: string | null;
+    kernel: string | null;
+    nginx: string | null;
+    node: string | null;
+    postgres: string | null;
+  };
 }
 
 export interface LatestVersion {

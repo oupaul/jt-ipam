@@ -8,13 +8,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "v
 import { useI18n } from "vue-i18n";
 import {
   NForm, NFormItem, NInput, NButton, NSpace, NAlert, NIcon, NSpin, NTag,
-  NSelect, NSwitch, NPopconfirm, NCard, useMessage,
+  NSelect, NSwitch, NPopconfirm, NCard, NDropdown, useMessage,
 } from "naive-ui";
 import {
   requestRdpTicket, buildRdpWsUrl,
   listRdpCredentials, createRdpCredential, deleteRdpCredential, type RdpCredential,
 } from "@/api/rdp";
-import { DisplayIcon, CancelIcon, RefreshIcon, DeleteIcon } from "@/icons";
+import { buildSendKeysMenu, makeSendCombo } from "@/composables/useSendKeys";
+import { DisplayIcon, CancelIcon, RefreshIcon, DeleteIcon, ChevronDownIcon, ExpandIcon, KeyIcon } from "@/icons";
 
 const props = withDefaults(defineProps<{
   addressId: string;
@@ -102,9 +103,34 @@ const PING_MS = 20_000;
 const DEAD_MS = 45_000;
 const MOVE_THROTTLE = 30;
 
+// 畫面縮放：fit=自動調整大小（CSS 縮放符合視窗、跟著視窗變動、不出捲軸）/ native=原始解析度（1:1）
+// 註：aardwolf RDP 無法連線中熱改解析度，故 framebuffer 維持連線當下的尺寸，fit 只縮放顯示。
+const scaleMode = ref<"fit" | "native">("fit");
+let srvW = 0, srvH = 0;
+let ro: ResizeObserver | null = null;
+let sessionCfg: Record<string, unknown> | null = null;  // 本次連線憑證，供「重新調整大小」重連複用
+function applyScale() {
+  const c = canvasEl.value, box = canvasBoxEl.value;
+  if (!c || !box || !srvW || !srvH) return;
+  if (scaleMode.value === "native") { c.style.width = ""; c.style.height = ""; return; }
+  const s = Math.min(box.clientWidth / srvW, box.clientHeight / srvH);
+  c.style.width = Math.max(1, Math.round(srvW * s)) + "px";
+  c.style.height = Math.max(1, Math.round(srvH * s)) + "px";
+}
+function mapXY(e: MouseEvent): { x: number; y: number } {
+  const c = canvasEl.value;
+  if (!c || !c.clientWidth || !c.clientHeight) return { x: e.offsetX, y: e.offsetY };
+  return { x: Math.round(e.offsetX * (c.width / c.clientWidth)), y: Math.round(e.offsetY * (c.height / c.clientHeight)) };
+}
+
 function wsSend(obj: Record<string, unknown>) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
+
+// 送出特殊按鍵（RDP 一律 Windows 目標 → 不含 macOS 組合）
+const sendKeysMenu = buildSendKeysMenu(false);
+const _sendCombo = makeSendCombo(wsSend);
+function onSendKey(key: string) { _sendCombo(key); canvasEl.value?.focus(); }
 
 function stopHeartbeat() {
   if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
@@ -126,6 +152,8 @@ function teardown() {
   stopHeartbeat();
   try { ws?.close(); } catch { /* noop */ }
   ws = null;
+  ro?.disconnect(); ro = null;
+  sessionCfg = null;
 }
 
 // ── 輸入事件 → 後端 ──
@@ -134,20 +162,20 @@ function onMouseMove(e: MouseEvent) {
   const now = Date.now();
   if (now - lastMove < MOVE_THROTTLE) return;
   lastMove = now;
-  wsSend({ type: "m", move: true, x: e.offsetX, y: e.offsetY });
+  wsSend({ type: "m", move: true, ...mapXY(e) });
 }
 function onMouseDown(e: MouseEvent) {
   e.preventDefault();
   canvasEl.value?.focus();
-  wsSend({ type: "m", b: BMAP[e.button] ?? 0, p: true, x: e.offsetX, y: e.offsetY });
+  wsSend({ type: "m", b: BMAP[e.button] ?? 0, p: true, ...mapXY(e) });
 }
 function onMouseUp(e: MouseEvent) {
   e.preventDefault();
-  wsSend({ type: "m", b: BMAP[e.button] ?? 0, p: false, x: e.offsetX, y: e.offsetY });
+  wsSend({ type: "m", b: BMAP[e.button] ?? 0, p: false, ...mapXY(e) });
 }
 function onWheel(e: WheelEvent) {
   e.preventDefault();
-  wsSend({ type: "m", wheel: true, dir: e.deltaY < 0 ? 1 : -1, x: e.offsetX, y: e.offsetY });
+  wsSend({ type: "m", wheel: true, dir: e.deltaY < 0 ? 1 : -1, ...mapXY(e) });
 }
 function onKey(e: KeyboardEvent, pressed: boolean) {
   e.preventDefault();
@@ -177,6 +205,18 @@ async function connect() {
     }
   }
 
+  // 記住本次連線憑證，供「重新調整大小」重連時複用（不再向使用者詢問）
+  sessionCfg = credId
+    ? { credential_id: credId }
+    : { username: form.username.trim(), password: form.password, domain: form.domain.trim() || undefined };
+  form.password = "";  // UI 不留明文（sessionCfg 已持有副本供重連）
+  await nextTick();
+  const [w, h] = resolveSize();   // 在 nextTick 後量測容器（auto 才能對齊實際可用空間）
+  await startSession(w, h);
+}
+
+// 開一條 RDP session（取 ticket → 開 WS → 送 config）。connect 與 reconnectFit 共用。
+async function startSession(w: number, h: number) {
   let ticket;
   try {
     ticket = await requestRdpTicket(props.addressId);
@@ -185,30 +225,17 @@ async function connect() {
     errorMsg.value = e?.response?.data?.detail || t("rdp.err_ticket");
     return;
   }
-
   await nextTick();
   if (!canvasEl.value) { phase.value = "error"; errorMsg.value = t("rdp.err_ticket"); return; }
-  const [w, h] = resolveSize();   // 在 nextTick 後量測容器（auto 才能對齊實際可用空間）
-  canvasEl.value.width = w;
-  canvasEl.value.height = h;
+  canvasEl.value.width = w; canvasEl.value.height = h;
+  srvW = w; srvH = h;
   ctx = canvasEl.value.getContext("2d");
-
+  nextTick(() => {
+    applyScale();
+    if (!ro && canvasBoxEl.value) { ro = new ResizeObserver(() => applyScale()); ro.observe(canvasBoxEl.value); }
+  });
   ws = new WebSocket(buildRdpWsUrl(ticket.ws_path, ticket.ticket));
-  ws.onopen = () => {
-    if (credId) {
-      wsSend({ type: "config", credential_id: credId, width: w, height: h });
-    } else {
-      wsSend({
-        type: "config",
-        username: form.username.trim(),
-        password: form.password,
-        domain: form.domain.trim() || undefined,
-        width: w, height: h,
-      });
-    }
-    form.password = "";  // 送出即清空
-    startHeartbeat();
-  };
+  ws.onopen = () => { wsSend({ type: "config", ...(sessionCfg || {}), width: w, height: h }); startHeartbeat(); };
   ws.onmessage = (ev) => {
     lastRecv = Date.now();
     let payload: any;
@@ -238,6 +265,20 @@ async function connect() {
       errorMsg.value = t("rdp.err_ws");
     }
   };
+}
+
+// 「重新調整大小」：以目前視窗大小重新連線（aardwolf 無法連線中熱改解析度 → 重建 session 取得原生清晰畫面）
+async function reconnectFit() {
+  if (!sessionCfg) return;
+  phase.value = "connecting";
+  stopHeartbeat();
+  const old = ws; ws = null;
+  if (old) { old.onclose = null; old.onmessage = null; old.onerror = null; try { old.close(); } catch { /* noop */ } }
+  await nextTick();
+  const box = canvasBoxEl.value;
+  const w = Math.max(640, Math.min(2560, Math.floor(box?.clientWidth || (window.innerWidth - 24))));
+  const h = Math.max(480, Math.min(2560, Math.floor(box?.clientHeight || (window.innerHeight - 80))));
+  await startSession(w, h);
 }
 
 function disconnect() {
@@ -334,10 +375,22 @@ onBeforeUnmount(teardown);
           <span>{{ t(`rdp.state_${phase}`) }}</span>
           <span class="rdp-ip">{{ ip }}</span>
           <n-tag v-if="hostname" size="small" :bordered="false" round>{{ hostname }}</n-tag>
+          <span class="conn-proto conn-proto--rdp">RDP</span>
           <n-tag v-if="deviceName" size="small" type="info" :bordered="false" round>{{ deviceName }}</n-tag>
           <n-tag size="small" type="warning" :bordered="false" round>{{ t("rdp.beta") }}</n-tag>
         </span>
-        <n-space :size="8" align="center">
+        <n-space :size="6" align="center">
+          <n-dropdown v-if="phase === 'connected'" trigger="click" :options="sendKeysMenu"
+                      size="small" @select="onSendKey">
+            <n-button size="tiny">
+              <template #icon><n-icon :component="KeyIcon" /></template>
+              {{ t("rdp.send_keys") }}<n-icon :component="ChevronDownIcon" style="margin-left:2px" />
+            </n-button>
+          </n-dropdown>
+          <!-- 重新調整大小：以目前視窗大小重連，取得原生清晰畫面（RDP 無法連線中熱改解析度） -->
+          <n-button v-if="phase === 'connected'" size="tiny" @click="reconnectFit">
+            <template #icon><n-icon :component="ExpandIcon" /></template>{{ t("rdp.refit") }}
+          </n-button>
           <n-button v-if="phase === 'connected'" size="tiny" type="error" ghost @click="disconnect">
             <template #icon><n-icon :component="CancelIcon" /></template>{{ t("rdp.disconnect") }}
           </n-button>
@@ -349,7 +402,8 @@ onBeforeUnmount(teardown);
       <n-alert v-if="phase === 'error'" type="error" :show-icon="true" style="margin:8px 0">
         {{ errorMsg }}
       </n-alert>
-      <div ref="canvasBoxEl" class="rdp-canvas-box" :class="{ 'rdp-full': fullHeight }">
+      <div ref="canvasBoxEl" class="rdp-canvas-box"
+           :class="{ 'rdp-full': fullHeight, 'rdp-fit': scaleMode === 'fit', 'rdp-native': scaleMode !== 'fit' }">
         <canvas ref="canvasEl" class="rdp-canvas" tabindex="0"
                 @mousemove="onMouseMove" @mousedown="onMouseDown" @mouseup="onMouseUp"
                 @wheel.prevent="onWheel" @contextmenu.prevent
@@ -383,9 +437,15 @@ onBeforeUnmount(teardown);
   70%  { box-shadow: 0 0 0 6px rgba(24, 160, 88, 0); }
   100% { box-shadow: 0 0 0 0 rgba(24, 160, 88, 0); }
 }
-.rdp-canvas-box { background: #000; padding: 0; border-radius: 8px; border: 1px solid #2b2b30;
-  box-shadow: 0 1px 3px rgba(0,0,0,.18); overflow: auto; display: inline-block; max-width: 100%; }
+.rdp-canvas-box { background: #000; padding: 0; border-radius: 10px; border: 1px solid #2b2b30;
+  box-shadow: 0 10px 30px rgba(0,0,0,.30), 0 3px 10px rgba(0,0,0,.20); overflow: auto; display: inline-block; max-width: 100%; }
+/* 協定標籤（主機名稱右邊）：RDP / VNC / SSH */
+.conn-proto { font-weight: 700; font-size: 11px; letter-spacing: .4px; line-height: 1;
+  padding: 2px 7px; border-radius: 999px; }
+.conn-proto--rdp { color: #2080f0; background: rgba(32,128,240,.16); }
 .rdp-canvas-box.rdp-full { flex: 1; min-height: 0; display: block; }
+.rdp-canvas-box.rdp-fit { overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.rdp-canvas-box.rdp-native { overflow: auto; }
 .rdp-canvas { display: block; outline: none; background: #000; }
 /* 卡片標題 icon+文字垂直置中 */
 :deep(.n-card > .n-card-header) { display: flex; align-items: center; padding-top: 12px; padding-bottom: 12px; }
