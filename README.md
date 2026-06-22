@@ -1,5 +1,5 @@
-# jt-ipam v0.4.210
->>>>>>> c5fbea8 (feat(ssh): connections page, saved per-user credentials, live disconnect detection [v0.4.210])
+# jt-ipam v0.5.0
+>>>>>>> f48e9ea (feat(console): in-browser RDP & VNC connection management (Beta) [v0.5.0])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
@@ -29,8 +29,8 @@ Familiar to phpIPAM users so they are productive from day one, but built from sc
 - **Graylog** — exposes an IP→hostname/FQDN DSV lookup endpoint for Graylog's "DSV File from HTTP" data adapter
 - **Local AI** — natural-language queries and semantic search over LLM Server (data never leaves the host), plus an MCP server (stdio and Streamable HTTP transports) so external LLM clients can drive the IPAM; `gemma4:26b` works well in our testing
 
-Also built in: a **browser-based remote console** — an SSH terminal plus RDP and VNC desktops (RDP/VNC are **Beta**), in the browser — credentials are not stored by default, with an optional per-user **encrypted credential vault**, object-level RBAC, single-use ticket→WebSocket sessions and full audit (RDP/VNC use an optional dependency that is installed only when a prebuilt wheel is available, so the base install is unchanged), an **IP request approval workflow** (configurable multi-stage / parallel sign-off, with in-app + email notifications), **DNS record review** (find records with no matching IPAM address), a **scan agent** (ICMP/ARP/rDNS/NetBIOS/mDNS/OS probes), **central certificate storage & distribution** (upload a commercial / self-signed cert once; a pure-bash agent pulls it on a schedule and deploys it to nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and more, reloading the service — with encrypted private keys, expiry alerts and manual renew), **floor plans + rack U-diagrams** (half-U, front/rear, SVG/PNG/draw.io export), **cable tracing** (multi-hop), an IP change log with stale-IP reclaim, and a universal table column-picker + multi-format export.
->>>>>>> 1574147 (docs: clarify console credentials are not stored by default (optional per-user vault); add remote-console, IP-request & Graylog DSV to feature map)
+Also built in: a **browser-based remote console** — an SSH terminal plus RDP and VNC desktops (RDP/VNC are **Beta**), in the browser with a per-user **encrypted credential vault**, object-level RBAC, single-use ticket→WebSocket sessions and full audit (RDP/VNC use an optional dependency that is installed only when a prebuilt wheel is available, so the base install is unchanged), an **IP request approval workflow** (configurable multi-stage / parallel sign-off, with in-app + email notifications), **DNS record review** (find records with no matching IPAM address), a **scan agent** (ICMP/ARP/rDNS/NetBIOS/mDNS/OS probes), **central certificate storage & distribution** (upload a commercial / self-signed cert once; a pure-bash agent pulls it on a schedule and deploys it to nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and more, reloading the service — with encrypted private keys, expiry alerts and manual renew), **floor plans + rack U-diagrams** (half-U, front/rear, SVG/PNG/draw.io export), **cable tracing** (multi-hop), an IP change log with stale-IP reclaim, and a universal table column-picker + multi-format export.
+>>>>>>> f48e9ea (feat(console): in-browser RDP & VNC connection management (Beta) [v0.5.0])
 
 >>>>>>> c50c13d (feat(cert): self-signed renew, multi-host key detection, agent CLI flags [v0.4.163])
 ## Graylog log enrichment (DSV lookup)

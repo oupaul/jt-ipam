@@ -1,5 +1,5 @@
-# jt-ipam v0.4.210
->>>>>>> c5fbea8 (feat(ssh): connections page, saved per-user credentials, live disconnect detection [v0.4.210])
+# jt-ipam v0.5.0
+>>>>>>> f48e9ea (feat(console): in-browser RDP & VNC connection management (Beta) [v0.5.0])
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
@@ -29,8 +29,8 @@ phpIPAM 老使用者幾乎零學習成本；以現代技術全新打造（非基
 - **Graylog**：提供 IP→主機名稱/FQDN 的 DSV 對照表端點，供 Graylog「DSV File from HTTP」資料配接器抓取
 - **本地 AI**：LLM Server 自然語言查詢 + 語意搜尋（資料不外送），並提供 MCP server（stdio / Streamable HTTP）；實測搭配 `gemma4:26b` 效果良好
 
-也內建：**瀏覽器內遠端連線管理** —— SSH 終端機，外加 RDP、VNC 桌面（RDP/VNC 為 **Beta**），全部在瀏覽器內，連線帳密預設不儲存、可選用**個人加密憑證金庫**（by-user、AES-GCM），物件層級 RBAC、單次 ticket→WebSocket 連線與完整稽核（RDP/VNC 走選用相依，僅在有預編譯 wheel 時才安裝，不影響基礎安裝）、**IP 申請審核流程**（可設多關卡會簽 / 依序關卡，站內 + Email 通知）、**DNS 記錄檢視**（找出沒有對應 IPAM 的記錄）、**掃描代理**（ICMP/ARP/反解/NetBIOS/mDNS/OS 探測）、**憑證集中保管與派送**（商業 / 自簽憑證一次上傳，純 bash 代理依排程自動派送到 nginx/apache/caddy/haproxy/Proxmox VE·PMG·PBS/Zimbra…等服務並重載，私鑰加密保存、到期告警、可手動續簽）、**機房平面圖 + 機櫃 U 位圖**（含半 U / 正背面、SVG/PNG/draw.io 匯出）、**纜線追蹤**（多跳穿透）、IP 異動記錄與失聯 IP 回收、通用表格欄位選擇 + 多格式匯出。
->>>>>>> 1574147 (docs: clarify console credentials are not stored by default (optional per-user vault); add remote-console, IP-request & Graylog DSV to feature map)
+也內建：**瀏覽器內遠端連線管理** —— SSH 終端機，外加 RDP、VNC 桌面（RDP/VNC 為 **Beta**），全部在瀏覽器內，含**個人加密憑證金庫**、物件層級 RBAC、單次 ticket→WebSocket 連線與完整稽核（RDP/VNC 走選用相依，僅在有預編譯 wheel 時才安裝，不影響基礎安裝）、**IP 申請審核流程**（可設多關卡會簽 / 依序關卡，站內 + Email 通知）、**DNS 記錄檢視**（找出沒有對應 IPAM 的記錄）、**掃描代理**（ICMP/ARP/反解/NetBIOS/mDNS/OS 探測）、**憑證集中保管與派送**（商業 / 自簽憑證一次上傳，純 bash 代理依排程自動派送到 nginx/apache/caddy/haproxy/Proxmox VE·PMG·PBS/Zimbra…等服務並重載，私鑰加密保存、到期告警、可手動續簽）、**機房平面圖 + 機櫃 U 位圖**（含半 U / 正背面、SVG/PNG/draw.io 匯出）、**纜線追蹤**（多跳穿透）、IP 異動記錄與失聯 IP 回收、通用表格欄位選擇 + 多格式匯出。
+>>>>>>> f48e9ea (feat(console): in-browser RDP & VNC connection management (Beta) [v0.5.0])
 
 >>>>>>> c50c13d (feat(cert): self-signed renew, multi-host key detection, agent CLI flags [v0.4.163])
 ## Graylog 記錄補實（DSV 對照表）
