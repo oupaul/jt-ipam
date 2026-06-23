@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import smtplib
+import ssl
 from email.message import EmailMessage
 
 from app.core.config import get_settings
@@ -96,16 +97,19 @@ def _send_sync_cfg(cfg: dict, msg: EmailMessage) -> None:
         raise EmailNotConfigured("SMTP host not configured")
     port = int(cfg.get("smtp_port") or 587)
     tls = cfg.get("smtp_tls") or "starttls"
-    timeout = 15.0
+    # smtp_ssl_verify=False：允許自簽或憑證鏈不完整的 mail server（內部 / 自架環境）
+    ssl_verify = cfg.get("smtp_ssl_verify", True)
+    ctx = ssl.create_default_context() if ssl_verify else ssl._create_unverified_context()
+    timeout = 60.0
     try:
         if tls == "tls":
-            client = smtplib.SMTP_SSL(host, port, timeout=timeout)
+            client = smtplib.SMTP_SSL(host, port, context=ctx, timeout=timeout)
         else:
             client = smtplib.SMTP(host, port, timeout=timeout)  # type: ignore[assignment]
         try:
             client.ehlo()
             if tls == "starttls":
-                client.starttls()
+                client.starttls(context=ctx)
                 client.ehlo()
             if cfg.get("smtp_username") and cfg.get("smtp_password"):
                 client.login(cfg["smtp_username"], cfg["smtp_password"])

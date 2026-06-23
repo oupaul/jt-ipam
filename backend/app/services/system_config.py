@@ -619,6 +619,7 @@ def _default_notify() -> dict[str, Any]:
         "email_enabled": False,
         "smtp_host": None, "smtp_port": 587, "smtp_tls": "starttls",  # none/starttls/tls
         "smtp_username": None, "smtp_password_enc": None, "smtp_from": None,
+        "smtp_ssl_verify": True,
     }
 
 
@@ -632,7 +633,7 @@ async def get_notification_channels(session: AsyncSession) -> dict[str, Any]:
     row = await session.get(SystemSetting, NOTIFY_CH_KEY)
     if row and isinstance(row.value, dict):
         v = row.value
-        for k in ("email_enabled",):
+        for k in ("email_enabled", "smtp_ssl_verify"):
             if isinstance(v.get(k), bool):
                 cfg[k] = v[k]
         if isinstance(v.get("smtp_port"), int):
@@ -656,7 +657,7 @@ async def set_notification_channels(
         row = SystemSetting(key=NOTIFY_CH_KEY, value={}, updated_by=updated_by_user_id)
         session.add(row)
     val = dict(row.value or {})
-    for k in ("email_enabled", "smtp_host", "smtp_port", "smtp_tls", "smtp_username", "smtp_from"):
+    for k in ("email_enabled", "smtp_ssl_verify", "smtp_host", "smtp_port", "smtp_tls", "smtp_username", "smtp_from"):
         if k in data:
             val[k] = data[k]
     # 密碼：給了非空字串才更新（空字串/未給 = 保留原本）；明確傳 null/"" 清除

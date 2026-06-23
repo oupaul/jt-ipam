@@ -2307,6 +2307,8 @@
     "test_sent": "Test email sent",
     "no_host": "Enter the SMTP host first (no need to enable — you can send a test right away).",
     "send_failed": "Send failed: {msg}",
+    "ssl_verify": "Verify SSL certificate",
+    "ssl_verify_warning": "Certificate verification disabled. Connection is not protected against MITM attacks. Only use this for self-hosted/internal mail servers with incomplete certificate chains.",
     "other_title": "Other channels",
     "coming_soon": "In development"
   },

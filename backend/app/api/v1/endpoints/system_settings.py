@@ -891,6 +891,7 @@ class NotificationChannelsOut(StrictModel):
     smtp_host: str | None = None
     smtp_port: int = 587
     smtp_tls: str = "starttls"           # none / starttls / tls
+    smtp_ssl_verify: bool = True         # False = 跳過憑證驗證（自簽 / 鏈不完整的 mail server）
     smtp_username: str | None = None
     smtp_from: str | None = None
     smtp_password_set: bool = False      # 是否已存密碼（不回傳明文）
@@ -903,6 +904,7 @@ class NotificationChannelsIn(StrictModel):
     smtp_host: str | None = None
     smtp_port: int | None = Field(default=None, ge=1, le=65535)
     smtp_tls: str | None = None
+    smtp_ssl_verify: bool | None = None
     smtp_username: str | None = None
     smtp_from: str | None = None
     smtp_password: str | None = None     # 給非空才更新；"" 清除；不給保留
@@ -919,6 +921,7 @@ def _channels_payload(cfg: dict[str, Any]) -> NotificationChannelsOut:
         smtp_host=cfg.get("smtp_host"),
         smtp_port=int(cfg.get("smtp_port") or 587),
         smtp_tls=cfg.get("smtp_tls") or "starttls",
+        smtp_ssl_verify=bool(cfg.get("smtp_ssl_verify", True)),
         smtp_username=cfg.get("smtp_username"),
         smtp_from=cfg.get("smtp_from"),
         smtp_password_set=bool(cfg.get("smtp_password_enc")),

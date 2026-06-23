@@ -52,6 +52,7 @@ async function save() {
       smtp_host: c.smtp_host,
       smtp_port: c.smtp_port,
       smtp_tls: c.smtp_tls,
+      smtp_ssl_verify: c.smtp_ssl_verify,
       smtp_username: c.smtp_username,
       smtp_from: c.smtp_from,
     };
@@ -136,6 +137,17 @@ onMounted(load);
         </n-form-item>
         <n-form-item :label="t('notify_ch.from')" label-placement="top">
           <n-input v-model:value="cfg.smtp_from" placeholder="jt-ipam@example.com" />
+        </n-form-item>
+        <n-form-item label-placement="left">
+          <template #label>
+            <span>{{ t('notify_ch.ssl_verify') }}</span>
+          </template>
+          <n-space vertical :size="4">
+            <n-switch v-model:value="cfg.smtp_ssl_verify" />
+            <n-alert v-if="!cfg.smtp_ssl_verify" type="warning" :show-icon="true" style="font-size:12px; padding: 4px 8px">
+              {{ t('notify_ch.ssl_verify_warning') }}
+            </n-alert>
+          </n-space>
         </n-form-item>
 
         <n-space align="center">

@@ -7,6 +7,7 @@ export interface NotificationChannels {
   smtp_host: string | null;
   smtp_port: number;
   smtp_tls: "none" | "starttls" | "tls";
+  smtp_ssl_verify: boolean;
   smtp_username: string | null;
   smtp_from: string | null;
   smtp_password_set: boolean;
@@ -18,6 +19,7 @@ export interface NotificationChannelsUpdate {
   smtp_host?: string | null;
   smtp_port?: number;
   smtp_tls?: string;
+  smtp_ssl_verify?: boolean;
   smtp_username?: string | null;
   smtp_from?: string | null;
   smtp_password?: string | null;   // 給非空才更新；"" 清除；不給保留
@@ -38,5 +40,5 @@ export async function setNotificationChannels(
 }
 
 export async function sendTestEmail(to: string): Promise<void> {
-  await apiClient.post("/api/v1/system/notification-channels/test-email", { to });
+  await apiClient.post("/api/v1/system/notification-channels/test-email", { to }, { timeout: 60_000 });
 }
