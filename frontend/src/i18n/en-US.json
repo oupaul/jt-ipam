@@ -330,6 +330,7 @@
     "close": "Close",
     "copied": "Copied",
     "copied_clipboard": "Copied to clipboard",
+    "copy": "Copy",
     "deleted": "Deleted",
     "back": "Back",
     "bulk_delete": "Bulk delete",

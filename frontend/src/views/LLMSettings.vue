@@ -15,7 +15,7 @@ import {
   type LLMConfig, type LLMConfigPatch, type OllamaModel,
 } from "@/api/system";
 import { listMcpTools, type McpTool } from "@/api/chat";
-import { SettingsIcon, RefreshIcon, ToolsIcon, KeyIcon } from "@/icons";
+import { SettingsIcon, RefreshIcon, ToolsIcon, KeyIcon, CopyIcon, EyeIcon } from "@/icons";
 
 const { t } = useI18n();
 const msg = useMessage();
@@ -231,7 +231,9 @@ onMounted(() => { void load(); void loadTools(); });
         <div class="mcp-info-row">
           <span class="mcp-k">{{ t("llm_settings.mcp_url") }}</span>
           <code class="mcp-v">{{ mcpUrl }}</code>
-          <n-button size="tiny" @click="copyText(mcpUrl)">{{ t("common.copy") }}</n-button>
+          <n-button size="tiny" @click="copyText(mcpUrl)">
+            <template #icon><n-icon :component="CopyIcon" /></template>{{ t("common.copy") }}
+          </n-button>
         </div>
         <div class="mcp-info-row">
           <span class="mcp-k">{{ t("llm_settings.mcp_transport") }}</span>
@@ -245,36 +247,36 @@ onMounted(() => { void load(); void loadTools(); });
         </div>
       </div>
 
-      <!-- API 金鑰（唯讀範圍） -->
+      <!-- API 金鑰（唯讀範圍）：標籤獨立一行，下方為金鑰值與操作 -->
       <div class="mcp-key">
-        <div class="row" style="align-items:flex-start">
-          <label>{{ t("llm_settings.mcp_key") }}</label>
-          <div style="flex:1;min-width:0">
-            <n-space align="center" :size="8" :wrap-item="false" style="flex-wrap:wrap">
-              <code v-if="mcpKey" class="mcp-keyval">{{ mcpKey }}</code>
-              <n-tag v-else-if="llm.mcp_api_key_set" size="small" :bordered="false">••••••••••••（{{ t("llm_settings.mcp_key_hidden") }}）</n-tag>
-              <n-tag v-else size="small" type="warning" :bordered="false">{{ t("llm_settings.mcp_key_none") }}</n-tag>
+        <label>{{ t("llm_settings.mcp_key") }}</label>
+        <n-space align="center" :size="8" :wrap-item="false" style="flex-wrap:wrap">
+          <code v-if="mcpKey" class="mcp-keyval">{{ mcpKey }}</code>
+          <n-tag v-else-if="llm.mcp_api_key_set" size="small" :bordered="false">
+            ••••••••••••（{{ t("llm_settings.mcp_key_hidden") }}）
+          </n-tag>
+          <n-tag v-else size="small" type="warning" :bordered="false">{{ t("llm_settings.mcp_key_none") }}</n-tag>
 
-              <n-button v-if="llm.mcp_api_key_set && !mcpKey" size="small" :loading="mcpKeyBusy" @click="doRevealKey">
-                {{ t("llm_settings.mcp_key_reveal") }}
-              </n-button>
-              <n-button v-if="mcpKey" size="small" @click="copyText(mcpKey)">{{ t("common.copy") }}</n-button>
+          <n-button v-if="llm.mcp_api_key_set && !mcpKey" size="small" :loading="mcpKeyBusy" @click="doRevealKey">
+            <template #icon><n-icon :component="EyeIcon" /></template>{{ t("llm_settings.mcp_key_reveal") }}
+          </n-button>
+          <n-button v-if="mcpKey" size="small" @click="copyText(mcpKey)">
+            <template #icon><n-icon :component="CopyIcon" /></template>{{ t("common.copy") }}
+          </n-button>
 
-              <n-popconfirm v-if="llm.mcp_api_key_set" @positive-click="doRotateKey">
-                <template #trigger>
-                  <n-button size="small" type="warning" ghost :loading="mcpKeyBusy">
-                    {{ t("llm_settings.mcp_key_rotate") }}
-                  </n-button>
-                </template>
-                {{ t("llm_settings.mcp_key_rotate_confirm") }}
-              </n-popconfirm>
-              <n-button v-else size="small" type="primary" :loading="mcpKeyBusy" @click="doRotateKey">
-                {{ t("llm_settings.mcp_key_generate") }}
+          <n-popconfirm v-if="llm.mcp_api_key_set" @positive-click="doRotateKey">
+            <template #trigger>
+              <n-button size="small" type="warning" ghost :loading="mcpKeyBusy">
+                <template #icon><n-icon :component="RefreshIcon" /></template>{{ t("llm_settings.mcp_key_rotate") }}
               </n-button>
-            </n-space>
-            <p class="hint">{{ t("llm_settings.mcp_key_hint") }}</p>
-          </div>
-        </div>
+            </template>
+            {{ t("llm_settings.mcp_key_rotate_confirm") }}
+          </n-popconfirm>
+          <n-button v-else size="small" type="primary" :loading="mcpKeyBusy" @click="doRotateKey">
+            <template #icon><n-icon :component="KeyIcon" /></template>{{ t("llm_settings.mcp_key_generate") }}
+          </n-button>
+        </n-space>
+        <p class="hint">{{ t("llm_settings.mcp_key_hint") }}</p>
       </div>
     </template>
   </n-card>
