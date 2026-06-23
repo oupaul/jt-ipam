@@ -306,6 +306,7 @@ function fromAddress(a: IPAddress): FormState {
     ssh_enabled: !!a.ssh_enabled,
     rdp_enabled: !!a.rdp_enabled,
     vnc_enabled: !!a.vnc_enabled,
+    ip: a.ip ?? "",
   };
 }
 
