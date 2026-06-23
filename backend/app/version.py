@@ -4,4 +4,3 @@
 """
 
 __version__ = "0.5.0"
->>>>>>> f48e9ea (feat(console): in-browser RDP & VNC connection management (Beta) [v0.5.0])

@@ -231,7 +231,6 @@ function onVncMenu(key: string) {
 const isCreate = computed(() => !props.address && !!props.createContext);
 
 interface FormState {
-  ip: string;               // create 模式下讓使用者填入 IP；edit 模式不使用
   hostname: string;
   description: string;
   state: string;
@@ -246,13 +245,13 @@ interface FormState {
   ssh_enabled: boolean;
   rdp_enabled: boolean;
   vnc_enabled: boolean;
+  ip: string;
 }
 
 const form = ref<FormState>(emptyForm());
 
 function emptyForm(): FormState {
   return {
-    ip: "",
     hostname: "", description: "", state: "active", mac: "",
     owner: "", switch_port: "",
     ptr_ignore: false, note: "",
@@ -262,6 +261,7 @@ function emptyForm(): FormState {
     ssh_enabled: false,
     rdp_enabled: false,
     vnc_enabled: false,
+    ip: "",
   };
 }
 
@@ -292,7 +292,6 @@ async function linkMatchingDevice() {
 
 function fromAddress(a: IPAddress): FormState {
   return {
-    ip: (a.ip ?? "").split("/")[0],
     hostname: a.hostname ?? "",
     description: a.description ?? "",
     state: a.state ?? "active",
@@ -324,10 +323,7 @@ watch(
     // create 模式自動進 edit form；既有 IP 進 view
     editMode.value = isCreate.value;
     form.value = props.address ? fromAddress(props.address) : emptyForm();
-    // create 模式：從 createContext 帶入預填 IP（點空格子時已有值；點「新增」按鈕時為空讓使用者填）
-    if (isCreate.value && props.createContext) {
-      form.value.ip = props.createContext.ip;
-    }
+    if (isCreate.value && props.createContext?.ip) form.value.ip = props.createContext.ip;
     // 略過探測初始化：優先用 excluded_probes；空但舊 exclude_from_ping=true → 回填 ['icmp']
     const a = props.address;
     if (a) {
@@ -469,7 +465,7 @@ async function save() {
     if (isCreate.value && props.createContext) {
       const created = await createAddress({
         subnet_id: props.createContext.subnet_id,
-        ip: form.value.ip.trim(),
+        ip: form.value.ip.trim() || props.createContext.ip,
         hostname: form.value.hostname.trim() || null,
         description: form.value.description.trim() || null,
         state: form.value.state,
@@ -485,11 +481,7 @@ async function save() {
       emit("update:show", false);
       return;
     }
-    if (!props.address) {
-      console.warn("[IPModal] save() aborted: props.address is null");
-      msg.error("無法儲存：IP 資料遺失，請重新整理頁面");
-      return;
-    }
+    if (!props.address) return;
     const payload: IPAddressUpdate = {
       hostname: form.value.hostname.trim() || null,
       description: form.value.description.trim() || null,
@@ -507,13 +499,12 @@ async function save() {
       rdp_enabled: form.value.rdp_enabled,
       vnc_enabled: form.value.vnc_enabled,
     };
-    const updated = await updateAddress(props.address.id, payload);
+    const updated = await updateAddress(props.address?.id, payload);
     hostnameSourcesLoaded.value = false;  // 重新整理來源/有效 hostname
     msg.success(t("common.ok"));
     emit("saved", updated);
     editMode.value = false;
   } catch (e: any) {
-    console.error("[IPModal] save() error:", e);
     msg.error(e?.response?.data?.detail ?? t("errors.network"));
   } finally {
     saving.value = false;
@@ -618,10 +609,9 @@ async function remove() {
             <n-divider v-if="props.address?.ssh_available || props.address?.rdp_available || props.address?.vnc_available"
                        key="hx-conn-div" vertical />
             <n-button key="hx-edit" type="primary" size="small" @click="editMode = true">
->>>>>>> 4774191 (feat(ssh): in-page xterm.js SSH terminal for IP addresses [v0.4.208])
               <template #icon><n-icon><EditIcon /></n-icon></template>{{ t("common.edit") }}
             </n-button>
-            <n-popconfirm key="view-delete" @positive-click="remove">
+            <n-popconfirm key="hx-del-view" @positive-click="remove">
               <template #trigger>
                 <n-button type="error" ghost size="small" :loading="deleting">
                   <template #icon><n-icon><DeleteIcon /></n-icon></template>{{ t("common.delete") }}
@@ -629,14 +619,12 @@ async function remove() {
               </template>
               {{ t("common.confirm_delete") }}
             </n-popconfirm>
-<<<<<<< HEAD
-            <n-button key="view-back" size="small" @click="emit('back')">
+            <n-button key="hx-back" size="small" @click="emit('back')">
               <template #icon><n-icon><ArrowLeftIcon /></n-icon></template>{{ t("common.back") }}
             </n-button>
           </template>
           <template v-else>
-<<<<<<< HEAD
-            <n-popconfirm key="edit-delete" @positive-click="remove">
+            <n-popconfirm key="hx-del-edit" @positive-click="remove">
               <template #trigger>
                 <n-button type="error" ghost size="small" :loading="deleting">
                   <template #icon><n-icon><DeleteIcon /></n-icon></template>{{ t("common.delete") }}
@@ -644,11 +632,10 @@ async function remove() {
               </template>
               {{ t("common.confirm_delete") }}
             </n-popconfirm>
-<<<<<<< HEAD
-            <n-button key="edit-cancel" size="small" @click="close">
+            <n-button key="hx-cancel" size="small" @click="close">
               <template #icon><n-icon><CancelIcon /></n-icon></template>{{ t("common.cancel") }}
             </n-button>
-            <n-button key="edit-save" type="success" size="small" :loading="saving" @click="save">
+            <n-button key="hx-save" type="success" size="small" :loading="saving" @click="save">
               <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
             </n-button>
           </template>
