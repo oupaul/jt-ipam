@@ -7,7 +7,7 @@ import {
 } from "naive-ui";
 import { SettingsIcon, SaveIcon } from "@/icons";
 import {
-  getNotificationChannels, setNotificationChannels, sendTestEmail,
+  getNotificationChannels, setNotificationChannels, sendTestEmail, sendTestTeams,
   type NotificationChannels,
 } from "@/api/notify_channels";
 
@@ -17,6 +17,8 @@ const msg = useMessage();
 const loading = ref(false);
 const saving = ref(false);
 const testing = ref(false);
+const savingTeams = ref(false);
+const testingTeams = ref(false);
 const cfg = ref<NotificationChannels | null>(null);
 const pw = ref("");          // 留空＝不變更
 const testTo = ref("");
@@ -28,7 +30,7 @@ const tlsOptions = [
 ];
 
 const otherChannels = computed(() =>
-  (cfg.value?.channels ?? []).filter((c) => c.key !== "email"),
+  (cfg.value?.channels ?? []).filter((c) => c.key !== "email" && c.key !== "teams"),
 );
 
 async function load() {
@@ -85,6 +87,43 @@ async function test() {
     }
   } finally {
     testing.value = false;
+  }
+}
+
+async function saveTeams() {
+  if (!cfg.value) return;
+  savingTeams.value = true;
+  try {
+    const patch: any = {
+      teams_enabled: cfg.value.teams_enabled,
+      teams_webhook_url: cfg.value.teams_webhook_url,
+    };
+    cfg.value = await setNotificationChannels(patch);
+    msg.success(t("common.saved"));
+  } catch (e: any) {
+    msg.error(e?.response?.data?.detail ?? t("errors.network"));
+  } finally {
+    savingTeams.value = false;
+  }
+}
+
+async function testTeams() {
+  if (!cfg.value?.teams_webhook_url) { msg.warning(t("notify_ch.teams_no_webhook")); return; }
+  testingTeams.value = true;
+  try {
+    await sendTestTeams();
+    msg.success(t("notify_ch.teams_test_sent"));
+  } catch (e: any) {
+    const detail = e?.response?.data?.detail ?? "";
+    if (detail === "missing_teams_webhook") {
+      msg.error(t("notify_ch.teams_no_webhook"));
+    } else if (typeof detail === "string" && detail.startsWith("Teams send failed")) {
+      msg.error(t("notify_ch.send_failed", { msg: detail.replace("Teams send failed: ", "") }));
+    } else {
+      msg.error(detail || t("errors.network"));
+    }
+  } finally {
+    testingTeams.value = false;
   }
 }
 
@@ -162,6 +201,35 @@ onMounted(load);
             <n-input v-model:value="testTo" :placeholder="t('notify_ch.test_to_ph')" style="width: 280px" />
             <n-button :loading="testing" @click="test">{{ t("notify_ch.test_send") }}</n-button>
           </n-space>
+        </n-form-item>
+      </n-space>
+    </n-card>
+
+    <!-- Microsoft Teams（Power Automate Webhook）-->
+    <n-card v-if="cfg" title="Microsoft Teams">
+      <n-space vertical :size="14" style="max-width: 640px">
+        <n-alert type="info" :show-icon="true" style="font-size:13px">
+          {{ t("notify_ch.teams_intro") }}
+        </n-alert>
+        <n-form-item :label="t('notify_ch.teams_enabled')" label-placement="left">
+          <n-switch v-model:value="cfg.teams_enabled" />
+        </n-form-item>
+        <n-form-item label="Webhook URL" label-placement="top">
+          <n-input
+            v-model:value="cfg.teams_webhook_url"
+            placeholder="https://prod-xx.westus.logic.azure.com:443/workflows/..."
+          />
+        </n-form-item>
+
+        <n-space align="center">
+          <n-button type="success" :loading="savingTeams" @click="saveTeams">
+            <template #icon><n-icon><SaveIcon /></n-icon></template>
+            {{ t("common.save") }}
+          </n-button>
+        </n-space>
+
+        <n-form-item :label="t('notify_ch.teams_test')" label-placement="top">
+          <n-button :loading="testingTeams" @click="testTeams">{{ t("notify_ch.test_send") }}</n-button>
         </n-form-item>
       </n-space>
     </n-card>

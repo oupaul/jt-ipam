@@ -11,6 +11,8 @@ export interface NotificationChannels {
   smtp_username: string | null;
   smtp_from: string | null;
   smtp_password_set: boolean;
+  teams_enabled: boolean;
+  teams_webhook_url: string | null;
   channels: NotifyChannelInfo[];
 }
 
@@ -23,6 +25,8 @@ export interface NotificationChannelsUpdate {
   smtp_username?: string | null;
   smtp_from?: string | null;
   smtp_password?: string | null;   // 給非空才更新；"" 清除；不給保留
+  teams_enabled?: boolean;
+  teams_webhook_url?: string | null;
 }
 
 export async function getNotificationChannels(): Promise<NotificationChannels> {
@@ -41,4 +45,8 @@ export async function setNotificationChannels(
 
 export async function sendTestEmail(to: string): Promise<void> {
   await apiClient.post("/api/v1/system/notification-channels/test-email", { to }, { timeout: 60_000 });
+}
+
+export async function sendTestTeams(): Promise<void> {
+  await apiClient.post("/api/v1/system/notification-channels/test-teams", {}, { timeout: 15_000 });
 }

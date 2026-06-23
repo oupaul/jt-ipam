@@ -2309,6 +2309,11 @@
     "send_failed": "Send failed: {msg}",
     "ssl_verify": "Verify SSL certificate",
     "ssl_verify_warning": "Certificate verification disabled. Connection is not protected against MITM attacks. Only use this for self-hosted/internal mail servers with incomplete certificate chains.",
+    "teams_enabled": "Enable Teams notifications",
+    "teams_intro": "Send notifications via a Power Automate HTTP Request trigger. Create a Flow with the \"When a HTTP request is received\" trigger in Power Automate, then paste the generated URL below.",
+    "teams_test": "Send test notification",
+    "teams_no_webhook": "Please enter the Webhook URL first",
+    "teams_test_sent": "Teams test notification sent",
     "other_title": "Other channels",
     "coming_soon": "In development"
   },

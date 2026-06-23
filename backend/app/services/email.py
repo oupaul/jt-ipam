@@ -137,3 +137,36 @@ async def send_email_via_config(
     if body_html:
         msg.add_alternative(body_html, subtype="html")
     await asyncio.to_thread(_send_sync_cfg, cfg, msg)
+
+
+# ─────────────────── Teams 通知（Power Automate HTTP Request trigger）───────────────────
+
+class TeamsNotConfigured(RuntimeError):
+    pass
+
+
+class TeamsSendError(RuntimeError):
+    pass
+
+
+async def send_teams_notification(
+    cfg: dict, *, title: str, text: str, level: str = "info",
+) -> None:
+    """POST 到 Power Automate HTTP Request trigger，送 Teams 通知。"""
+    if not cfg.get("teams_enabled"):
+        raise TeamsNotConfigured("Teams channel disabled")
+    url = cfg.get("teams_webhook_url")
+    if not url:
+        raise TeamsNotConfigured("Teams webhook URL not configured")
+    from app.core.safe_http import UnsafeOutboundURL, safe_request
+    try:
+        resp = await safe_request(
+            "POST", url,
+            json={"title": title, "text": text, "level": level},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+    except UnsafeOutboundURL as exc:
+        raise TeamsSendError(f"Unsafe URL: {exc}") from exc
+    except Exception as exc:
+        raise TeamsSendError(str(exc)) from exc

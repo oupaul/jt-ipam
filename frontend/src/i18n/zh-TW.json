@@ -2307,6 +2307,11 @@
     "send_failed": "寄信失敗：{msg}",
     "ssl_verify": "驗證 SSL 憑證",
     "ssl_verify_warning": "已停用憑證驗證，連線不受中間人攻擊保護。建議僅在自架/內部 Mail Server 且憑證鏈不完整時使用。",
+    "teams_enabled": "啟用 Teams 通知",
+    "teams_intro": "透過 Power Automate HTTP Request trigger 發送通知。請先在 Power Automate 建立含「當收到 HTTP 要求時」觸發器的 Flow，再將產生的 URL 填入下方。",
+    "teams_test": "發送測試通知",
+    "teams_no_webhook": "請先填入 Webhook URL",
+    "teams_test_sent": "Teams 測試通知已送出",
     "other_title": "其他通知管道",
     "coming_soon": "開發中"
   },

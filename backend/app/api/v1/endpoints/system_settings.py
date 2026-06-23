@@ -895,6 +895,8 @@ class NotificationChannelsOut(StrictModel):
     smtp_username: str | None = None
     smtp_from: str | None = None
     smtp_password_set: bool = False      # 是否已存密碼（不回傳明文）
+    teams_enabled: bool = False
+    teams_webhook_url: str | None = None
     # 規劃中的管道：available=False 前端反灰顯示「開發中」
     channels: list[dict[str, Any]] = []
 
@@ -908,6 +910,8 @@ class NotificationChannelsIn(StrictModel):
     smtp_username: str | None = None
     smtp_from: str | None = None
     smtp_password: str | None = None     # 給非空才更新；"" 清除；不給保留
+    teams_enabled: bool | None = None
+    teams_webhook_url: str | None = None
 
 
 class TestEmailIn(StrictModel):
@@ -925,6 +929,8 @@ def _channels_payload(cfg: dict[str, Any]) -> NotificationChannelsOut:
         smtp_username=cfg.get("smtp_username"),
         smtp_from=cfg.get("smtp_from"),
         smtp_password_set=bool(cfg.get("smtp_password_enc")),
+        teams_enabled=bool(cfg.get("teams_enabled")),
+        teams_webhook_url=cfg.get("teams_webhook_url"),
         channels=[{"key": k, "available": avail} for k, avail in NOTIFY_CHANNELS],
     )
 
@@ -988,4 +994,31 @@ async def test_notification_email(
         raise HTTPException(400, detail="missing_smtp_host") from None
     except EmailSendError as exc:
         raise HTTPException(502, detail=f"SMTP send failed: {exc}") from exc
+    return {"ok": True}
+
+
+@router.post("/notification-channels/test-teams")
+async def test_notification_teams(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    from fastapi import HTTPException
+
+    from app.services.email import TeamsNotConfigured, TeamsSendError, send_teams_notification
+    from app.services.system_config import get_notification_channels
+    cfg = await get_notification_channels(session)
+    cfg = {**cfg, "teams_enabled": True}
+    if not cfg.get("teams_webhook_url"):
+        raise HTTPException(400, detail="missing_teams_webhook")
+    try:
+        await send_teams_notification(
+            cfg,
+            title="[jt-ipam] 測試通知",
+            text="這是來自 jt-ipam 的測試通知。若你在 Teams 頻道中收到此訊息，代表 Teams 通知設定正確。",
+            level="info",
+        )
+    except TeamsNotConfigured:
+        raise HTTPException(400, detail="missing_teams_webhook") from None
+    except TeamsSendError as exc:
+        raise HTTPException(502, detail=f"Teams send failed: {exc}") from exc
     return {"ok": True}
