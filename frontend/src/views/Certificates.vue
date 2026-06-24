@@ -96,7 +96,7 @@ const SUPPORTED_OS = [
 const PROFILE_OPTIONS = [
   "nginx", "apache", "caddy", "traefik", "lighttpd", "haproxy", "zoraxy", "jetty",
   "postfix", "dovecot", "exim4", "mosquitto", "cockpit", "webmin", "wazuh-dashboard",
-  "jitsi", "coturn", "pve", "pmg", "pbs", "pdm", "zimbra",
+  "pve", "pmg", "pbs", "pdm", "zimbra",
 ];
 const dryRunCmd = `${SUDO} bash /usr/local/lib/jt-ipam-cert-agent/jt_ipam_cert_agent.sh --config /etc/jt-ipam-cert-agent/config --dry-run`;
 const runCmd = `${SUDO} bash /usr/local/lib/jt-ipam-cert-agent/jt_ipam_cert_agent.sh --config /etc/jt-ipam-cert-agent/config`;

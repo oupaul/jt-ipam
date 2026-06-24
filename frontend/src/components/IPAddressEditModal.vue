@@ -245,7 +245,6 @@ interface FormState {
   ssh_enabled: boolean;
   rdp_enabled: boolean;
   vnc_enabled: boolean;
-  ip: string;
 }
 
 const form = ref<FormState>(emptyForm());
@@ -261,7 +260,6 @@ function emptyForm(): FormState {
     ssh_enabled: false,
     rdp_enabled: false,
     vnc_enabled: false,
-    ip: "",
   };
 }
 
@@ -306,7 +304,6 @@ function fromAddress(a: IPAddress): FormState {
     ssh_enabled: !!a.ssh_enabled,
     rdp_enabled: !!a.rdp_enabled,
     vnc_enabled: !!a.vnc_enabled,
-    ip: a.ip ?? "",
   };
 }
 
@@ -324,7 +321,7 @@ watch(
     // create 模式自動進 edit form；既有 IP 進 view
     editMode.value = isCreate.value;
     form.value = props.address ? fromAddress(props.address) : emptyForm();
-    if (isCreate.value && props.createContext?.ip) form.value.ip = props.createContext.ip;
+    // create 模式 IP 由 createContext.ip 直接提供，不存在 form 中
     // 略過探測初始化：優先用 excluded_probes；空但舊 exclude_from_ping=true → 回填 ['icmp']
     const a = props.address;
     if (a) {
@@ -466,7 +463,7 @@ async function save() {
     if (isCreate.value && props.createContext) {
       const created = await createAddress({
         subnet_id: props.createContext.subnet_id,
-        ip: form.value.ip.trim() || props.createContext.ip,
+        ip: props.createContext.ip,
         hostname: form.value.hostname.trim() || null,
         description: form.value.description.trim() || null,
         state: form.value.state,
@@ -801,7 +798,7 @@ async function remove() {
         <n-form v-else label-placement="top">
           <!-- create 模式：IP 輸入框（edit 模式 IP 不可改，顯示在標題） -->
           <n-form-item v-if="isCreate" :label="t('addresses.ip')" style="margin-bottom: 4px">
-            <n-input v-model:value="form.ip" placeholder="192.168.1.100" />
+            <n-input :value="props.createContext?.ip" disabled placeholder="192.168.1.100" />
           </n-form-item>
           <n-space :size="12" :wrap-item="false" style="flex-wrap: wrap">
             <n-form-item :label="t('addresses.hostname')" style="flex: 1 1 300px">

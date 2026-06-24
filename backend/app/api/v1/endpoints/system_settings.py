@@ -478,6 +478,8 @@ class LLMConfigOut(StrictModel):
     chat_model: str
     timeout: float
     num_ctx: int | None = None
+    mcp_external_enabled: bool = False
+    mcp_api_key_set: bool = False        # 是否已產生對外 MCP 金鑰（不回明文）
 
 
 class LLMConfigPatch(StrictModel):
@@ -488,6 +490,18 @@ class LLMConfigPatch(StrictModel):
     timeout: Annotated[float | None, Field(ge=1.0, le=600.0)] = None
     # 0 / 空＝沿用模型/Ollama 預設；上限取寬鬆合理值（128k）
     num_ctx: Annotated[int | None, Field(ge=0, le=131072)] = None
+    mcp_external_enabled: bool | None = None
+
+
+def _llm_out(cfg: Any) -> LLMConfigOut:
+    return LLMConfigOut(
+        enabled=cfg.enabled, url=cfg.url,
+        embedding_model=cfg.embedding_model,
+        chat_model=cfg.chat_model, timeout=cfg.timeout,
+        num_ctx=cfg.num_ctx,
+        mcp_external_enabled=cfg.mcp_external_enabled,
+        mcp_api_key_set=bool(cfg.mcp_api_key),
+    )
 
 
 @router.get("/llm", response_model=LLMConfigOut)
@@ -495,12 +509,7 @@ async def get_llm(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> LLMConfigOut:
     cfg = await get_llm_config(session)
-    return LLMConfigOut(
-        enabled=cfg.enabled, url=cfg.url,
-        embedding_model=cfg.embedding_model,
-        chat_model=cfg.chat_model, timeout=cfg.timeout,
-        num_ctx=cfg.num_ctx,
-    )
+    return _llm_out(cfg)
 
 
 @router.patch("/llm", response_model=LLMConfigOut)
@@ -519,6 +528,7 @@ async def patch_llm(
         chat_model=changes.get("chat_model"),
         timeout=changes.get("timeout"),
         num_ctx=changes.get("num_ctx"),
+        mcp_external_enabled=changes.get("mcp_external_enabled"),
         updated_by_user_id=user.id,
     )
     await append_audit(
@@ -534,12 +544,39 @@ async def patch_llm(
     )
     await session.commit()
     cfg = await get_llm_config(session)
-    return LLMConfigOut(
-        enabled=cfg.enabled, url=cfg.url,
-        embedding_model=cfg.embedding_model,
-        chat_model=cfg.chat_model, timeout=cfg.timeout,
-        num_ctx=cfg.num_ctx,
+    return _llm_out(cfg)
+
+
+@router.get("/llm/mcp-key")
+async def reveal_mcp_key(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """檢視目前的對外 MCP 金鑰明文（管理員專用；尚未產生回 null）。"""
+    cfg = await get_llm_config(session)
+    return {"api_key": cfg.mcp_api_key}
+
+
+@router.post("/llm/mcp-key/rotate")
+async def rotate_mcp_key(
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """產生 / 更換對外 MCP 金鑰（唯讀），綁定目前管理員身份；回傳明文（僅此一次完整顯示）。"""
+    from app.services.system_config import rotate_mcp_api_key
+    key = await rotate_mcp_api_key(session, principal_user_id=user.id, updated_by_user_id=user.id)
+    await append_audit(
+        session,
+        actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system_setting", object_id=None,
+        action="update", diff={"changes": {"mcp_api_key": "rotated"}},
+        request_id=getattr(request.state, "request_id", None),
     )
+    await session.commit()
+    return {"api_key": key}
 
 
 @router.get("/llm/models")

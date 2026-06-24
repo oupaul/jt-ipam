@@ -1,8 +1,6 @@
-# jt-ipam v0.5.0
->>>>>>> f48e9ea (feat(console): in-browser RDP & VNC connection management (Beta) [v0.5.0])
+# jt-ipam v0.5.1
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
 [![Last commit](https://img.shields.io/github/last-commit/jasoncheng7115/jt-ipam)](https://github.com/jasoncheng7115/jt-ipam/commits/main)
 [![Stars](https://img.shields.io/github/stars/jasoncheng7115/jt-ipam?style=flat)](https://github.com/jasoncheng7115/jt-ipam/stargazers)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
@@ -29,10 +27,8 @@ Familiar to phpIPAM users so they are productive from day one, but built from sc
 - **Graylog** — exposes an IP→hostname/FQDN DSV lookup endpoint for Graylog's "DSV File from HTTP" data adapter
 - **Local AI** — natural-language queries and semantic search over LLM Server (data never leaves the host), plus an MCP server (stdio and Streamable HTTP transports) so external LLM clients can drive the IPAM; `gemma4:26b` works well in our testing
 
-Also built in: a **browser-based remote console** — an SSH terminal plus RDP and VNC desktops (RDP/VNC are **Beta**), in the browser with a per-user **encrypted credential vault**, object-level RBAC, single-use ticket→WebSocket sessions and full audit (RDP/VNC use an optional dependency that is installed only when a prebuilt wheel is available, so the base install is unchanged), an **IP request approval workflow** (configurable multi-stage / parallel sign-off, with in-app + email notifications), **DNS record review** (find records with no matching IPAM address), a **scan agent** (ICMP/ARP/rDNS/NetBIOS/mDNS/OS probes), **central certificate storage & distribution** (upload a commercial / self-signed cert once; a pure-bash agent pulls it on a schedule and deploys it to nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and more, reloading the service — with encrypted private keys, expiry alerts and manual renew), **floor plans + rack U-diagrams** (half-U, front/rear, SVG/PNG/draw.io export), **cable tracing** (multi-hop), an IP change log with stale-IP reclaim, and a universal table column-picker + multi-format export.
->>>>>>> f48e9ea (feat(console): in-browser RDP & VNC connection management (Beta) [v0.5.0])
+Also built in: a **browser-based remote console** — an SSH terminal plus RDP and VNC desktops (RDP/VNC are **Beta**), in the browser — credentials are not stored by default, with an optional per-user **encrypted credential vault**, object-level RBAC, single-use ticket→WebSocket sessions and full audit (RDP/VNC use an optional dependency that is installed only when a prebuilt wheel is available, so the base install is unchanged), an **IP request approval workflow** (configurable multi-stage / parallel sign-off, with in-app + email notifications), **DNS record review** (find records with no matching IPAM address), a **scan agent** (ICMP/ARP/rDNS/NetBIOS/mDNS/OS probes), **central certificate storage & distribution** (upload a commercial / self-signed cert once; a pure-bash agent pulls it on a schedule and deploys it to nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and more, reloading the service — with encrypted private keys, expiry alerts and manual renew), **floor plans + rack U-diagrams** (half-U, front/rear, SVG/PNG/draw.io export), **cable tracing** (multi-hop), an IP change log with stale-IP reclaim, and a universal table column-picker + multi-format export.
 
->>>>>>> c50c13d (feat(cert): self-signed renew, multi-host key detection, agent CLI flags [v0.4.163])
 ## Graylog log enrichment (DSV lookup)
 
 jt-ipam generates a **live** IP → hostname / FQDN lookup table that Graylog's "DSV File from HTTP" data adapter can poll, so log events that only carry an IP get a human-readable name automatically.
@@ -86,9 +82,9 @@ Security is a day-one requirement; every module and PR is checked against **OWAS
 | Frontend | Vue 3 · TypeScript · Vite · Naive UI · Pinia · vue-i18n |
 | Auth | argon2id · TOTP · short-lived JWT + refresh |
 | AI | LLM Server (local) · pgvector · MCP server |
-| Deploy | systemd + nginx + apt packages — **no containers** (Proxmox VE LXC / bare-metal friendly) |
+| Deploy | systemd + nginx + apt packages — **no Docker image needed** (VM / container friendly) |
 
-## Install (single host / Proxmox VE LXC)
+## Install (single host / VM / container)
 
 > Debian 12 / Ubuntu 22.04+ (64-bit). TLS is mandatory.
 >
@@ -164,6 +160,20 @@ systemctl restart jt-ipam-backend
 
 > Both modes use the same cert paths (`/etc/jt-ipam/tls/server.{crt,key}`); the only difference is who terminates TLS — Mode A reloads nginx, Mode B restarts the backend.
 
+**Mode C — behind your own external reverse proxy** (a separate nginx / LB terminates TLS)
+The local nginx serves plain HTTP; apply the external-proxy templates:
+
+```bash
+sudo cp deploy/nginx/jt-ipam-external-proxy.conf         /etc/nginx/sites-available/jt-ipam
+sudo cp deploy/nginx/jt-ipam-external-proxy-snippet.conf /etc/nginx/snippets/jt-ipam-proxy.conf
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+An external proxy does **not** break OIDC / M365 (Entra ID) login, but three things must be right or you'll be redirected to `ipam.example.com` or stuck on the login page:
+1. Set `APP_PUBLIC_URL` / `API_PUBLIC_URL` / `CORS_ORIGINS` in `/etc/jt-ipam/backend.env` to your public domain (not the default `ipam.example.com`), then `systemctl restart jt-ipam-backend`.
+2. The external proxy must forward `X-Forwarded-Proto $scheme` (=https) and `Host $host`; the template passes them through so the backend sees https (Secure cookies work).
+3. Set the OIDC Redirect URI to `https://your-domain/api/v1/auth/oidc/callback` in both the IdP and the jt-ipam UI — note the **UI/DB value overrides .env**, so re-save it in the UI after editing .env.
+
 ## Project layout
 
 ```
@@ -189,8 +199,6 @@ jt-ipam/
 - **Phase 2 (done)** — multi-vendor DNS + deep LibreNMS integration (device/ARP/FDB/effective-status) + anomaly detection + SHA-256 audit chain + pgvector AI semantic search
 - **Phase 3 (done)** — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox VE sync + Cytoscape topology + OIDC/SAML SSO + OPNsense firewall sync + Wazuh agent inventory
 - **Phase 4 (done, scoped)** — MCP server + local-LLM natural language (LLM Server) + plugin mechanism
-
-**Out of scope:** HA deployment, Ansible Collection, Terraform Provider, Zimbra/Odoo integration, Docker/Helm/K8s.
 
 ## License
 

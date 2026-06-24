@@ -62,22 +62,21 @@ try {
   }
 } catch { /* ignore */ }
 onMounted(async () => {
-  // OIDC callback：後端把 token 放在 URL fragment 傳回
-  const params = new URLSearchParams(window.location.hash.substring(1));
-  const oidcAccess = params.get("access_token");
-  const oidcRefresh = params.get("refresh_token");
-  if (oidcAccess) {
+  // SSO（OIDC / SAML）callback：後端把 token 放在 URL fragment 帶回（#access_token=…&refresh_token=…）。
+  // 先處理它（落地 token → 抓 me → 整頁導向目標頁）；否則登入頁會忽略 token、無限停在登入頁。
+  const frag = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const ssoAccess = frag.get("access_token");
+  if (ssoAccess) {
     try {
-      await auth.loginFromOidc(oidcAccess, oidcRefresh ?? "");
-      // 清掉 URL 上的 token fragment，避免重新整理時重複處理
-      window.history.replaceState(null, "", window.location.pathname);
+      await auth.loginFromSso(ssoAccess, frag.get("refresh_token") ?? "");
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
       window.location.assign(targetAfterLogin());
+      return;
     } catch {
       errorMsg.value = t("login.failed");
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
     }
-    return;
   }
-
   try {
     const { data } = await apiClient.get<{
       realms: { label: string; value: string }[];

@@ -1,8 +1,6 @@
-# jt-ipam v0.5.0
->>>>>>> f48e9ea (feat(console): in-browser RDP & VNC connection management (Beta) [v0.5.0])
+# jt-ipam v0.5.1
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/jasoncheng7115/jt-ipam?sort=semver)](https://github.com/jasoncheng7115/jt-ipam/releases)
 [![Last commit](https://img.shields.io/github/last-commit/jasoncheng7115/jt-ipam)](https://github.com/jasoncheng7115/jt-ipam/commits/main)
 [![Stars](https://img.shields.io/github/stars/jasoncheng7115/jt-ipam?style=flat)](https://github.com/jasoncheng7115/jt-ipam/stargazers)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
@@ -25,14 +23,12 @@ phpIPAM 老使用者幾乎零學習成本；以現代技術全新打造（非基
 
 - **DNS**：PowerDNS、BIND 9、OPNsense Unbound、Univention UCS、Microsoft Windows DNS（讀取正反解狀態，可選擇性推送記錄）
 - **LibreNMS**：裝置同步、ARP / FDB 抓取、上線狀態互補、自動加入監控
-- **基礎設施**：Proxmox VE、Wazuh、OPNsense
+- **基礎設施**：Proxmox VE、Wazuh、OPNsense（別名 / 規則 / NAT 同步）
 - **Graylog**：提供 IP→主機名稱/FQDN 的 DSV 對照表端點，供 Graylog「DSV File from HTTP」資料配接器抓取
 - **本地 AI**：LLM Server 自然語言查詢 + 語意搜尋（資料不外送），並提供 MCP server（stdio / Streamable HTTP）；實測搭配 `gemma4:26b` 效果良好
 
-也內建：**瀏覽器內遠端連線管理** —— SSH 終端機，外加 RDP、VNC 桌面（RDP/VNC 為 **Beta**），全部在瀏覽器內，含**個人加密憑證金庫**、物件層級 RBAC、單次 ticket→WebSocket 連線與完整稽核（RDP/VNC 走選用相依，僅在有預編譯 wheel 時才安裝，不影響基礎安裝）、**IP 申請審核流程**（可設多關卡會簽 / 依序關卡，站內 + Email 通知）、**DNS 記錄檢視**（找出沒有對應 IPAM 的記錄）、**掃描代理**（ICMP/ARP/反解/NetBIOS/mDNS/OS 探測）、**憑證集中保管與派送**（商業 / 自簽憑證一次上傳，純 bash 代理依排程自動派送到 nginx/apache/caddy/haproxy/Proxmox VE·PMG·PBS/Zimbra…等服務並重載，私鑰加密保存、到期告警、可手動續簽）、**機房平面圖 + 機櫃 U 位圖**（含半 U / 正背面、SVG/PNG/draw.io 匯出）、**纜線追蹤**（多跳穿透）、IP 異動記錄與失聯 IP 回收、通用表格欄位選擇 + 多格式匯出。
->>>>>>> f48e9ea (feat(console): in-browser RDP & VNC connection management (Beta) [v0.5.0])
+也內建：**瀏覽器內遠端連線管理** —— SSH 終端機，外加 RDP、VNC 桌面（RDP/VNC 為 **Beta**），全部在瀏覽器內，連線帳密預設不儲存、可選用**個人加密憑證金庫**（by-user、AES-GCM），物件層級 RBAC、單次 ticket→WebSocket 連線與完整稽核（RDP/VNC 走選用相依，僅在有預編譯 wheel 時才安裝，不影響基礎安裝）、**IP 申請審核流程**（可設多關卡會簽 / 依序關卡，站內 + Email 通知）、**DNS 記錄檢視**（找出沒有對應 IPAM 的記錄）、**掃描代理**（ICMP/ARP/反解/NetBIOS/mDNS/OS 探測）、**憑證集中保管與派送**（商業 / 自簽憑證一次上傳，純 bash 代理依排程自動派送到 nginx/apache/caddy/haproxy/Proxmox VE·PMG·PBS/Zimbra…等服務並重載，私鑰加密保存、到期告警、可手動續簽）、**機房平面圖 + 機櫃 U 位圖**（含半 U / 正背面、SVG/PNG/draw.io 匯出）、**纜線追蹤**（多跳穿透）、IP 異動記錄與失聯 IP 回收、通用表格欄位選擇 + 多格式匯出。
 
->>>>>>> c50c13d (feat(cert): self-signed renew, multi-host key detection, agent CLI flags [v0.4.163])
 ## Graylog 記錄補實（DSV 對照表）
 
 jt-ipam 會**即時**產生一份 IP → 主機名稱 / FQDN 的對照表，讓 Graylog 的「DSV File from HTTP」資料配接器直接抓取，把記錄裡只有 IP 的事件自動補上可讀名稱。
@@ -50,19 +46,45 @@ jt-ipam 會**即時**產生一份 IP → 主機名稱 / FQDN 的對照表，讓 
 - 在 Graylog 的「DSV File from HTTP」配接器：URL 填上方網址、分隔符依格式選逗號或 Tab、**Key column = 0、Value column = 1**（Graylog 欄位索引從 0 起算）
 - token 逐次驗證、可隨時重新產生；設定頁直接提供可複製的完整對照表網址
 
+## 核心物件
+
+`區段 → 子網路 → IP 位址`，外加 `裝置` / `機櫃` / `地點`、`客戶`（管理單位）、`VLAN` / `VRF`、`NAT`、OPNsense 防火牆，以及 IEEE OUI 廠商對照表（每月更新）。
+
 ## 權限（RBAC）
 
-物件級權限，支援 7 種物件類型（單位 / 區段 / 子網路 / IP / 裝置 / 機櫃 / 地點），階層繼承（授權上層自動涵蓋下層）、「全部」wildcard、5 個內建角色（系統管理員 / 唯讀檢視者 / 網路操作員 / 稽核員 / 部門管理員）。清單、搜尋、拓樸圖、下拉選單都依可見範圍過濾。
+物件級權限，涵蓋 **7 種物件類型**（客戶 / 區段 / 子網路 / IP / 裝置 / 機櫃 / 地點）：
+
+- **階層繼承** — 授權上層（如某客戶或區段）自動涵蓋其下所有物件（子網路 → IP；地點 → 機櫃 → 裝置）
+- 每種物件類型可用 **「全部」wildcard**
+- **5 個內建角色** — 系統管理員、唯讀檢視者、網路操作員、稽核員、部門管理員
+- 可見性處處強制：清單端點、全域搜尋、拓樸圖、所有下拉選單，永遠只會出現使用者可見的物件。預設關閉（deny-by-default）。
 
 ## 安全（OWASP Top 10:2025）
 
-安全是 day-one 需求，所有設計對齊 **OWASP Top 10:2025**，詳見 [`SECURITY_zh-TW.md`](SECURITY_zh-TW.md)。強制 TLS（nginx 反代或 uvicorn 自簽二擇一）、argon2id + TOTP、敏感欄位應用層加密、SHA-256 稽核鏈、SSRF 白名單。
+安全是 day-one 需求，每個模組與 PR 都對齊 **OWASP Top 10:2025**，詳見 [`SECURITY_zh-TW.md`](SECURITY_zh-TW.md)。
+
+- **強制 TLS** — 二擇一：nginx 反代終止 TLS（`BACKEND_TLS_MODE=nginx`），或 uvicorn 直接掛自簽憑證（`BACKEND_TLS_MODE=direct`）
+- A01 — deny-by-default RBAC、物件級檢查（如上）
+- A02 — argon2id 密碼雜湊；儲存的敏感資料（DNS 憑證 / SNMP / API token）應用層加密
+- A03 — 參數化 SQLAlchemy、嚴格 Pydantic v2 驗證、CSP + 輸出跳脫
+- A05 — HSTS、CSP、X-Frame-Options、Referrer-Policy
+- A07 — TOTP MFA、帳號鎖定、HttpOnly+Secure+SameSite cookie、API token TTL
+- A08 — SHA-256 稽核鏈
+- A09 — 結構化稽核記錄
+- A10 — 所有對外整合走 SSRF 白名單；封鎖 metadata / link-local
 
 ## 技術堆疊
 
-後端 FastAPI + SQLAlchemy 2.0(async) + PostgreSQL 16 + Alembic + Pydantic v2；前端 Vue 3 + TypeScript + Naive UI + Pinia；本地 AI 走 LLM Server + pgvector。**不使用容器**：systemd + apt（適合 Proxmox VE LXC / 裸機）。
+| 層 | 選用 |
+|------|--------|
+| 後端 | Python 3.12 · FastAPI · SQLAlchemy 2.0（async）· asyncpg · Alembic · Pydantic v2 |
+| 資料庫 | PostgreSQL 16（原生 `inet`/`cidr`/`macaddr`）+ pgvector |
+| 前端 | Vue 3 · TypeScript · Vite · Naive UI · Pinia · vue-i18n |
+| 認證 | argon2id · TOTP · 短效 JWT + refresh |
+| AI | LLM Server（本地）· pgvector · MCP server |
+| 部署 | systemd + nginx + apt 套件 —— **不需 Docker image**（適合虛擬機 / 容器） |
 
-## 安裝
+## 安裝（單機 / 虛擬機 / 容器）
 
 > Debian 12 / Ubuntu 22.04+（64 位元）。強制 HTTPS。
 >
@@ -75,7 +97,9 @@ jt-ipam 會**即時**產生一份 IP → 主機名稱 / FQDN 的對照表，讓 
 curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-ipam/main/scripts/bootstrap.sh | sudo bash
 ```
 
-升級：`sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade`（**腳本內含 `git pull`**，直接跑即可）。詳見 [`docs/INSTALL.md`](docs/INSTALL.md)。
+腳本會安裝 `postgresql-16` / `python3.12` / `nginx` / `redis`，建立 `jtipam` 系統帳號與 PG 角色，產生金鑰寫入 `/etc/jt-ipam/backend.env`，跑 `alembic upgrade head`，build 前端並啟用 `jt-ipam-backend.service`。
+
+升級：`sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade`（**腳本內含 `git pull`**，直接跑即可），接著備份 → 相依 → alembic → build → 重啟。詳見 [`docs/INSTALL.md`](docs/INSTALL.md)。
 
 > **選用：Docker Compose。** 另有一條次要部署路徑在 [`deploy/docker/`](deploy/docker/)（`./gen-env.sh` 後 `docker compose up -d --build`；之後用 `./update.sh` 升版）。主力且完整支援的仍是 systemd + apt。
 
