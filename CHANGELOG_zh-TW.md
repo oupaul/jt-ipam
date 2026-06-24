@@ -35,6 +35,8 @@
   （`/api/mcp`，Streamable HTTP / JSON-RPC）；可產生 / 重新產生**唯讀** API 金鑰（加密保存），頁面顯示
   連線網址與認證標頭。唯讀金鑰一律擋下 6 個會異動資料的工具、工具清單也隱藏它們。預設關閉（deny by
   default）；既有 per-user API 權杖認證仍可用，且同受此開關控管。
+- 新增 MCP 工具 `list_connection_targets`（唯讀）：列出已啟用瀏覽器遠端連線（SSH / RDP / VNC）且呼叫者
+  可連線的 IP / 裝置——回 ip、主機名稱、裝置與各協定旗標，絕不回帳密。
 
 ### 變更
 - 進階→連線管理 一併列出 SSH/RDP/VNC 目標；OS 欄改用與詳情頁相同的來源優先序解析；操作鈕只在欄寬
@@ -43,6 +45,10 @@
 - nginx WebSocket upgrade location 拓寬涵蓋 SSH/RDP/VNC 主控路徑；升級會就地修補既有站台設定。
 
 ### 修正
+- **Proxmox 同一叢集內同名 VM 無法匯入（issue #8）。** VM 唯一鍵由 `(叢集, 名稱)` 改為 `(叢集, VMID)`
+  （migration 0085）——Proxmox 允許同名不同 VMID 的 VM，原本會撞 `vm_cluster_name_uq` 而匯入失敗。
+- 對外 MCP 子應用不再提供 FastAPI 自動產生的 `/openapi.json`、`/docs`（MCP 以 JSON-RPC `tools/list`
+  探索工具，非 OpenAPI；該 schema 對 MCP client 無意義且未經認證）。
 - 稽核明細的 `switch_port` 顯示為 `device@port`（與其他頁一致）；憑證目標解析為 label 而非原始 UUID。
 
 ## [0.4.210] — 2026-06-21

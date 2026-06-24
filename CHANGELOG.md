@@ -44,6 +44,9 @@ based on [Keep a Changelog](https://keepachangelog.com/); versions track
   **read-only** API key (stored encrypted); the page shows the endpoint URL and auth header. The
   read-only key always blocks the 6 data-changing tools (and hides them from the tool list). Off by
   default (deny-by-default); existing per-user API-token auth still works and is also gated by the toggle.
+- New MCP tool `list_connection_targets` (read-only): lists IPs/devices with a browser remote console
+  enabled (SSH / RDP / VNC) that the caller may connect to — returns ip, hostname, device and which
+  protocols are enabled; never returns credentials.
 
 ### Changed
 - Advanced → Connections lists SSH/RDP/VNC targets together; the OS column now resolves through the same
@@ -56,6 +59,12 @@ based on [Keep a Changelog](https://keepachangelog.com/); versions track
   patches existing sites in place.
 
 ### Fixed
+- **Proxmox VMs with the same name in one cluster could not be imported (issue #8).** The VM uniqueness
+  key changed from `(cluster, name)` to `(cluster, VMID)` (migration 0085) — Proxmox allows same-named VMs
+  with different VMIDs, which previously collided with `vm_cluster_name_uq`.
+- The external MCP sub-app no longer serves FastAPI's auto-generated `/openapi.json` and `/docs` (MCP is
+  discovered via JSON-RPC `tools/list`, not OpenAPI; that schema was meaningless to MCP clients and
+  unauthenticated).
 - Audit detail shows `switch_port` as `device@port` (consistent with other pages) and resolves credential
   targets to a label instead of a raw UUID.
 

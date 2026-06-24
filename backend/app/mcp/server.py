@@ -171,8 +171,15 @@ async def _load_principal(user_id: str):  # type: ignore[no-untyped-def]
 
 
 def build_mcp_app() -> FastAPI:
-    """掛在 /mcp 的 Streamable-HTTP 子應用。"""
-    sub = FastAPI(title="jt-ipam MCP", description="Model Context Protocol server")
+    """掛在 /mcp 的 Streamable-HTTP 子應用。
+
+    MCP 用 JSON-RPC（initialize → tools/list → tools/call）探索工具，**不是** OpenAPI；
+    FastAPI 自動產生的 /openapi.json、/docs 對 MCP client 無意義且未經認證，故一律關閉。
+    """
+    sub = FastAPI(
+        title="jt-ipam MCP", description="Model Context Protocol server", version=__version__,
+        docs_url=None, redoc_url=None, openapi_url=None,
+    )
 
     @sub.post("/")
     @sub.post("/messages")   # 舊路徑相容

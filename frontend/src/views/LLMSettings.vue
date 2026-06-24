@@ -15,7 +15,7 @@ import {
   type LLMConfig, type LLMConfigPatch, type OllamaModel,
 } from "@/api/system";
 import { listMcpTools, type McpTool } from "@/api/chat";
-import { SettingsIcon, RefreshIcon, ToolsIcon, KeyIcon, CopyIcon, EyeIcon } from "@/icons";
+import { SettingsIcon, RefreshIcon, ToolsIcon, KeyIcon, CopyIcon, EyeIcon, EyeOffIcon } from "@/icons";
 
 const { t } = useI18n();
 const msg = useMessage();
@@ -238,12 +238,24 @@ onMounted(() => { void load(); void loadTools(); });
         <div class="mcp-info-row">
           <span class="mcp-k">{{ t("llm_settings.mcp_transport") }}</span>
           <code class="mcp-v">Streamable HTTP（JSON-RPC 2.0, POST）</code>
+          <span class="mcp-or">{{ t("llm_settings.mcp_transport_note") }}</span>
         </div>
         <div class="mcp-info-row">
           <span class="mcp-k">{{ t("llm_settings.mcp_auth_header") }}</span>
-          <code class="mcp-v">X-Auth-Token: &lt;API KEY&gt;</code>
+          <span class="mcp-or">{{ t("llm_settings.mcp_auth_choose") }}</span>
+        </div>
+        <div class="mcp-info-row mcp-info-sub">
+          <span class="mcp-kn">{{ t("llm_settings.mcp_header_name") }}</span>
+          <code class="mcp-v">X-Auth-Token</code>
+          <span class="mcp-kn">{{ t("llm_settings.mcp_header_value") }}</span>
+          <code class="mcp-v">&lt;API KEY&gt;</code>
+        </div>
+        <div class="mcp-info-row mcp-info-sub">
           <span class="mcp-or">{{ t("llm_settings.mcp_or") }}</span>
-          <code class="mcp-v">Authorization: Bearer &lt;API KEY&gt;</code>
+          <span class="mcp-kn">{{ t("llm_settings.mcp_header_name") }}</span>
+          <code class="mcp-v">Authorization</code>
+          <span class="mcp-kn">{{ t("llm_settings.mcp_header_value") }}</span>
+          <code class="mcp-v">Bearer &lt;API KEY&gt;</code>
         </div>
       </div>
 
@@ -251,17 +263,18 @@ onMounted(() => { void load(); void loadTools(); });
       <div class="mcp-key">
         <label>{{ t("llm_settings.mcp_key") }}</label>
         <n-space align="center" :size="8" :wrap-item="false" style="flex-wrap:wrap">
-          <code v-if="mcpKey" class="mcp-keyval">{{ mcpKey }}</code>
-          <n-tag v-else-if="llm.mcp_api_key_set" size="small" :bordered="false">
-            ••••••••••••（{{ t("llm_settings.mcp_key_hidden") }}）
-          </n-tag>
-          <n-tag v-else size="small" type="warning" :bordered="false">{{ t("llm_settings.mcp_key_none") }}</n-tag>
+          <code v-if="mcpKey" class="mcp-keybox mcp-keybox--val">{{ mcpKey }}</code>
+          <span v-else-if="llm.mcp_api_key_set" class="mcp-keybox">••••••••••••（{{ t("llm_settings.mcp_key_hidden") }}）</span>
+          <span v-else class="mcp-keybox mcp-keybox--none">{{ t("llm_settings.mcp_key_none") }}</span>
 
           <n-button v-if="llm.mcp_api_key_set && !mcpKey" size="small" :loading="mcpKeyBusy" @click="doRevealKey">
             <template #icon><n-icon :component="EyeIcon" /></template>{{ t("llm_settings.mcp_key_reveal") }}
           </n-button>
           <n-button v-if="mcpKey" size="small" @click="copyText(mcpKey)">
             <template #icon><n-icon :component="CopyIcon" /></template>{{ t("common.copy") }}
+          </n-button>
+          <n-button v-if="mcpKey" size="small" @click="mcpKey = null">
+            <template #icon><n-icon :component="EyeOffIcon" /></template>{{ t("llm_settings.mcp_key_hide") }}
           </n-button>
 
           <n-popconfirm v-if="llm.mcp_api_key_set" @positive-click="doRotateKey">
@@ -341,8 +354,14 @@ label {
 .mcp-v { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px;
   background: rgba(128,128,128,0.12); border-radius: 5px; padding: 2px 7px; word-break: break-all; }
 .mcp-or { opacity: 0.5; font-size: 12px; }
+.mcp-info-sub { padding-left: 14px; }
+.mcp-kn { opacity: 0.6; font-size: 11.5px; }
 .mcp-key { margin-top: 14px; }
-.mcp-keyval { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px;
-  background: rgba(24,160,88,0.12); border: 1px solid rgba(24,160,88,0.3); border-radius: 6px;
-  padding: 3px 8px; word-break: break-all; }
+/* 金鑰值/狀態框：與旁邊 small 按鈕同高（28px） */
+.mcp-keybox { display: inline-flex; align-items: center; min-height: 28px; box-sizing: border-box;
+  padding: 0 10px; border: 1px solid var(--n-border-color, rgba(128,128,128,0.3)); border-radius: 6px;
+  background: rgba(128,128,128,0.06); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px; line-height: 1.4; word-break: break-all; }
+.mcp-keybox--val { background: rgba(24,160,88,0.12); border-color: rgba(24,160,88,0.35); }
+.mcp-keybox--none { color: #d0a215; background: rgba(208,162,21,0.08); border-color: rgba(208,162,21,0.4); }
 </style>
