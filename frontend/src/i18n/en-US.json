@@ -331,6 +331,7 @@
     "copied": "Copied",
     "copied_clipboard": "Copied to clipboard",
     "copy": "Copy",
+    "total_rows": "Total: {n}",
     "deleted": "Deleted",
     "back": "Back",
     "bulk_delete": "Bulk delete",

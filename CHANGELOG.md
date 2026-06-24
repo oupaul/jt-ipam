@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.2] — 2026-06-24
+
+### Fixed
+- **Proxmox VM list capped at 500 (issue #9).** The list now fetches every page, so all VMs show
+  (e.g. 592, not 500). The same paginate-all fix covers other advanced-resource lists.
+- **Proxmox sync slow / stuck "in progress" (issue #9).** The best-effort per-VM guest-agent IP query
+  now uses a short 6 s timeout, so unresponsive guest agents on running VMs no longer stall the whole
+  sync (previously each could hold the shared 20 s timeout).
+- **Wazuh agent list showed only 200 (issue #10).** All agents were stored; the admin page now fetches
+  every page instead of just the first 200.
+- **Other integrations audited for the same cap.** LibreNMS `/devices` and AdGuard already return
+  everything; OPNsense alias / rule / IPsec searches no longer cap at 1000 / 500 (`rowCount = -1` = all).
+
+### Changed
+- Table footers now show the total row count on the left (e.g. "Total: 592").
+- The floating AI-chat button is semi-transparent at rest and turns solid on hover.
+
+
 ## [0.5.1] — 2026-06-24
 
 ### Added

@@ -4,6 +4,22 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.2] — 2026-06-24
+
+### 修正
+- **Proxmox VM 清單只顯示 500 台（issue #9）。** 清單改為逐頁抓完整，所有 VM 都會顯示（例如 592 台而非
+  500）；同一個「逐頁抓完」修正也涵蓋其他進階資源清單。
+- **Proxmox 同步很慢 / 卡在「進行中」（issue #9）。** 每台 VM 的 guest-agent 取 IP 查詢（best-effort）
+  改用 6 秒短逾時，避免執行中 VM 的 agent 無回應時，用共用的 20 秒逾時拖垮整批同步。
+- **Wazuh agent 只顯示 200 台（issue #10）。** Agent 其實都有同步入庫；管理頁改為逐頁抓完，不再只抓前 200。
+- **一併檢查其他整合是否有相同上限。** LibreNMS `/devices`、AdGuard 本來就會回全部；OPNsense 別名 /
+  規則 / IPsec 搜尋不再卡在 1000 / 500（`rowCount = -1` ＝ 全部）。
+
+### 變更
+- 所有表格的分頁列最左側顯示總筆數（例如「共 592 筆」）。
+- 右下角 AI 對話浮動按鈕平常半透明、移過去才變實心顏色。
+
+
 ## [0.5.1] — 2026-06-24
 
 ### 新增
