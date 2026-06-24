@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.3] — 2026-06-24
+
+### Fixed
+- **Contact groups could not be created / edited / deleted — "Method Not Allowed" (issue #11).** The
+  backend only had `GET /contact-groups`; added `POST` / `PATCH` / `DELETE`.
+- Added the missing `DELETE` endpoints for **providers, circuits, wireless SSIDs and wireless links** —
+  their delete buttons previously returned 405 (same class of bug).
+
+
 ## [0.5.2] — 2026-06-24
 
 ### Fixed

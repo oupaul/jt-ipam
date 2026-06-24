@@ -4,6 +4,15 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.3] — 2026-06-24
+
+### 修正
+- **聯絡人群組無法新增 / 編輯 / 刪除——「Method Not Allowed」（issue #11）。** 後端原本只有
+  `GET /contact-groups`，補上 `POST` / `PATCH` / `DELETE`。
+- 補上 **Provider、電路、無線 SSID、無線連線** 原本缺少的 `DELETE` 端點——這些刪除鈕先前會回 405
+  （同一類問題）。
+
+
 ## [0.5.2] — 2026-06-24
 
 ### 修正
