@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_object_perm
+from app.api.v1.dependencies import CurrentUser, require_admin, require_object_perm, require_type_perm
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.customer import Customer
@@ -145,7 +145,7 @@ async def customer_summary(
 
 
 @router.post("", response_model=CustomerRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_type_perm("customer", "write"))])
 async def create_customer(
     payload: CustomerCreate,
     user: CurrentUser,
@@ -174,7 +174,7 @@ async def create_customer(
 
 
 @router.patch("/{cid}", response_model=CustomerRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_object_perm("customer", "write", path_param="cid"))])
 async def update_customer(
     cid: uuid.UUID,
     payload: CustomerUpdate,
@@ -208,7 +208,7 @@ async def update_customer(
 
 
 @router.delete("/{cid}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_object_perm("customer", "write", path_param="cid"))])
 async def delete_customer(
     cid: uuid.UUID,
     user: CurrentUser,

@@ -150,6 +150,25 @@ async def get_object_permission(
     return best  # type: ignore[return-value]
 
 
+async def get_type_permission(
+    session: AsyncSession, *, user: User, object_type: ObjectType,
+) -> PermLevel:
+    """user 對某類型的 wildcard（全部）層級。
+    用於新增操作（尚無 object_id）：查 object_id IS NULL 的授權記錄。"""
+    if user.is_admin:
+        return "admin"
+    conds = _principal_conds(user, await _user_group_ids(session, user.id))
+    stmt = select(Permission.level).where(
+        Permission.object_type == object_type,
+        Permission.object_id.is_(None),
+        or_(*conds),
+    )
+    best = "none"
+    for (lvl,) in (await session.execute(stmt)).all():
+        best = _max(best, lvl)
+    return best  # type: ignore[return-value]
+
+
 async def has_any_write(session: AsyncSession, *, user: User) -> bool:
     """使用者（或其群組）是否擁有任一 write/admin 授權。
     前端用來決定是否顯示/啟用「新增 / 編輯 / 刪除」等異動按鈕（純唯讀帳號 → False）。"""

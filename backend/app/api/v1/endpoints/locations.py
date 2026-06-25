@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_admin, require_object_perm, require_type_perm
 from app.core.audit import append_audit
 from app.core.config import get_settings
 from app.core.db import get_session
@@ -120,7 +120,7 @@ async def get_location(
 
 
 @router.post("/locations", response_model=LocationRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_type_perm("location", "write"))])
 async def create_location(
     payload: LocationCreate,
     user: CurrentUser,
@@ -148,7 +148,7 @@ async def create_location(
 
 
 @router.patch("/locations/{location_id}", response_model=LocationRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_object_perm("location", "write", path_param="location_id"))])
 async def update_location(
     location_id: uuid.UUID,
     payload: LocationUpdate,
@@ -178,7 +178,7 @@ async def update_location(
 
 
 @router.delete("/locations/{location_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_object_perm("location", "write", path_param="location_id"))])
 async def delete_location(
     location_id: uuid.UUID,
     user: CurrentUser,
@@ -203,7 +203,7 @@ async def delete_location(
 
 # ─────────────────── 機房平面圖 ───────────────────
 @router.post("/locations/{location_id}/floorplan", response_model=LocationRead,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_object_perm("location", "write", path_param="location_id"))])
 async def upload_floorplan(
     location_id: uuid.UUID,
     user: CurrentUser,
@@ -265,7 +265,7 @@ async def get_floorplan(
 
 
 @router.delete("/locations/{location_id}/floorplan", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_object_perm("location", "write", path_param="location_id"))])
 async def delete_floorplan(
     location_id: uuid.UUID,
     user: CurrentUser,
@@ -291,7 +291,7 @@ async def delete_floorplan(
 
 
 @router.put("/locations/{location_id}/rack-positions",
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_object_perm("location", "write", path_param="location_id"))])
 async def set_rack_positions(
     location_id: uuid.UUID,
     payload: RackPositionsUpdate,
@@ -389,7 +389,7 @@ async def list_racks(
 
 
 @router.post("/racks", response_model=RackRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_type_perm("rack", "write"))])
 async def create_rack(
     payload: RackCreate,
     user: CurrentUser,
@@ -414,7 +414,7 @@ async def create_rack(
 
 
 @router.patch("/racks/{rack_id}", response_model=RackRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_object_perm("rack", "write", path_param="rack_id"))])
 async def update_rack(
     rack_id: uuid.UUID,
     payload: RackUpdate,
@@ -452,7 +452,7 @@ async def update_rack(
 
 
 @router.delete("/racks/{rack_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_object_perm("rack", "write", path_param="rack_id"))])
 async def delete_rack(
     rack_id: uuid.UUID,
     user: CurrentUser,

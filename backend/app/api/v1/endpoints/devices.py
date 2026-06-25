@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_object_perm
+from app.api.v1.dependencies import CurrentUser, require_admin, require_object_perm, require_type_perm
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.device import Device
@@ -365,7 +365,7 @@ async def get_device(
 
 
 @router.post("", response_model=DeviceRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_type_perm("device", "write"))])
 async def create_device(
     payload: DeviceCreate,
     user: CurrentUser,
@@ -408,7 +408,7 @@ async def create_device(
 
 
 @router.patch("/{device_id}", response_model=DeviceRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_object_perm("device", "write", path_param="device_id"))])
 async def update_device(
     device_id: uuid.UUID,
     payload: DeviceUpdate,
@@ -461,7 +461,8 @@ async def update_device(
     return DeviceRead.model_validate(obj)
 
 
-@router.delete("/{device_id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/{device_id}", status_code=204,
+               dependencies=[Depends(require_object_perm("device", "write", path_param="device_id"))])
 async def delete_device(
     device_id: uuid.UUID,
     user: CurrentUser,

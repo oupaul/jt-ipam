@@ -24,6 +24,7 @@ from app.services.permission import (
     ObjectType,
     PermLevel,
     get_object_permission,
+    get_type_permission,
     has_permission,
 )
 
@@ -141,6 +142,21 @@ async def require_global_read(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Global resource requires full visibility",
     )
+
+
+def require_type_perm(object_type: ObjectType, required: PermLevel) -> Any:
+    """產生 dependency：is_admin 或對 object_type 有 wildcard required 授權。
+    用於新增操作（尚無 object_id，無法查特定物件）。"""
+
+    async def _dep(
+        user: CurrentUser,
+        session: Annotated[AsyncSession, Depends(get_session)],
+    ) -> None:
+        level = await get_type_permission(session, user=user, object_type=object_type)
+        if not has_permission(level, required):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+
+    return _dep
 
 
 def require_object_perm(
