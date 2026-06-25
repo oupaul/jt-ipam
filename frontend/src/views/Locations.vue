@@ -12,6 +12,7 @@ import {
   listLocations, createLocation, updateLocation, deleteLocation, bulkDeleteLocations,
   getMapProvider, type Location,
 } from "@/api/basic";
+import { apiClient } from "@/api/client";
 import {
   LocationsIcon, PlusIcon, EditIcon, DeleteIcon, RefreshIcon, SaveIcon, CancelIcon, PinIcon,
 } from "@/icons";
@@ -130,14 +131,13 @@ async function lookupCoords() {
   if (!addr) { msg.warning(t("locations.geo_no_address")); return; }
   geocoding.value = true;
   try {
-    const res = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(addr)}&format=json&limit=1`,
-      { headers: { "Accept": "application/json", "Accept-Language": "zh-TW,zh,en" } },
+    const { data } = await apiClient.get<{ found: boolean; lat?: number; lon?: number }>(
+      "/api/v1/locations/geocode",
+      { params: { q: addr } },
     );
-    const data = await res.json();
-    if (!Array.isArray(data) || !data.length) { msg.warning(t("locations.geo_not_found")); return; }
-    form.value.latitude = Math.round(parseFloat(data[0].lat) * 1e6) / 1e6;
-    form.value.longitude = Math.round(parseFloat(data[0].lon) * 1e6) / 1e6;
+    if (!data.found) { msg.warning(t("locations.geo_not_found")); return; }
+    form.value.latitude = Math.round((data.lat ?? 0) * 1e6) / 1e6;
+    form.value.longitude = Math.round((data.lon ?? 0) * 1e6) / 1e6;
     msg.success(t("locations.geo_found"));
   } catch {
     msg.error(t("errors.network"));

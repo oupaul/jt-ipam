@@ -52,6 +52,46 @@ def _floorplan_dir() -> Path:
     return Path(get_settings().upload_dir) / "floorplans"
 
 
+# ─────────────────── Geocoding proxy ───────────────────
+@router.get("/locations/geocode")
+async def geocode_address(
+    q: str = Query(..., min_length=1, max_length=300),
+    _user: CurrentUser,
+) -> dict[str, Any]:
+    """Nominatim geocoding proxy（避免瀏覽器 CORS/CSP 限制）。"""
+    import urllib.parse
+    from app.core.safe_http import UnsafeOutboundURL, safe_request
+
+    url = (
+        "https://nominatim.openstreetmap.org/search"
+        f"?q={urllib.parse.quote(q)}&format=json&limit=1"
+    )
+    try:
+        resp = await safe_request(
+            "GET", url,
+            headers={
+                "User-Agent": "jt-ipam/1.0 (geocoding proxy)",
+                "Accept": "application/json",
+                "Accept-Language": "zh-TW,zh,en",
+            },
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except UnsafeOutboundURL as exc:
+        raise HTTPException(502, detail=f"geocode_url_unsafe: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(502, detail=f"geocode_failed: {exc}") from exc
+    if not data:
+        return {"found": False}
+    return {
+        "found": True,
+        "lat": float(data[0]["lat"]),
+        "lon": float(data[0]["lon"]),
+        "display_name": data[0].get("display_name", ""),
+    }
+
+
 # ─────────────────── Locations ───────────────────
 @router.get("/locations", response_model=Paginated[LocationRead])
 async def list_locations(
