@@ -300,6 +300,81 @@ async def put_map_provider(
     return MapProviderOut(provider=prov)
 
 
+# ─────────────────── Google Maps Geocoding API Key ───────────────────
+class GoogleMapsKeyIn(StrictModel):
+    api_key: str = Field(min_length=1, max_length=200)
+
+
+class GoogleMapsKeyStatusOut(StrictModel):
+    has_key: bool
+
+
+@public_router.get("/google-maps-api-key", response_model=GoogleMapsKeyStatusOut)
+async def get_google_maps_api_key_status(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> GoogleMapsKeyStatusOut:
+    from app.models.system_setting import SystemSetting
+    row = await session.get(SystemSetting, "google_maps_api_key")
+    has_key = bool(row and isinstance(row.value, dict) and row.value.get("key"))
+    return GoogleMapsKeyStatusOut(has_key=has_key)
+
+
+@router.put("/google-maps-api-key", response_model=GoogleMapsKeyStatusOut)
+async def put_google_maps_api_key(
+    payload: GoogleMapsKeyIn,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> GoogleMapsKeyStatusOut:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models.system_setting import SystemSetting
+    row = await session.get(SystemSetting, "google_maps_api_key")
+    if row is None:
+        row = SystemSetting(key="google_maps_api_key", value={}, updated_by=user.id)
+        session.add(row)
+    row.value = {"key": payload.api_key.strip()}
+    row.updated_by = user.id
+    flag_modified(row, "value")
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "google_maps_api_key", "configured": True},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return GoogleMapsKeyStatusOut(has_key=True)
+
+
+@router.delete("/google-maps-api-key", response_model=GoogleMapsKeyStatusOut)
+async def delete_google_maps_api_key(
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> GoogleMapsKeyStatusOut:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models.system_setting import SystemSetting
+    row = await session.get(SystemSetting, "google_maps_api_key")
+    if row is not None:
+        row.value = {}
+        row.updated_by = user.id
+        flag_modified(row, "value")
+        await append_audit(
+            session, actor_user_id=str(user.id),
+            actor_ip=request.client.host if request.client else None,
+            actor_user_agent=request.headers.get("user-agent"),
+            object_type="system", object_id=None, action="update",
+            diff={"target": "google_maps_api_key", "configured": False},
+            request_id=getattr(request.state, "request_id", None),
+        )
+        await session.commit()
+    return GoogleMapsKeyStatusOut(has_key=False)
+
+
 # ─────────────────── 機櫃示意圖：裝置名稱對齊（全域）───────────────────
 class RackNameAlignOut(StrictModel):
     align: str   # "left" | "center" | "right"

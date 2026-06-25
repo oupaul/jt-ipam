@@ -20,6 +20,7 @@ import {
   getMapProvider, setMapProvider, getRackNameAlign, setRackNameAlign,
   getOnlineGrace, setOnlineGrace,
   getGeoipConfig, setGeoipConfig, updateGeoipDbNow,
+  getGoogleMapsKeyStatus, setGoogleMapsApiKey, clearGoogleMapsApiKey,
   type GeoIPConfig, type RackNameAlign,
 } from "@/api/basic";
 
@@ -35,6 +36,29 @@ const mapProviderOpts = [
 async function changeMapProvider(p: "osm" | "google") {
   mapProvider.value = p;
   try { await setMapProvider(p); msg.success(t("common.ok")); } catch { msg.error(t("errors.network")); }
+}
+
+// Google Maps Geocoding API Key
+const gmapsKeyStatus = ref<{ has_key: boolean }>({ has_key: false });
+const gmapsKey = ref("");
+const gmapsKeySaving = ref(false);
+
+async function saveGmapsKey() {
+  if (!gmapsKey.value.trim()) { msg.warning(t("settings.system.gmaps_api_key")); return; }
+  gmapsKeySaving.value = true;
+  try {
+    await setGoogleMapsApiKey(gmapsKey.value.trim());
+    gmapsKeyStatus.value = { has_key: true };
+    gmapsKey.value = "";
+    msg.success(t("common.ok"));
+  } catch { msg.error(t("errors.network")); } finally { gmapsKeySaving.value = false; }
+}
+async function doCleanGmapsKey() {
+  try {
+    await clearGoogleMapsApiKey();
+    gmapsKeyStatus.value = { has_key: false };
+    msg.success(t("common.ok"));
+  } catch { msg.error(t("errors.network")); }
 }
 
 // 機櫃裝置名稱對齊
@@ -267,6 +291,7 @@ async function doTestAf() {
 
 onMounted(() => {
   getMapProvider().then((p) => { mapProvider.value = p; }).catch(() => {});
+  getGoogleMapsKeyStatus().then((s) => { gmapsKeyStatus.value = s; }).catch(() => {});
   getRackNameAlign().then((a) => { rackAlign.value = a; }).catch(() => {});
   getOnlineGrace().then((m) => { grace.value = m; }).catch(() => {});
   void loadGeoip();
@@ -301,6 +326,22 @@ onMounted(() => {
             <n-select :value="rackAlign" :options="rackAlignOpts" @update:value="changeRackAlign" />
             <div class="hint">{{ t("settings.system.rack_name_align_hint") }}</div>
           </div>
+        </div>
+        <div class="fld" style="margin-top: 14px">
+          <label>
+            {{ t("settings.system.gmaps_api_key") }}
+            <n-tag v-if="gmapsKeyStatus.has_key" size="small" type="success" style="margin-left: 8px; vertical-align: middle">{{ t("settings.system.gmaps_key_set_tag") }}</n-tag>
+          </label>
+          <div style="display: flex; gap: 8px">
+            <n-input v-model:value="gmapsKey" type="password" show-password-on="click"
+                     :placeholder="gmapsKeyStatus.has_key ? t('settings.system.gmaps_key_set') : t('settings.system.gmaps_api_key')"
+                     style="flex: 1" />
+            <n-button size="small" :loading="gmapsKeySaving" :disabled="!gmapsKey" @click="saveGmapsKey">
+              <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
+            </n-button>
+            <n-button v-if="gmapsKeyStatus.has_key" size="small" quaternary type="error" @click="doCleanGmapsKey">{{ t("settings.system.gmaps_key_clear") }}</n-button>
+          </div>
+          <div class="hint">{{ t("settings.system.gmaps_api_key_hint") }}</div>
         </div>
       </section>
 

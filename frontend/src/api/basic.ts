@@ -210,6 +210,19 @@ export async function setMapProvider(provider: "osm" | "google"): Promise<void> 
   await apiClient.put("/api/v1/system/map-provider", { provider });
 }
 
+export async function getGoogleMapsKeyStatus(): Promise<{ has_key: boolean }> {
+  try {
+    const { data } = await apiClient.get<{ has_key: boolean }>("/api/v1/system/google-maps-api-key");
+    return data;
+  } catch { return { has_key: false }; }
+}
+export async function setGoogleMapsApiKey(api_key: string): Promise<void> {
+  await apiClient.put("/api/v1/system/google-maps-api-key", { api_key });
+}
+export async function clearGoogleMapsApiKey(): Promise<void> {
+  await apiClient.delete("/api/v1/system/google-maps-api-key");
+}
+
 export async function getOnlineGrace(): Promise<number> {
   try {
     const { data } = await apiClient.get<{ minutes: number }>("/api/v1/system/online-grace");

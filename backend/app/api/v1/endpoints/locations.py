@@ -56,41 +56,68 @@ def _floorplan_dir() -> Path:
 @router.get("/locations/geocode")
 async def geocode_address(
     _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
     q: str = Query(..., min_length=1, max_length=300),
 ) -> dict[str, Any]:
-    """Nominatim geocoding proxy（避免瀏覽器 CORS/CSP 限制）。
-    若地址含中文字且未帶國家名稱，自動補上 Taiwan 改善命中率。
-    先試加 Taiwan 的版本；若無結果再試原字串。
+    """Geocoding proxy（避免瀏覽器 CORS/CSP 限制）。
+    若已設定 Google Maps API Key 優先使用 Google Geocoding API；
+    否則回落 Nominatim (OpenStreetMap)，中文地址自動補 Taiwan。
     """
     import urllib.parse
     from app.core.safe_http import UnsafeOutboundURL, safe_request
+    from app.models.system_setting import SystemSetting
 
-    _has_cjk = any('一' <= c <= '鿿' for c in q)
-    _has_country = any(k in q.lower() for k in ("taiwan", "台灣", "中華民國"))
-    queries = [q + " Taiwan", q] if (_has_cjk and not _has_country) else [q]
+    row = await session.get(SystemSetting, "google_maps_api_key")
+    google_key = (row.value.get("key") if row and isinstance(row.value, dict) else None) or ""
 
-    async def _search(query: str) -> list:
-        qs = urllib.parse.urlencode({
-            "q": query, "format": "json", "limit": "1", "addressdetails": "0",
-        })
-        resp = await safe_request(
-            "GET", f"https://nominatim.openstreetmap.org/search?{qs}",
-            headers={
-                "User-Agent": "jt-ipam/1.0 (geocoding proxy)",
-                "Accept": "application/json",
-                "Accept-Language": "zh-TW,zh,en",
-            },
-            timeout=15.0,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
+    data: list = []
     try:
-        data: list = []
+        if google_key:
+            qs = urllib.parse.urlencode({
+                "address": q, "language": "zh-TW", "key": google_key,
+            })
+            resp = await safe_request(
+                "GET", f"https://maps.googleapis.com/maps/api/geocode/json?{qs}",
+                headers={"Accept": "application/json"},
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            if result.get("status") == "OK" and result.get("results"):
+                loc = result["results"][0]["geometry"]["location"]
+                return {
+                    "found": True,
+                    "lat": float(loc["lat"]),
+                    "lon": float(loc["lng"]),
+                    "display_name": result["results"][0].get("formatted_address", ""),
+                }
+            return {"found": False}
+
+        _has_cjk = any('一' <= c <= '鿿' for c in q)
+        _has_country = any(k in q.lower() for k in ("taiwan", "台灣", "中華民國"))
+        queries = [q + " Taiwan", q] if (_has_cjk and not _has_country) else [q]
+
+        async def _search(query: str) -> list:
+            qs_nom = urllib.parse.urlencode({
+                "q": query, "format": "json", "limit": "1", "addressdetails": "0",
+            })
+            r = await safe_request(
+                "GET", f"https://nominatim.openstreetmap.org/search?{qs_nom}",
+                headers={
+                    "User-Agent": "jt-ipam/1.0 (geocoding proxy)",
+                    "Accept": "application/json",
+                    "Accept-Language": "zh-TW,zh,en",
+                },
+                timeout=15.0,
+            )
+            r.raise_for_status()
+            return r.json()
+
         for attempt in queries:
             data = await _search(attempt)
             if data:
                 break
+
     except UnsafeOutboundURL as exc:
         raise HTTPException(502, detail=f"geocode_url_unsafe: {exc}") from exc
     except Exception as exc:
