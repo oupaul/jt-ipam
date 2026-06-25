@@ -62,10 +62,13 @@ async def geocode_address(
     import urllib.parse
     from app.core.safe_http import UnsafeOutboundURL, safe_request
 
-    url = (
-        "https://nominatim.openstreetmap.org/search"
-        f"?q={urllib.parse.quote(q)}&format=json&limit=1"
-    )
+    qs = urllib.parse.urlencode({
+        "q": q,
+        "format": "json",
+        "limit": "3",
+        "addressdetails": "0",
+    })
+    url = f"https://nominatim.openstreetmap.org/search?{qs}"
     try:
         resp = await safe_request(
             "GET", url,
@@ -74,7 +77,7 @@ async def geocode_address(
                 "Accept": "application/json",
                 "Accept-Language": "zh-TW,zh,en",
             },
-            timeout=10.0,
+            timeout=15.0,
         )
         resp.raise_for_status()
         data = resp.json()
