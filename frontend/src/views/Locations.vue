@@ -5,7 +5,7 @@ import { computed, h, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NCard, NDataTable, NSpace, NIcon, NButton, NModal, NForm, NFormItem,
-  NInput, NPopconfirm, NInputNumber, NTooltip,
+  NInput, NInputGroup, NPopconfirm, NInputNumber, NTooltip,
   useMessage, type DataTableColumns, type DataTableRowKey,
 } from "naive-ui";
 import {
@@ -124,6 +124,28 @@ function openEdit(r: Location) {
   void loadFp(r.id);
   show.value = true;
 }
+const geocoding = ref(false);
+async function lookupCoords() {
+  const addr = form.value.address.trim();
+  if (!addr) { msg.warning(t("locations.geo_no_address")); return; }
+  geocoding.value = true;
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(addr)}&format=json&limit=1`,
+      { headers: { "Accept": "application/json", "Accept-Language": "zh-TW,zh,en" } },
+    );
+    const data = await res.json();
+    if (!Array.isArray(data) || !data.length) { msg.warning(t("locations.geo_not_found")); return; }
+    form.value.latitude = Math.round(parseFloat(data[0].lat) * 1e6) / 1e6;
+    form.value.longitude = Math.round(parseFloat(data[0].lon) * 1e6) / 1e6;
+    msg.success(t("locations.geo_found"));
+  } catch {
+    msg.error(t("errors.network"));
+  } finally {
+    geocoding.value = false;
+  }
+}
+
 async function submit() {
   try {
     const payload = {
@@ -265,7 +287,15 @@ onMounted(() => {
           <n-select v-model:value="form.customer_id" :options="customerOptions"
                     :placeholder="t('common.not_specified')" clearable filterable />
         </n-form-item>
-        <n-form-item :label="t('locations.address')"><n-input v-model:value="form.address" /></n-form-item>
+        <n-form-item :label="t('locations.address')">
+          <n-input-group>
+            <n-input v-model:value="form.address" />
+            <n-button :loading="geocoding" @click="lookupCoords" style="white-space: nowrap">
+              <template #icon><n-icon><PinIcon /></n-icon></template>
+              {{ t("locations.geo_lookup") }}
+            </n-button>
+          </n-input-group>
+        </n-form-item>
         <n-space :size="12">
           <n-form-item :label="t('locations.latitude')">
             <n-input-number v-model:value="form.latitude" :min="-90" :max="90" :step="0.0001"

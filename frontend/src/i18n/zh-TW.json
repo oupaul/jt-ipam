@@ -1224,7 +1224,11 @@
     "longitude": "經度 (longitude)",
     "map": "地圖",
     "map_preview": "地圖預覽",
-    "map_all_hint": "所有已設經緯度的地點；點標記可編輯。"
+    "map_all_hint": "所有已設經緯度的地點；點標記可編輯。",
+    "geo_lookup": "查詢座標",
+    "geo_no_address": "請先填寫地址",
+    "geo_not_found": "找不到對應座標，請確認地址",
+    "geo_found": "座標已自動填入"
   },
   "racks": {
     "u_height": "U 高度",

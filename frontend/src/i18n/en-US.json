@@ -1226,7 +1226,11 @@
     "longitude": "Longitude",
     "map": "Map",
     "map_preview": "Map preview",
-    "map_all_hint": "All locations with coordinates; click a marker to edit."
+    "map_all_hint": "All locations with coordinates; click a marker to edit.",
+    "geo_lookup": "Lookup coords",
+    "geo_no_address": "Please enter an address first",
+    "geo_not_found": "No coordinates found, please check the address",
+    "geo_found": "Coordinates filled in automatically"
   },
   "racks": {
     "u_height": "U",
