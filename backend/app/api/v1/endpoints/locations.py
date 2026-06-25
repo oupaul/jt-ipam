@@ -55,8 +55,8 @@ def _floorplan_dir() -> Path:
 # ─────────────────── Geocoding proxy ───────────────────
 @router.get("/locations/geocode")
 async def geocode_address(
-    q: str = Query(..., min_length=1, max_length=300),
     _user: CurrentUser,
+    q: str = Query(..., min_length=1, max_length=300),
 ) -> dict[str, Any]:
     """Nominatim geocoding proxy（避免瀏覽器 CORS/CSP 限制）。"""
     import urllib.parse
