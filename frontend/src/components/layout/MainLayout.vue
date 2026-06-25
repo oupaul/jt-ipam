@@ -184,7 +184,7 @@ const menuOptions = computed<MenuOption[]>(() => {
     { label: () => t("nav.devices"),     key: "devices",    icon: renderIcon(DevicesIcon) },
     { label: () => t("nav.racks"),       key: "racks",      icon: renderIcon(RacksIcon) },
     { label: () => t("nav.locations"),   key: "locations",  icon: renderIcon(LocationsIcon) },
-    ...(me.value?.is_admin
+    ...((me.value?.is_admin || me.value?.can_edit)
       ? [{ label: () => t("nav.customers"), key: "customers", icon: renderIcon(CustomersIcon) }]
       : []),
     { label: () => t("nav.requests"),    key: "requests",   icon: renderIcon(RequestsIcon) },

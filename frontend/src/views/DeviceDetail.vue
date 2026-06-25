@@ -35,7 +35,7 @@ const pg = useTablePagination();
 const { t } = useI18n();
 
 const { me } = storeToRefs(useAuthStore());
-const isAdmin = computed(() => !!me.value?.is_admin);
+const isAdmin = computed(() => !!me.value?.is_admin || !!me.value?.can_edit);
 // 卡片標題：icon + 文字（NCard title 支援 render function）
 function cardHead(icon: any, text: string) {
   return h("span", { style: "display:inline-flex;align-items:center;gap:8px" },

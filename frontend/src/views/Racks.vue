@@ -74,7 +74,7 @@ function togglePinRoom() {
     pinnedRoom.value = roomId.value; localStorage.setItem(PINNED_ROOM_KEY, roomId.value);
   }
 }
-const isAdmin = computed(() => !!auth.me?.is_admin);
+const isAdmin = computed(() => !!auth.me?.is_admin || !!auth.me?.can_edit);
 // 合併單卡模式：機房內所有機櫃排進同一張卡（不分卡片），存 localStorage（每瀏覽器）
 const MERGED_VIEW_KEY = "jt_rack_merged";
 const mergedView = ref<boolean>(localStorage.getItem(MERGED_VIEW_KEY) === "1");
