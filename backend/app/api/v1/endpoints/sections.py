@@ -14,6 +14,7 @@ from app.api.v1.dependencies import (
     CurrentUser,
     require_admin,
     require_object_perm,
+    require_type_perm,
 )
 from app.core.audit import append_audit
 from app.core.db import get_session
@@ -97,7 +98,7 @@ async def get_section(
     "",
     response_model=SectionRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_admin)],   # 建立 Section 限 admin（A01：頂層命名空間嚴格）
+    dependencies=[Depends(require_type_perm("section", "write"))],
 )
 async def create_section(
     payload: SectionCreate,
