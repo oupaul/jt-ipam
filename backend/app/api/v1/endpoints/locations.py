@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -131,6 +131,51 @@ async def geocode_address(
         "lon": float(data[0]["lon"]),
         "display_name": data[0].get("display_name", ""),
     }
+
+
+# ─────────────────── Location CSV import ───────────────────
+@router.post("/locations/import-csv",
+             dependencies=[Depends(require_type_perm("location", "write"))])
+async def import_locations_csv_endpoint(
+    file: Annotated[UploadFile, File()],
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    dry_run: Annotated[bool, Form()] = True,
+    update_existing: Annotated[bool, Form()] = False,
+) -> dict[str, Any]:
+    """匯入地點 CSV。dry_run=true 只回預覽，不寫 DB。"""
+    from app.services.csv_io import import_locations_csv as _import_csv
+
+    raw = await file.read()
+    if len(raw) > 16_777_216:
+        raise HTTPException(413, detail="CSV file too large (max 16 MB)")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(400, detail=f"CSV must be UTF-8: {exc}") from exc
+
+    result = await _import_csv(
+        session, csv_text=text, dry_run=dry_run, update_existing=update_existing,
+    )
+
+    if not dry_run and (result.inserted > 0 or result.updated > 0):
+        await append_audit(
+            session,
+            actor_user_id=str(user.id),
+            actor_ip=request.client.host if request.client else None,
+            actor_user_agent=request.headers.get("user-agent"),
+            object_type="location", object_id="bulk",
+            action="location_csv_import",
+            diff={
+                "inserted": result.inserted, "updated": result.updated,
+                "skipped": result.skipped, "errored": result.errored,
+                "filename": file.filename, "update_existing": update_existing,
+            },
+            request_id=getattr(request.state, "request_id", None),
+        )
+
+    return {"dry_run": dry_run, **result.to_dict()}
 
 
 # ─────────────────── Locations ───────────────────

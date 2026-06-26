@@ -1112,6 +1112,17 @@
     "queued": "匯入已排入作業，可到「作業」頁看進度與結果",
     "import_failed": "匯入失敗"
   },
+  "location_csv_import": {
+    "button": "匯入 CSV",
+    "hint_html": "欄位順序不重要；header 必須含 <code>name</code>。選用欄位：<code>address, latitude, longitude, description</code>。UTF-8（含 BOM）；自動偵測逗號 / 分號 / Tab。",
+    "dry_run": "Dry-run（不寫入 DB，只回傳預覽）",
+    "update_existing": "Upsert 模式（以 CSV 非空欄位更新同名地點）",
+    "select_file": "選擇 CSV 上傳",
+    "result_title": "結果",
+    "dry_run_preview": "Dry-run：預覽 {n} 筆",
+    "imported": "已匯入：{inserted}，更新：{updated}，跳過：{skipped}",
+    "import_failed": "匯入失敗"
+  },
   "device_csv_import": {
     "button": "匯入 CSV",
     "hint_html": "欄位順序不重要；header 必須含 <code>name</code>。選用欄位：<code>fqdn, type, vendor, model, serial, description</code>。UTF-8 (含 BOM)；自動偵測逗號 / 分號 / Tab。",

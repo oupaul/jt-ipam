@@ -26,9 +26,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.address import IPAddress
 from app.models.device import Device as DeviceModel
+from app.models.location import Location as LocationModel
 from app.models.subnet import Subnet
 from app.schemas.address import IPAddressCreate
 from app.schemas.device import DeviceCreate
+from app.schemas.location import LocationCreate
 
 EXPORT_COLUMNS: list[str] = [
     "ip",
@@ -409,6 +411,137 @@ async def import_devices_csv(
                 vendor=payload.vendor,
                 model=payload.model,
                 serial=payload.serial,
+                description=payload.description,
+            )
+            session.add(obj)
+            existing.add(name)
+
+        inserted += 1
+
+    if not dry_run and (inserted > 0 or updated > 0):
+        await session.commit()
+
+    return ImportResult(
+        inserted=0 if dry_run else inserted,
+        updated=0 if dry_run else updated,
+        skipped=skipped,
+        errored=errored,
+        errors=errors,
+        preview=preview,
+    )
+
+
+# ─── Location CSV import ───────────────────────────────────────────────────────
+
+_LOCATION_INPUT_COLS = {"name", "address", "latitude", "longitude", "description"}
+
+_LOCATION_COL_ALIASES: dict[str, str] = {
+    "名稱": "name",
+    "地址": "address",
+    "緯度": "latitude",
+    "經度": "longitude",
+    "描述": "description",
+    "說明": "description",
+}
+
+
+async def import_locations_csv(
+    session: AsyncSession,
+    *,
+    csv_text: str,
+    dry_run: bool = False,
+    update_existing: bool = False,
+) -> ImportResult:
+    """匯入地點 / 機房 CSV。
+
+    - header 必須含 `name`（地點名稱，作為唯一鍵）
+    - update_existing=False（預設）：已存在同名地點視為 skip
+    - update_existing=True：以 CSV 非空欄位更新既有地點
+    - 支援欄位：name, address, latitude, longitude, description
+    - 支援中文欄位別名（名稱/地址/緯度/經度/描述）
+    """
+    text = _strip_bom(csv_text)
+    if not text.strip():
+        return ImportResult(inserted=0, updated=0, skipped=0, errored=0, errors=[], preview=[])
+
+    sample = text[:4096]
+    dialect = _detect_dialect(sample)
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+
+    _norm_headers = [
+        (_LOCATION_COL_ALIASES.get((c or "").strip(), (c or "").strip())).lower()
+        for c in (reader.fieldnames or [])
+    ]
+    if not reader.fieldnames or "name" not in _norm_headers:
+        return ImportResult(
+            inserted=0, updated=0, skipped=0, errored=1,
+            errors=[ImportRowError(line_number=1, raw={"fieldnames": reader.fieldnames or []},
+                                   error="Required header 'name' (or '名稱') not found")],
+            preview=[],
+        )
+
+    existing_q = await session.execute(select(LocationModel))
+    existing_objs: dict[str, LocationModel] = {r.name: r for r in existing_q.scalars().all()}
+    existing = set(existing_objs.keys())
+
+    inserted = 0
+    updated = 0
+    skipped = 0
+    errored = 0
+    errors: list[ImportRowError] = []
+    preview: list[dict[str, Any]] = []
+
+    for line_no, raw in enumerate(reader, start=2):
+        row_raw = {(k or "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
+        row = {(_LOCATION_COL_ALIASES.get(k, k).lower()): v for k, v in row_raw.items()}
+        unknown = [k for k in row if k not in _LOCATION_INPUT_COLS and k != ""]
+        if unknown:
+            errors.append(ImportRowError(line_no, dict(row), f"Ignored unknown columns: {unknown}"))
+
+        name = row.get("name") or ""
+        if not name:
+            errored += 1
+            errors.append(ImportRowError(line_no, dict(row), "Missing name"))
+            continue
+
+        try:
+            lat_raw = row.get("latitude") or None
+            lon_raw = row.get("longitude") or None
+            payload = LocationCreate(
+                name=name,
+                address=row.get("address") or None,
+                latitude=float(lat_raw) if lat_raw else None,
+                longitude=float(lon_raw) if lon_raw else None,
+                description=row.get("description") or None,
+            )
+        except Exception as exc:
+            errored += 1
+            msg = getattr(exc, "errors", lambda: [{"msg": str(exc)}])()
+            errors.append(ImportRowError(line_no, dict(row), f"Validation: {msg[0]['msg']}"))
+            continue
+
+        if name in existing:
+            if not update_existing:
+                skipped += 1
+                continue
+            if not dry_run:
+                obj = existing_objs[name]
+                if row.get("address"):     obj.address = payload.address
+                if row.get("latitude"):    obj.latitude = payload.latitude
+                if row.get("longitude"):   obj.longitude = payload.longitude
+                if row.get("description"): obj.description = payload.description
+            updated += 1
+            continue
+
+        if len(preview) < 5:
+            preview.append(payload.model_dump(mode="json"))
+
+        if not dry_run:
+            obj = LocationModel(
+                name=payload.name,
+                address=payload.address,
+                latitude=payload.latitude,
+                longitude=payload.longitude,
                 description=payload.description,
             )
             session.add(obj)
