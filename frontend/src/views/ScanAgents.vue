@@ -331,7 +331,7 @@ onMounted(() => { void refresh(); });
     <n-data-table :columns="cols" :data="filteredRows" :loading="loading" :bordered="false" :scroll-x="1080" :pagination="pg" />
 
     <!-- 相依套件詳情 -->
-    <n-modal v-model:show="toolsShow" preset="card" :title="t('scan_agent.deps_title')" style="width: 600px">
+    <n-modal v-model:show="toolsShow" preset="card" :title="t('scan_agent.deps_title')" style="width: 720px; max-width: 94vw">
       <p class="hint" style="margin-top:0">{{ t("scan_agent.deps_hint") }}</p>
       <table class="dep-tbl">
         <thead>
@@ -354,7 +354,7 @@ onMounted(() => { void refresh(); });
             <td>{{ tdep.version || "—" }}</td>
             <td>{{ tdep.probes.length ? tdep.probes.join(", ") : "—" }}</td>
             <td>
-              <code v-if="!tdep.installed && tdep.package">{{ SUDO }} apt install {{ tdep.package }}</code>
+              <code v-if="!tdep.installed && tdep.package">sudo apt install {{ tdep.package }}</code>
               <span v-else style="opacity:.4">—</span>
             </td>
           </tr>
@@ -581,7 +581,9 @@ onMounted(() => { void refresh(); });
   word-break: break-all;
 }
 .dep-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-.dep-tbl th, .dep-tbl td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--n-border-color, rgba(128,128,128,.18)); }
+.dep-tbl th, .dep-tbl td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--n-border-color, rgba(128,128,128,.18)); white-space: nowrap; }
+/* 只讓「安裝指令」那欄（最後一欄）可換行；工具名/版本/用於探測不換行 */
+.dep-tbl td:last-child, .dep-tbl th:last-child { white-space: normal; }
 .dep-tbl th { font-weight: 600; opacity: .7; font-size: 12px; }
 .dep-tbl code { font-size: 12px; background: rgba(128,128,128,.1); border-radius: 4px; padding: 1px 5px; }
 .hint { font-size: 12px; opacity: .65; line-height: 1.5; margin: 8px 0; }
