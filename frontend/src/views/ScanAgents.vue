@@ -27,10 +27,12 @@ import { useColumnPrefs } from "@/composables/useColumnPrefs";
 const { t, locale } = useI18n();
 const { catalog } = useScanProbes();
 
+// 所有欄位 = 預設可見（含新加的 tools「相依套件」）。tools 同時在 allKeys（才點得動/開得起來）
+// 與 defaultVisible（才預設打開；在此 → withNewDefaults 讓舊用戶升級後也自動帶出這欄）。
+const SA_COLS = ["name", "enabled", "has_key", "agent_version", "source_ip", "subnet_count",
+  "tools", "last_seen_at", "last_error", "actions"];
 const { visibleKeys: saVis, setVisible: saSet, reset: saReset } = useColumnPrefs(
-  "scan_agents",
-  ["name", "enabled", "has_key", "agent_version", "source_ip", "subnet_count", "last_seen_at", "last_error", "actions"],
-  ["name", "enabled", "has_key", "agent_version", "source_ip", "subnet_count", "last_seen_at", "last_error", "actions"],
+  "scan_agents", SA_COLS, SA_COLS,
 );
 const saPicker = [
   { key: "name", label: t("cols.name") },
