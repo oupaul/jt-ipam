@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.9] — 2026-06-27
+
+### Added
+- **Notification matrix** (Admin → Notification settings): a per-event × per-channel grid (in-app bell /
+  email) to choose which events send notifications. Events: IP request submitted / approved / rejected,
+  certificate expiring or expired, **agent deployed a new certificate** (new), certificate drift, anomaly
+  detected. Every notification site now respects the matrix; certificate and anomaly events can now also be
+  emailed (previously in-app only).
+- **New event `cert.deployed`**: when a distribution agent successfully swaps a cert for a new version, admins
+  are notified (the agent report endpoint diffs the previous vs new fingerprint per cert/service).
+- **Certificate distribution: a `files` service profile** that only writes the cert files (fullchain + key to
+  `/etc/ssl/jt-ipam`) and does **not** test, reload or restart any service — for operators who reload
+  themselves.
+
+
 ## [0.5.8] — 2026-06-26
 
 ### Security

@@ -106,6 +106,7 @@
     "certs_ph": "選擇要派送的憑證（可多選）",
     "no_scope": "此代理尚無可派送的憑證（請先到憑證頁把憑證加入此代理範圍）",
     "services": "服務（可多選）",
+    "files_only": "files（僅換檔）",
     "advanced": "進階：手動模式（自訂路徑）",
     "advanced_hint": "想自己決定檔案路徑時用；reload 留空會沿用所選 profile 的重載指令。",
     "cert": "憑證",
@@ -2331,7 +2332,22 @@
     "no_host": "請先填寫 SMTP Host（不必先啟用，可直接寄測試信驗證）。",
     "send_failed": "寄信失敗：{msg}",
     "other_title": "其他通知管道",
-    "coming_soon": "開發中"
+    "coming_soon": "開發中",
+    "matrix_title": "通知矩陣",
+    "matrix_hint": "勾選每個事件要發送的通知管道。",
+    "matrix_event": "事件",
+    "matrix_in_app": "站內（鈴鐺）",
+    "matrix_email": "Email",
+    "matrix_email_note": "Email 欄需上方「Email (SMTP)」管道已啟用才會實際寄出；站內鈴鐺一律可用。",
+    "ev": {
+      "ip_request_created": "IP 申請待審核（通知審核者）",
+      "ip_request_approved": "IP 申請已核准（通知申請人）",
+      "ip_request_rejected": "IP 申請已拒絕（通知申請人）",
+      "cert_expiring": "憑證即將到期 / 已過期",
+      "cert_deployed": "代理成功更換新憑證",
+      "cert_drift": "憑證飄移（某代理未套到最新版）",
+      "anomaly_detected": "異常偵測有新發現"
+    }
   },
   "system_settings": {
     "title": "系統設定（全域）",

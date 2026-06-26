@@ -106,6 +106,7 @@
     "certs_ph": "Pick the certificates to deploy (multiple)",
     "no_scope": "This agent has no certificates in scope yet (add some to the agent on the Certificates page)",
     "services": "Services (multiple)",
+    "files_only": "files (write only)",
     "advanced": "Advanced: manual mode (custom paths)",
     "advanced_hint": "Use when you want to choose the file paths yourself; leave reload empty to use the chosen profile's reload command.",
     "cert": "Certificate",
@@ -2333,7 +2334,22 @@
     "no_host": "Enter the SMTP host first (no need to enable — you can send a test right away).",
     "send_failed": "Send failed: {msg}",
     "other_title": "Other channels",
-    "coming_soon": "In development"
+    "coming_soon": "In development",
+    "matrix_title": "Notification matrix",
+    "matrix_hint": "Choose which channels each event notifies through.",
+    "matrix_event": "Event",
+    "matrix_in_app": "In-app (bell)",
+    "matrix_email": "Email",
+    "matrix_email_note": "The Email column only sends if the Email (SMTP) channel above is enabled; the in-app bell always works.",
+    "ev": {
+      "ip_request_created": "IP request awaiting approval (notify approvers)",
+      "ip_request_approved": "IP request approved (notify requester)",
+      "ip_request_rejected": "IP request rejected (notify requester)",
+      "cert_expiring": "Certificate expiring / expired",
+      "cert_deployed": "Agent deployed a new certificate",
+      "cert_drift": "Certificate drift (an agent is not up to date)",
+      "anomaly_detected": "Anomaly detection found new issues"
+    }
   },
   "system_settings": {
     "title": "System Settings (global)",
