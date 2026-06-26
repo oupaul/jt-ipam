@@ -415,6 +415,7 @@ async def import_devices_csv(
             )
             session.add(obj)
             existing.add(name)
+            existing_objs[name] = obj  # 同 CSV 內重複名稱的 upsert 也能找到
 
         inserted += 1
 
@@ -546,6 +547,7 @@ async def import_locations_csv(
             )
             session.add(obj)
             existing.add(name)
+            existing_objs[name] = obj  # 同 CSV 內重複名稱的 upsert 也能找到
 
         inserted += 1
 
