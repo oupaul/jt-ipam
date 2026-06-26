@@ -1223,6 +1223,7 @@
     "longitude": "經度 (longitude)",
     "map": "地圖",
     "map_preview": "地圖預覽",
+    "open_in_map": "在地圖開啟（新分頁）",
     "map_all_hint": "所有已設經緯度的地點；點標記可編輯。"
   },
   "racks": {

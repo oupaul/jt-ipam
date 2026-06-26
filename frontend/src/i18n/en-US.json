@@ -1225,6 +1225,7 @@
     "longitude": "Longitude",
     "map": "Map",
     "map_preview": "Map preview",
+    "open_in_map": "Open in map (new tab)",
     "map_all_hint": "All locations with coordinates; click a marker to edit."
   },
   "racks": {
