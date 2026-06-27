@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.18] — 2026-06-27
+
+### Security / Changed
+- **The Locations map is now fully self-contained — no embedded OpenStreetMap.** The OSM tile renderer is
+  replaced by a bundled Natural Earth world outline (public domain) projected locally. The map now works on
+  isolated/offline networks, sends **no requests to OSM** (it no longer leaks which sites an admin is viewing),
+  and lets the headers tighten: the OSM exception is dropped from CSP `img-src`, and
+  `Cross-Origin-Embedder-Policy` is upgraded to **`require-corp`** (the strongest value — now that there are
+  zero cross-origin subresources). nginx proxy snippets `proxy_hide_header` COEP too (single source).
+- **Column-picker labels across all admin tables re-translate on a live language switch** — 19 pickers wrapped
+  in `computed` (they were frozen at the language active when the page first loaded).
+- pfSense NAT sync was **verified against a live port-forward** and refined (external `destination_port` for the
+  NAT port; `target` linked to the internal IP).
+
+### Added
+- `deploy/zap-baseline.conf` — a documented ZAP baseline-triage of accepted, justified low/informational
+  exceptions (Naive-UI `style-src 'unsafe-inline'`, IPAM example IPs, asset caching, SPA detection). The release
+  gate is now: a ZAP scan with **no findings beyond this baseline** (0 FAIL / 0 WARN).
+
+
 ## [0.5.17] — 2026-06-27
 
 ### Changed

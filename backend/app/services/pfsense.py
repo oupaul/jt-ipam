@@ -264,16 +264,28 @@ async def sync_nat(session: AsyncSession, fw: PfSenseFirewall) -> int:
     rows = await _api_get(fw, EP_NAT_PF)
     if not isinstance(rows, list):
         return 0
+    # 欄名以 pfSense-pkg-RESTAPI 實機回應為準（已對照）：interface / protocol / source /
+    # source_port / destination / destination_port / target（內部 IP）/ local_port / disabled / descr。
+    scope_ids = list(fw.scope_subnet_ids) if fw.scope_subnet_ids else None
     n = 0
     for d in rows:
         if not isinstance(d, dict):
             continue
+        # target（轉發到的內部 IP）→ 連到 jt-ipam IPAddress（scope + limit(1) 防重疊網段）
+        target = _first(d, "target", "local_ip")
+        dst_ip_id = None
+        if target:
+            stmt = select(IPAddress.id).where(IPAddress.ip == str(target).split("/")[0])
+            if scope_ids:
+                stmt = stmt.where(IPAddress.subnet_id.in_(scope_ids))
+            dst_ip_id = (await session.execute(stmt.limit(1))).scalars().first()
         session.add(NATTranslation(
             name=str(_first(d, "descr", "name") or "port forward")[:200],
             type="port_forward",
             protocol=str(d.get("protocol") or "any")[:8],
             src_interface=(str(d.get("interface"))[:64] if d.get("interface") else None),
-            dst_port=_to_port(_first(d, "local_port", "destination_port", "dst_port")),
+            dst_ip_id=dst_ip_id,
+            dst_port=_to_port(_first(d, "destination_port", "local_port", "dst_port")),
             src_port=_to_port(_first(d, "source_port", "src_port")),
             description=_first(d, "descr", "description"),
             source_origin=origin,

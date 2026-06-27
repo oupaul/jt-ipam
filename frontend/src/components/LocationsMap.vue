@@ -1,78 +1,55 @@
 <script setup lang="ts">
 /**
- * 機房 / 地點世界地圖 — 零相依的 OSM 圖磚 slippy 視圖。
+ * 機房 / 地點世界地圖 — 完全自帶、零外部相依。
  *
- * 直接以 Web Mercator 投影鋪 OpenStreetMap 圖磚（<img>），把所有有經緯度的地點
- * 標成標記，並自動選 zoom + 置中，讓所有點剛好落在視窗內。
- * 不引入 Leaflet 等相依；圖磚網域已在 CSP img-src 放行。
- * （地圖引擎目前固定用 OSM＝管理員預設；Google 需另接 SDK，先不混進總覽圖。）
+ * 不嵌入 OpenStreetMap 圖磚：改用內建的 Natural Earth 110m 陸地輪廓（public domain，
+ * 已預先投影成 SVG path），以等距圓柱（equirectangular）投影把有經緯度的地點標成標記，
+ * 並自動依所有點選出剛好塞得下的視窗。**不對外發任何請求** → 隔離網路可用、不洩漏管理員
+ * 正在看哪些站點、CSP 不需放行外部網域、可用最強的 COEP require-corp。
  */
 import { computed, onMounted, onBeforeUnmount, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { WORLD_LAND_PATH } from "@/assets/world-land";
 
 interface Pt { id: string; name: string; lat: number; lng: number; }
 const props = defineProps<{ points: Pt[] }>();
 const emit = defineEmits<{ (e: "select", id: string): void }>();
 const { t } = useI18n();
 
-const TILE = 256;
 const boxRef = ref<HTMLDivElement | null>(null);
 const boxW = ref(800);
 const boxH = 340;
 
-function lngToWorldX(lng: number, z: number): number { return (lng + 180) / 360 * TILE * 2 ** z; }
-function latToWorldY(lat: number, z: number): number {
-  const s = Math.sin(lat * Math.PI / 180);
-  return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * TILE * 2 ** z;
-}
+// 等距圓柱投影：經度 lng→x(0..360)、緯度 lat→y(0..180)
+const ex = (lng: number) => lng + 180;
+const ey = (lat: number) => 90 - lat;
 
 const valid = computed(() => props.points.filter((p) =>
   Number.isFinite(p.lat) && Number.isFinite(p.lng) && (p.lat !== 0 || p.lng !== 0)));
 
-// 依所有點選出剛好塞得下的 zoom + 中心
+// 依所有點算出 viewBox（含留白、對齊容器長寬比、夾在世界範圍內）
 const view = computed(() => {
   const pts = valid.value;
-  const W = boxW.value, H = boxH, pad = 48;
+  const W = boxW.value, H = boxH;
   if (!pts.length) return null;
-  const lats = pts.map((p) => p.lat), lngs = pts.map((p) => p.lng);
-  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
-  let z = 13;
-  if (pts.length > 1) {
-    for (z = 18; z >= 2; z--) {
-      const dx = Math.abs(lngToWorldX(maxLng, z) - lngToWorldX(minLng, z));
-      const dy = Math.abs(latToWorldY(minLat, z) - latToWorldY(maxLat, z));
-      if (dx <= W - 2 * pad && dy <= H - 2 * pad) break;
-    }
-  }
-  const cx = (lngToWorldX(minLng, z) + lngToWorldX(maxLng, z)) / 2;
-  const cy = (latToWorldY(minLat, z) + latToWorldY(maxLat, z)) / 2;
-  return { z, vx0: cx - W / 2, vy0: cy - H / 2, W, H };
+  const xs = pts.map((p) => ex(p.lng)), ys = pts.map((p) => ey(p.lat));
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  // 至少給一個合理跨度（單點不會爆縮），再加 1.4x 留白
+  let spanX = Math.max(Math.max(...xs) - Math.min(...xs), 24) * 1.4;
+  let spanY = Math.max(Math.max(...ys) - Math.min(...ys), 16) * 1.4;
+  const boxAspect = W / H;
+  if (spanX / spanY < boxAspect) spanX = spanY * boxAspect;
+  else spanY = spanX / boxAspect;
+  const vw = Math.min(spanX, 360), vh = Math.min(spanY, 180);
+  const vx0 = Math.min(Math.max(cx - vw / 2, 0), 360 - vw);
+  const vy0 = Math.min(Math.max(cy - vh / 2, 0), 180 - vh);
+  return { vx0, vy0, vw, vh, W, H };
 });
 
-const tiles = computed(() => {
+const viewBox = computed(() => {
   const v = view.value;
-  if (!v) return [];
-  const n = 2 ** v.z;
-  const out: { key: string; src: string; left: number; top: number }[] = [];
-  const tx0 = Math.floor(v.vx0 / TILE), tx1 = Math.floor((v.vx0 + v.W) / TILE);
-  const ty0 = Math.floor(v.vy0 / TILE), ty1 = Math.floor((v.vy0 + v.H) / TILE);
-  const subs = ["a", "b", "c"];
-  let i = 0;
-  for (let tx = tx0; tx <= tx1; tx++) {
-    for (let ty = ty0; ty <= ty1; ty++) {
-      if (ty < 0 || ty >= n) continue;
-      const wx = ((tx % n) + n) % n;
-      const s = subs[(i++) % 3];
-      out.push({
-        key: `${tx}_${ty}`,
-        src: `https://${s}.tile.openstreetmap.org/${v.z}/${wx}/${ty}.png`,
-        left: tx * TILE - v.vx0,
-        top: ty * TILE - v.vy0,
-      });
-    }
-  }
-  return out;
+  return v ? `${v.vx0} ${v.vy0} ${v.vw} ${v.vh}` : "0 0 360 180";
 });
 
 const markers = computed(() => {
@@ -80,8 +57,8 @@ const markers = computed(() => {
   if (!v) return [];
   return valid.value.map((p) => ({
     id: p.id, name: p.name,
-    left: lngToWorldX(p.lng, v.z) - v.vx0,
-    top: latToWorldY(p.lat, v.z) - v.vy0,
+    left: (ex(p.lng) - v.vx0) / v.vw * v.W,
+    top: (ey(p.lat) - v.vy0) / v.vh * v.H,
   }));
 });
 
@@ -98,8 +75,9 @@ onBeforeUnmount(() => { ro?.disconnect(); });
 
 <template>
   <div v-if="valid.length" ref="boxRef" class="lmap" :style="{ height: boxH + 'px' }">
-    <img v-for="ti in tiles" :key="ti.key" :src="ti.src" class="lmap-tile"
-         :style="{ left: ti.left + 'px', top: ti.top + 'px' }" alt="" draggable="false" />
+    <svg class="lmap-svg" :viewBox="viewBox" preserveAspectRatio="none" :width="boxW" :height="boxH">
+      <path :d="WORLD_LAND_PATH" class="lmap-land" />
+    </svg>
     <div
       v-for="m in markers" :key="m.id" class="lmap-pin"
       :style="{ left: m.left + 'px', top: m.top + 'px' }"
@@ -108,7 +86,7 @@ onBeforeUnmount(() => { ro?.disconnect(); });
       <span class="lmap-dot"></span>
       <span class="lmap-name">{{ m.name }}</span>
     </div>
-    <div class="lmap-attr">© OpenStreetMap</div>
+    <div class="lmap-attr">Natural Earth</div>
     <div class="lmap-hint">{{ t("locations.map_all_hint") }}</div>
   </div>
 </template>
@@ -120,12 +98,12 @@ onBeforeUnmount(() => { ro?.disconnect(); });
   overflow: hidden;
   border: 1px solid var(--n-border-color, #ddd);
   border-radius: 8px;
-  background: #e8eef2;
+  background: #adcee8;            /* 海洋 */
 }
-.lmap-tile { position: absolute; width: 256px; height: 256px; user-select: none; pointer-events: none; }
-/* 深色主題：把 OSM 圖磚反相 + 轉色做成深色地圖（標記 / 文字是另外的 DOM，不受影響）*/
-html[data-theme="dark"] .lmap { background: #0b1220; }
-html[data-theme="dark"] .lmap-tile { filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.9) saturate(.82); }
+.lmap-svg { position: absolute; left: 0; top: 0; display: block; }
+.lmap-land { fill: #e6e3d7; stroke: #b9b29a; stroke-width: 0.15; vector-effect: non-scaling-stroke; }
+html[data-theme="dark"] .lmap { background: #0b1a2b; }
+html[data-theme="dark"] .lmap-land { fill: #243447; stroke: #3a4d63; }
 html[data-theme="dark"] .lmap-attr { background: rgba(15,24,37,.7); color: #aab8cc; }
 html[data-theme="dark"] .lmap-hint { background: rgba(15,24,37,.75); color: #cdd8e6; }
 .lmap-pin {

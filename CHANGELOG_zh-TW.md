@@ -4,6 +4,23 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.18] — 2026-06-27
+
+### 安全／變更
+- **地點地圖改為完全自帶、不再嵌入 OpenStreetMap。** 以內建的 Natural Earth 世界輪廓（public domain，本地投影）
+  取代 OSM 圖磚。地圖現在在隔離／離線網路也能用、**完全不對 OSM 發請求**（不再洩漏管理員正在看哪些站點），也讓
+  安全標頭可以收緊：CSP `img-src` 移除 OSM 例外、`Cross-Origin-Embedder-Policy` 升到最強的 **`require-corp`**
+  （全站已零跨來源子資源）。nginx proxy snippet 也 `proxy_hide_header` COEP（單一來源）。
+- **所有管理表格的欄位選擇標籤，現在會在即時切換語言時重新翻譯** —— 19 個 picker 改用 `computed`（原本會卡在
+  進入頁面當下的語言）。
+- pfSense NAT 同步已**用實機 port-forward 驗證**並修正欄位對應（NAT 埠用外部 `destination_port`、`target` 連到內部 IP）。
+
+### 新增
+- `deploy/zap-baseline.conf` —— 已記錄的 ZAP 基準三化（已接受、附理由的 low/informational 例外：Naive UI 的
+  `style-src 'unsafe-inline'`、IPAM 範例 IP、靜態資產快取、SPA 偵測）。發版關卡＝ZAP 掃描**沒有此基準以外的發現**
+  （0 FAIL／0 WARN）。
+
+
 ## [0.5.17] — 2026-06-27
 
 ### 變更
