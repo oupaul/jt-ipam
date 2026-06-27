@@ -4,6 +4,13 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.28] — 2026-06-27
+
+### 修正
+- **PVE 主控台連線表單對齊 SSH 表單。** 自動選最近一筆已存的 PVE 帳密（精簡表單、可直接連線），選了已存帳密時
+  提示文字也跟著切換，卡片標題／連線鈕圖示依協定顯示（xterm → 終端機、noVNC → 螢幕）。
+
+
 ## [0.5.27] — 2026-06-27
 
 ### 修正

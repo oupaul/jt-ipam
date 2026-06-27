@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.28] — 2026-06-27
+
+### Fixed
+- **PVE console connect form now matches the SSH form.** It auto-selects the most recent saved PVE credential
+  (compact form, ready to connect), the hint switches to the saved-credential wording when one is selected,
+  and the card title / connect button icon reflects the protocol (xterm → terminal, noVNC → screen).
+
+
 ## [0.5.27] — 2026-06-27
 
 ### Fixed

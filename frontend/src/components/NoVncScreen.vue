@@ -11,7 +11,7 @@ import {
   NForm, NFormItem, NSpace, NPopconfirm, useMessage,
 } from "naive-ui";
 import {
-  NoVncIcon, DeleteIcon, CancelIcon, KeyIcon, ExpandIcon, ReduceIcon, ChevronDownIcon,
+  NoVncIcon, TerminalIcon, DeleteIcon, CancelIcon, KeyIcon, ExpandIcon, ReduceIcon, ChevronDownIcon,
 } from "@/icons";
 import { buildSendKeysMenu } from "@/composables/useSendKeys";
 import {
@@ -45,6 +45,7 @@ const savedCreds = ref<PveCredential[]>([]);
 const selectedCredId = ref<string | null>(null);
 const protoLabel = computed(() => (props.kind === "ct" ? "xterm" : "noVNC"));
 const isVm = computed(() => props.kind === "vm");
+const headIcon = computed(() => (isVm.value ? NoVncIcon : TerminalIcon));
 
 const screenBox = ref<HTMLDivElement | null>(null);
 const scaleMode = ref<"fit" | "native">("fit");
@@ -59,8 +60,11 @@ const credOptions = computed(() => savedCreds.value.map((c) => ({
 })));
 
 async function loadCreds() {
-  try { savedCreds.value = await listPveCredentials(props.addressId); }
-  catch { savedCreds.value = []; }
+  try {
+    savedCreds.value = await listPveCredentials(props.addressId);
+    // 有已存帳密就預設選最近一筆 → 不必再輸入直接連線（比照 SSH）
+    if (!selectedCredId.value && savedCreds.value.length) selectedCredId.value = savedCreds.value[0].id;
+  } catch { savedCreds.value = []; }
 }
 onMounted(loadCreds);
 
@@ -222,7 +226,7 @@ async function removeCred() {
       <n-card size="small" :bordered="true">
         <template #header>
           <span style="display:flex;align-items:center;gap:8px">
-            <n-icon :component="NoVncIcon" :size="18" />
+            <n-icon :component="headIcon" :size="18" />
             <span>{{ t("novnc.connect_to", { ip }) }}</span>
             <n-tag size="small" type="warning" :bordered="false" round>PVE</n-tag>
             <n-tag size="small" :bordered="false" round>{{ protoLabel }}</n-tag>
@@ -265,12 +269,12 @@ async function removeCred() {
           </template>
 
           <n-alert :show-icon="false" type="info" style="margin-bottom:10px">
-            {{ t("novnc.no_store_hint") }}
+            {{ selectedCredId ? t("novnc.use_saved_hint") : t("novnc.no_store_hint") }}
           </n-alert>
           <n-space justify="end">
             <n-button type="primary" :disabled="!selectedCredId && (!form.username || !form.password)"
                       @click="connect">
-              <template #icon><n-icon :component="NoVncIcon" /></template>
+              <template #icon><n-icon :component="headIcon" /></template>
               {{ protoLabel }} {{ t("novnc.connect") }}
             </n-button>
           </n-space>
