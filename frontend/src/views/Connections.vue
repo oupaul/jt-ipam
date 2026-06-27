@@ -5,10 +5,10 @@ import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import {
   NCard, NSpace, NInput, NButton, NIcon, NDataTable, NButtonGroup, NDropdown,
-  NSelect, useMessage, type DataTableColumns,
+  NSelect, NTooltip, useMessage, type DataTableColumns,
 } from "naive-ui";
 import { listConnectionTargets } from "@/api/rdp";
-import { TerminalIcon, DisplayIcon, VncIcon, ChevronDownIcon, OpenNewWindowIcon, RefreshIcon, SearchIcon } from "@/icons";
+import { TerminalIcon, DisplayIcon, VncIcon, NoVncIcon, ChevronDownIcon, OpenNewWindowIcon, RefreshIcon, SearchIcon } from "@/icons";
 import { autoSort } from "@/composables/useTableSort";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { useTablePagination } from "@/composables/useTablePagination";
@@ -158,14 +158,18 @@ const allColumns = computed<DataTableColumns<IPAddress>>(() => {
         const ic = cz;
         const grp = (key: string, icon: any, label: string, title: string, onMain: () => void,
                      menu: any, onMenu: (k: string) => void) =>
-          h(NButtonGroup, { key }, () => [
-            h(NButton, { type: "info", size: "small", title, onClick: onMain },
-              ic ? { icon: () => h(NIcon, null, () => h(icon)) }
-                 : { icon: () => h(NIcon, null, () => h(icon)), default: () => label }),
-            h(NDropdown, { trigger: "click", options: menu, onSelect: onMenu },
-              () => h(NButton, { type: "info", size: "small", style: "padding:0 2px;border-left:1px solid rgba(255,255,255,.45)" },
-                { icon: () => h(NIcon, null, () => h(ChevronDownIcon)) })),
-          ]);
+          h(NTooltip, { key, delay: 200 }, {
+            // 用系統自己的即時彈窗，不要瀏覽器原生 title
+            trigger: () => h(NButtonGroup, null, () => [
+              h(NButton, { type: "info", size: "small", onClick: onMain },
+                ic ? { icon: () => h(NIcon, null, () => h(icon)) }
+                   : { icon: () => h(NIcon, null, () => h(icon)), default: () => label }),
+              h(NDropdown, { trigger: "click", options: menu, onSelect: onMenu },
+                () => h(NButton, { type: "info", size: "small", style: "padding:0 2px;border-left:1px solid rgba(255,255,255,.45)" },
+                  { icon: () => h(NIcon, null, () => h(ChevronDownIcon)) })),
+            ]),
+            default: () => title,
+          });
         const groups = [];
         if (r.ssh_available)
           groups.push(grp("ssh", TerminalIcon, "SSH", t("ssh.connect"), () => openTab(r), sshRowMenu, (k) => onRowMenu(k, r)));
@@ -174,7 +178,7 @@ const allColumns = computed<DataTableColumns<IPAddress>>(() => {
         if (r.vnc_available)
           groups.push(grp("vnc", VncIcon, "VNC", t("vnc.connect"), () => openVncTab(r), vncRowMenu, (k) => onVncRowMenu(k, r)));
         if (r.novnc_available)
-          groups.push(grp("novnc", r.pve?.kind === "ct" ? TerminalIcon : DisplayIcon,
+          groups.push(grp("novnc", r.pve?.kind === "ct" ? TerminalIcon : NoVncIcon,
             r.pve?.kind === "ct" ? "xterm·PVE" : "noVNC·PVE", t("novnc.connect"),
             () => openNovncTab(r), novncRowMenu, (k) => onNovncRowMenu(k, r)));
         return h("div", { style: "display:flex;gap:6px;flex-wrap:nowrap" }, groups);

@@ -18,7 +18,7 @@ import type { IPAddress } from "@/types";
 import { updateAddress, deleteAddress, createAddress, type IPAddressUpdate } from "@/api/addresses";
 import { getAddressHistory, getAddressSwitchPort, type IPChangeLog, type SwitchPortInfo } from "@/api/ip_history";
 import { getHostnameSources, clearHostnameSource, type HostnameSources } from "@/api/hostname";
-import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon, TerminalIcon, DisplayIcon, VncIcon, ChevronDownIcon, OpenNewWindowIcon, renderIcon } from "@/icons";
+import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon, TerminalIcon, DisplayIcon, VncIcon, NoVncIcon, ChevronDownIcon, OpenNewWindowIcon, renderIcon } from "@/icons";
 import { ArrowLeft as ArrowLeftIcon } from "@iconoir/vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useCustomers } from "@/composables/useCustomers";
@@ -577,65 +577,83 @@ async function remove() {
           <template v-if="!editMode">
             <!-- SSH 連線分割按鈕：主鍵嵌入終端機、下箭頭可另開視窗（僅在啟用且有權限時顯示） -->
             <template v-if="props.address?.ssh_available">
-              <n-button-group key="hx-ssh">
-                <n-button type="info" size="small" :title="t('ssh.connect')" @click="emit('ssh-open')">
-                  <template #icon><n-icon><TerminalIcon /></n-icon></template>
-                  <span v-if="!consoleCompact">{{ t("ssh.connect") }}</span>
-                </n-button>
-                <n-dropdown trigger="click" :options="sshMenuOptions" @select="onSshMenu">
-                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
-                    <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
-                  </n-button>
-                </n-dropdown>
-              </n-button-group>
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group key="hx-ssh">
+                    <n-button type="info" size="small" @click="emit('ssh-open')">
+                      <template #icon><n-icon><TerminalIcon /></n-icon></template>
+                      <span v-if="!consoleCompact">{{ t("ssh.connect") }}</span>
+                    </n-button>
+                    <n-dropdown trigger="click" :options="sshMenuOptions" @select="onSshMenu">
+                      <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
+                        <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
+                      </n-button>
+                    </n-dropdown>
+                  </n-button-group>
+                </template>
+                {{ t("ssh.connect") }}
+              </n-tooltip>
             </template>
             <!-- RDP 連線分割按鈕：主鍵新分頁、下箭頭另開視窗（僅在啟用且有權限時顯示） -->
             <span v-if="props.address?.rdp_available" key="hx-rdp" class="conn-beta-wrap">
-              <n-button-group>
-                <n-button type="info" size="small" :title="t('rdp.connect')" @click="emit('rdp-open')">
-                  <template #icon><n-icon><DisplayIcon /></n-icon></template>
-                  <span v-if="!consoleCompact">{{ t("rdp.connect") }}</span>
-                </n-button>
-                <n-dropdown trigger="click" :options="rdpMenuOptions" @select="onRdpMenu">
-                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
-                    <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
-                  </n-button>
-                </n-dropdown>
-              </n-button-group>
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group>
+                    <n-button type="info" size="small" @click="emit('rdp-open')">
+                      <template #icon><n-icon><DisplayIcon /></n-icon></template>
+                      <span v-if="!consoleCompact">{{ t("rdp.connect") }}</span>
+                    </n-button>
+                    <n-dropdown trigger="click" :options="rdpMenuOptions" @select="onRdpMenu">
+                      <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
+                        <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
+                      </n-button>
+                    </n-dropdown>
+                  </n-button-group>
+                </template>
+                {{ t("rdp.connect") }}
+              </n-tooltip>
               <span class="conn-beta-badge">{{ t("rdp.beta") }}</span>
             </span>
             <!-- VNC 連線分割按鈕：主鍵新分頁、下箭頭另開視窗（僅在啟用且有權限時顯示） -->
             <span v-if="props.address?.vnc_available" key="hx-vnc" class="conn-beta-wrap">
-              <n-button-group>
-                <n-button type="info" size="small" :title="t('vnc.connect')" @click="emit('vnc-open')">
-                  <template #icon><n-icon><VncIcon /></n-icon></template>
-                  <span v-if="!consoleCompact">{{ t("vnc.connect") }}</span>
-                </n-button>
-                <n-dropdown trigger="click" :options="vncMenuOptions" @select="onVncMenu">
-                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
-                    <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
-                  </n-button>
-                </n-dropdown>
-              </n-button-group>
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group>
+                    <n-button type="info" size="small" @click="emit('vnc-open')">
+                      <template #icon><n-icon><VncIcon /></n-icon></template>
+                      <span v-if="!consoleCompact">{{ t("vnc.connect") }}</span>
+                    </n-button>
+                    <n-dropdown trigger="click" :options="vncMenuOptions" @select="onVncMenu">
+                      <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
+                        <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
+                      </n-button>
+                    </n-dropdown>
+                  </n-button-group>
+                </template>
+                {{ t("vnc.connect") }}
+              </n-tooltip>
               <span class="conn-beta-badge">{{ t("vnc.beta") }}</span>
             </span>
             <!-- PVE 主控台連線按鈕（noVNC/xterm；僅在該 IP 是 PVE VM/CT 且有權限時顯示），右上小標 PVE -->
             <span v-if="props.address?.novnc_available" key="hx-novnc" class="conn-beta-wrap">
-              <n-button-group>
-                <n-button type="warning" size="small"
-                          :title="`${props.address?.pve?.kind === 'ct' ? 'xterm' : 'noVNC'} ${t('novnc.connect')}`"
-                          @click="emit('novnc-open')">
-                  <template #icon>
-                    <n-icon><TerminalIcon v-if="props.address?.pve?.kind === 'ct'" /><DisplayIcon v-else /></n-icon>
-                  </template>
-                  <span v-if="!consoleCompact">{{ props.address?.pve?.kind === 'ct' ? 'xterm' : 'noVNC' }}</span>
-                </n-button>
-                <n-dropdown trigger="click" :options="novncMenuOptions" @select="onNovncMenu">
-                  <n-button type="warning" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
-                    <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
-                  </n-button>
-                </n-dropdown>
-              </n-button-group>
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group>
+                    <n-button type="warning" size="small" @click="emit('novnc-open')">
+                      <template #icon>
+                        <n-icon><TerminalIcon v-if="props.address?.pve?.kind === 'ct'" /><NoVncIcon v-else /></n-icon>
+                      </template>
+                      <span v-if="!consoleCompact">{{ props.address?.pve?.kind === 'ct' ? 'xterm' : 'noVNC' }}</span>
+                    </n-button>
+                    <n-dropdown trigger="click" :options="novncMenuOptions" @select="onNovncMenu">
+                      <n-button type="warning" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
+                        <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
+                      </n-button>
+                    </n-dropdown>
+                  </n-button-group>
+                </template>
+                {{ `${props.address?.pve?.kind === 'ct' ? 'xterm' : 'noVNC'} ${t('novnc.connect')}` }}
+              </n-tooltip>
               <span class="conn-beta-badge conn-pve-badge">PVE</span>
             </span>
             <!-- 連線鈕（SSH/RDP/VNC/PVE）與編輯/刪除間只留一條分隔線 -->

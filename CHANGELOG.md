@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.25] — 2026-06-27
+
+### Fixed
+- **noVNC button now uses a distinct icon** (a screen with "N") instead of reusing the RDP icon, so noVNC and
+  RDP are no longer visually identical.
+- **PVE console connect form is now centred on the page in the error state too** (previously only the initial
+  form was centred; an error left the card stuck top-left).
+- **Console connection buttons (SSH / RDP / VNC / noVNC) now use the in-app tooltip** instead of the
+  browser-native `title` popup, on both the Connections page and the IP detail header.
+- **Audit log** now resolves PVE-credential targets to their label instead of showing a raw UUID.
+- **Fixed a 500 when connecting with a *saved* PVE credential** — the stored password was decoded twice
+  (`str` has no `.decode()`); now decrypts once like the RDP/VNC paths.
+
+
 ## [0.5.24] — 2026-06-27
 
 ### Fixed

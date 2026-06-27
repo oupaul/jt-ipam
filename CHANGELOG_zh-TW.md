@@ -4,6 +4,18 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.25] — 2026-06-27
+
+### 修正
+- **noVNC 按鈕改用獨立圖示**（螢幕內含「N」），不再沿用 RDP 圖示 —— noVNC 與 RDP 不再長得一模一樣。
+- **PVE 主控台連線表單在錯誤狀態下也置中**（原本只有初始表單置中，連線失敗時卡片會卡在左上角）。
+- **連線按鈕（SSH／RDP／VNC／noVNC）的提示改用系統內建即時彈窗**，不再用瀏覽器原生 `title` —— 連線管理頁與
+  IP 詳情頁標頭都改。
+- **修正用「已儲存的 PVE 憑證」連線時的 500** —— 儲存的密碼被重複解碼（`str` 沒有 `.decode()`）；改為比照
+  RDP/VNC 只解一次。
+- **稽核記錄**的 PVE 憑證目標改顯示其名稱（label），不再顯示原始 UUID。
+
+
 ## [0.5.24] — 2026-06-27
 
 ### 修正

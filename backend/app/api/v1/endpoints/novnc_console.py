@@ -75,7 +75,7 @@ async def _resolve_creds(
                 or (cred.target_ip_id is not None and cred.target_ip_id != ip.id)):
             raise HTTPException(status_code=404, detail="找不到 PVE 憑證")
         secrets_enc = dict(cred.secrets_enc or {})
-        password = envelope_decrypt(secrets_enc["password"], aad=cred_aad(user.id, "password")).decode("utf-8")
+        password = envelope_decrypt(secrets_enc["password"], aad=cred_aad(user.id, "password"))
         return cred.username, password
     if not payload.username or not payload.password:
         raise HTTPException(status_code=400, detail="缺少 PVE 帳號或密碼")

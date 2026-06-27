@@ -11,7 +11,7 @@ import {
   NForm, NFormItem, NSpace, NPopconfirm, useMessage,
 } from "naive-ui";
 import {
-  VncIcon, DeleteIcon, CancelIcon, KeyIcon, ExpandIcon, ReduceIcon, ChevronDownIcon,
+  NoVncIcon, DeleteIcon, CancelIcon, KeyIcon, ExpandIcon, ReduceIcon, ChevronDownIcon,
 } from "@/icons";
 import { buildSendKeysMenu } from "@/composables/useSendKeys";
 import {
@@ -216,13 +216,13 @@ async function removeCred() {
 </script>
 
 <template>
-  <div class="vnc-wrap" :class="{ 'vnc-full': fullHeight, 'vnc-center': fullHeight && phase === 'form' }">
+  <div class="vnc-wrap" :class="{ 'vnc-full': fullHeight, 'vnc-center': fullHeight && (phase === 'form' || phase === 'error') }">
     <!-- 連線設定表單（版面比照 SSH/RDP/VNC）-->
     <div v-if="phase === 'form' || phase === 'error'" class="vnc-form">
       <n-card size="small" :bordered="true">
         <template #header>
           <span style="display:flex;align-items:center;gap:8px">
-            <n-icon :component="VncIcon" :size="18" />
+            <n-icon :component="NoVncIcon" :size="18" />
             <span>{{ t("novnc.connect_to", { ip }) }}</span>
             <n-tag size="small" type="warning" :bordered="false" round>PVE</n-tag>
             <n-tag size="small" :bordered="false" round>{{ protoLabel }}</n-tag>
@@ -270,7 +270,7 @@ async function removeCred() {
           <n-space justify="end">
             <n-button type="primary" :disabled="!selectedCredId && (!form.username || !form.password)"
                       @click="connect">
-              <template #icon><n-icon :component="VncIcon" /></template>
+              <template #icon><n-icon :component="NoVncIcon" /></template>
               {{ protoLabel }} {{ t("novnc.connect") }}
             </n-button>
           </n-space>
