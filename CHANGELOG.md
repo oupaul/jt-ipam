@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.19] — 2026-06-27
+
+### Security
+- Hardening + documentation around the one remaining accepted finding (CSP `style-src 'unsafe-inline'`,
+  inherent to Vue + Naive UI — `v-show` / `:style` / floating-element positioning emit inline style
+  *attributes*, which CSP cannot nonce/hash). Enabled Naive UI's **`inline-theme-disabled`** to move theme
+  styling out of inline attributes into `<style>` blocks (smaller inline surface + SSR/perf), and documented it
+  as an **accepted risk with compensating controls** in `SECURITY.md` (EN/zh): strict `script-src 'self'` (no JS
+  exec) + `img-src`/`connect-src 'self'` (no exfiltration) + Vue auto-escaping. No real exploitability remains.
+
+
 ## [0.5.18] — 2026-06-27
 
 ### Security / Changed

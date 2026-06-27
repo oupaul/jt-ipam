@@ -4,6 +4,16 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.19] — 2026-06-27
+
+### 安全
+- 針對唯一剩下的已接受發現（CSP `style-src 'unsafe-inline'`，Vue + Naive UI 先天造成——`v-show`／`:style`／
+  浮動元件定位會產生 inline style *屬性*，CSP 無法用 nonce／hash 放行）做加固與文件化：開啟 Naive UI 的
+  **`inline-theme-disabled`**，把主題樣式從 inline 屬性移進 `<style>` 區塊（縮小 inline 面積 + SSR／效能），並在
+  `SECURITY.md`（中／英）記為**附補償控制的已接受風險**：嚴格 `script-src 'self'`（不能執行 JS）+
+  `img-src`／`connect-src 'self'`（不能外洩）+ Vue 自動跳脫。實際已無可利用性。
+
+
 ## [0.5.18] — 2026-06-27
 
 ### 安全／變更
