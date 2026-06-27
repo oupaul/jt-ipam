@@ -1930,7 +1930,7 @@
     "system": {
       "tab": "System",
       "map_provider": "Map provider",
-      "map_provider_hint": "Global setting: which service the Locations map preview uses. OpenStreetMap needs no API key; Google Maps has better coverage in some regions.",
+      "map_provider_hint": "Global setting: the Locations map preview. Default \"Built-in\" is fully offline with no external calls; or use OpenStreetMap (tiles proxied same-origin, browser never hits OSM directly) or Google Maps (in-page uses the built-in map; the external link opens Google).",
       "geoip": "GeoIP (MaxMind)",
       "geoip_account": "MaxMind Account ID",
       "geoip_key": "MaxMind License Key",
@@ -2089,7 +2089,8 @@
       "graylog_g_field_label": "Log field to look up (auto-filled into the example below):",
       "graylog_g_lan_title": "3. Only match internal subnets",
       "graylog_g_lan": "Looking up public IPs against this table is pointless (it only contains your internal IPs). In the pipeline rule, use cidr_match() to first test whether the IP falls within the RFC1918 private ranges (10/8, 172.16/12, 192.168/16) and only look it up when it does — saving resources and avoiding false hits. Replace src_ip with your actual IP field name:",
-      "graylog_g_note": "Tip: the lookup_value() key must be cast with to_string(); the second argument of cidr_match() must be cast with to_ip(). If your messages carry both source and destination IPs, duplicate the rule for dst_ip → dst_hostname."
+      "graylog_g_note": "Tip: the lookup_value() key must be cast with to_string(); the second argument of cidr_match() must be cast with to_ip(). If your messages carry both source and destination IPs, duplicate the rule for dst_ip → dst_hostname.",
+      "map_builtin": "Built-in (offline)"
     }
   },
   "errors": {

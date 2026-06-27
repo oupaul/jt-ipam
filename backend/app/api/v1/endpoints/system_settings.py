@@ -5,10 +5,11 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Annotated, Any
 
 import httpx
-from fastapi import APIRouter, Body, Depends, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -256,7 +257,10 @@ async def put_arp_precedence_ep(
 
 
 class MapProviderOut(StrictModel):
-    provider: str   # "osm" | "google"
+    provider: str   # "builtin" | "osm" | "google"
+
+
+_MAP_PROVIDERS = ("builtin", "osm", "google")
 
 
 @public_router.get("/map-provider", response_model=MapProviderOut)
@@ -266,8 +270,8 @@ async def get_map_provider(
 ) -> MapProviderOut:
     from app.models.system_setting import SystemSetting
     row = await session.get(SystemSetting, "map_provider")
-    prov = (row.value.get("provider") if row and isinstance(row.value, dict) else None) or "osm"
-    return MapProviderOut(provider=prov if prov in ("osm", "google") else "osm")
+    prov = (row.value.get("provider") if row and isinstance(row.value, dict) else None) or "builtin"
+    return MapProviderOut(provider=prov if prov in _MAP_PROVIDERS else "builtin")
 
 
 @router.put("/map-provider", response_model=MapProviderOut)
@@ -280,7 +284,7 @@ async def put_map_provider(
     from sqlalchemy.orm.attributes import flag_modified
 
     from app.models.system_setting import SystemSetting
-    prov = payload.provider if payload.provider in ("osm", "google") else "osm"
+    prov = payload.provider if payload.provider in _MAP_PROVIDERS else "builtin"
     row = await session.get(SystemSetting, "map_provider")
     if row is None:
         row = SystemSetting(key="map_provider", value={}, updated_by=user.id)
@@ -298,6 +302,47 @@ async def put_map_provider(
     )
     await session.commit()
     return MapProviderOut(provider=prov)
+
+
+# 同源地圖圖磚代理（OSM）：讓「OpenStreetMap」供應商在維持嚴格 CSP（img-src 'self'）+ COEP require-corp
+# 下仍能在頁內顯示圖磚。URL 由伺服器端組（只連 OSM、z/x/y 驗證為整數範圍）→ 非開放代理、非 SSRF。
+# 供 <img> 載入故不帶 auth header（token 走 Authorization，圖磚標籤帶不了）；由 nginx /api 限流保護。
+# 小型記憶體 LRU 對 OSM 圖磚政策友善（避免重複抓取）。
+_TILE_CACHE: OrderedDict[str, bytes] = OrderedDict()
+_TILE_CACHE_MAX = 512
+_OSM_HOSTS = ("a", "b", "c")
+_TILE_HEADERS = {"Cache-Control": "public, max-age=604800"}
+
+
+@public_router.get("/map-tile/{z}/{x}/{y}")
+async def map_tile(z: int, x: int, y: int) -> Response:
+    if not (0 <= z <= 19):
+        raise HTTPException(status_code=400, detail="bad zoom")
+    n = 1 << z
+    if not (0 <= x < n and 0 <= y < n):
+        raise HTTPException(status_code=400, detail="bad tile coordinate")
+    key = f"{z}/{x}/{y}"
+    cached = _TILE_CACHE.get(key)
+    if cached is not None:
+        _TILE_CACHE.move_to_end(key)
+        return Response(content=cached, media_type="image/png", headers=_TILE_HEADERS)
+    host = _OSM_HOSTS[(x + y) % 3]
+    url = f"https://{host}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+    try:
+        resp = await safe_request(
+            "GET", url, timeout=10.0,
+            headers={"User-Agent": "jt-ipam/1.0 (self-hosted IPAM; +https://github.com/jasoncheng7115/jt-ipam)"},
+        )
+    except (UnsafeOutboundURL, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=502, detail="tile upstream error") from exc
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"tile upstream {resp.status_code}")
+    data = resp.content
+    _TILE_CACHE[key] = data
+    _TILE_CACHE.move_to_end(key)
+    while len(_TILE_CACHE) > _TILE_CACHE_MAX:
+        _TILE_CACHE.popitem(last=False)
+    return Response(content=data, media_type="image/png", headers=_TILE_HEADERS)
 
 
 # ─────────────────── 機櫃示意圖：裝置名稱對齊（全域）───────────────────

@@ -1928,7 +1928,7 @@
     "system": {
       "tab": "系統",
       "map_provider": "地圖供應商",
-      "map_provider_hint": "全域設定：地點頁的地圖預覽要用哪家服務。OpenStreetMap 免金鑰；Google Maps 在某些地區圖資較佳。",
+      "map_provider_hint": "全域設定：地點頁的地圖預覽。預設「內建」完全離線、不對外連線；可改用 OpenStreetMap（圖磚由本機同源代理、不直連外部）或 Google Maps（頁內用內建圖，外部連結開 Google）。",
       "geoip": "GeoIP（MaxMind）",
       "geoip_account": "MaxMind Account ID",
       "geoip_key": "MaxMind License Key",
@@ -2087,7 +2087,8 @@
       "graylog_g_field_label": "要查的 log 欄位（自動代入下方範例）：",
       "graylog_g_lan_title": "3. 只對內網網段做判斷",
       "graylog_g_lan": "公網 IP 查這張表沒有意義（表裡只有你內網的 IP）。在 pipeline rule 用 cidr_match() 先判斷 IP 是否落在 RFC1918 內網網段（10/8、172.16/12、192.168/16），是內網才查表，省資源也避免誤判。把 src_ip 換成你實際的 IP 欄位名：",
-      "graylog_g_note": "提示：lookup_value() 的 key 要用 to_string() 轉成字串；cidr_match() 第二個參數要用 to_ip() 轉成 IP 型別。若你的記錄同時有來源/目的 IP，可複製這條 rule 改成 dst_ip → dst_hostname。"
+      "graylog_g_note": "提示：lookup_value() 的 key 要用 to_string() 轉成字串；cidr_match() 第二個參數要用 to_ip() 轉成 IP 型別。若你的記錄同時有來源/目的 IP，可複製這條 rule 改成 dst_ip → dst_hostname。",
+      "map_builtin": "內建（離線・自帶）"
     }
   },
   "errors": {

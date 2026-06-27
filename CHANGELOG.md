@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.20] — 2026-06-27
+
+### Added / Changed
+- **Map provider now defaults to "Built-in (offline)"** — the self-contained world map (no external calls).
+  Admins can still switch the Locations preview to **OpenStreetMap** or **Google Maps** under
+  Settings → System.
+- **OpenStreetMap tiles load through a same-origin backend proxy** (`/api/v1/system/map-tile/{z}/{x}/{y}`):
+  the browser never contacts OSM directly, so the CSP stays `img-src 'self'` + COEP `require-corp` (ZAP clean)
+  even when an admin selects OSM. The proxy is bounded read-only (server-built OSM-only URL, validated tile
+  coordinates, small in-memory LRU cache, nginx-rate-limited).
+- Google Maps: the in-page preview uses the built-in map (Google tiles cannot be proxied per their Terms);
+  the "open externally" link opens Google Maps.
+
+
 ## [0.5.19] — 2026-06-27
 
 ### Security

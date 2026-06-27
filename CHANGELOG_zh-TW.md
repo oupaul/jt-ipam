@@ -4,6 +4,17 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.20] — 2026-06-27
+
+### 新增／變更
+- **地圖供應商預設改為「內建（離線）」** —— 完全自帶的世界地圖（不對外連線）。管理員仍可在
+  設定 → 系統把地點頁預覽切成 **OpenStreetMap** 或 **Google Maps**。
+- **OpenStreetMap 圖磚改走同源後端代理**（`/api/v1/system/map-tile/{z}/{x}/{y}`）：瀏覽器不直連 OSM，
+  所以即使管理員選了 OSM，CSP 仍維持 `img-src 'self'` + COEP `require-corp`（ZAP 乾淨）。此代理為受限唯讀
+  （URL 由伺服器端組、只連 OSM、圖磚座標驗證、小型記憶體 LRU 快取、nginx 限流）。
+- Google Maps：頁內預覽用內建地圖（Google 圖磚依其條款不可代理）；「在外部開啟」連結才開 Google Maps。
+
+
 ## [0.5.19] — 2026-06-27
 
 ### 安全
