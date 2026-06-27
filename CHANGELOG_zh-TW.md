@@ -4,6 +4,12 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.27] — 2026-06-27
+
+### 修正
+- **PVE xterm（CT）主控台的終端機四周留內距**（比照 SSH 主控台），不再貼齊邊緣。
+
+
 ## [0.5.26] — 2026-06-27
 
 ### 修正

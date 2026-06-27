@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.27] — 2026-06-27
+
+### Fixed
+- **PVE xterm (CT) console now has padding around the terminal** (like the SSH console) instead of sitting
+  flush against the edges.
+
+
 ## [0.5.26] — 2026-06-27
 
 ### Fixed
