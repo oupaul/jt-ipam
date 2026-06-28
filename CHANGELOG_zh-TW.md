@@ -4,6 +4,13 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.31] — 2026-06-28
+
+### 修正
+- **連線管理頁的 PVE 主控台按鈕對齊 IP 詳情頁** —— 標籤只放 noVNC／xterm，右上角加一個「PVE」小標
+  （取代原本內嵌的「·PVE」）。
+
+
 ## [0.5.30] — 2026-06-28
 
 ### 修正

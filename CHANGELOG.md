@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.31] — 2026-06-28
+
+### Fixed
+- **Connections page: the PVE console buttons now match the IP detail page** — the label is just noVNC / xterm
+  with a small "PVE" badge in the top-right corner (instead of an inline "·PVE").
+
+
 ## [0.5.30] — 2026-06-28
 
 ### Fixed
