@@ -4,6 +4,476 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.43] — 2026-06-29
+
+### Added
+- **Docker Compose air-gapped (offline) workflow**: `offline-export.sh` builds + saves all four images
+  (app + postgres/redis) into one archive on an internet-connected host; `offline-import.sh` loads them and
+  starts the stack on a host with no internet (`--no-build --pull never`). Same flow for install and upgrade.
+  Documented in `deploy/docker/README*`.
+
+### Changed
+- Terminology: anomaly detection "MAC 漂移" → "MAC 變動" (proper Taiwan usage).
+
+
+## [0.5.42] — 2026-06-29
+
+### Fixed
+- **IP list "switch port" column widened** so it shows the full `switch@port` (e.g. `switch-003@eth1/0/24`)
+  instead of truncating to `switch-003@eth1/…`.
+
+
+## [0.5.41] — 2026-06-29
+
+### Fixed
+- **Locations map (built-in) now zooms in to fit all markers** instead of always showing a wide ~24°×16°
+  view, so nearby sites no longer collapse into what looks like a single point. A small minimum view is kept
+  only to avoid over-zooming a single/very-close point (the built-in low-res basemap would blur).
+
+
+## [0.5.40] — 2026-06-29
+
+### Changed
+- **pfSense integration table now shows the same columns as OPNsense** (name / API URL / TLS / last sync /
+  last error / actions); removed the extra 啟用 / 同步項目 / 別名數 / 規則 columns.
+
+### Added
+- **The left sidebar auto-expands the group that contains the current page** (管理 / 進階 / a subnet group),
+  whether you navigate there or land on it directly, so your location is visible.
+
+
+## [0.5.39] — 2026-06-29
+
+### Fixed
+- **OPNsense firewall column picker no longer lists phantom columns.** It used to offer 狀態/DHCP/ARP/OpenVPN/
+  Rules/NAT entries that the table doesn't actually render (all shown checked but never appearing). The picker
+  now matches the real columns: name, API URL, TLS, last sync, last error, actions.
+
+
+## [0.5.38] — 2026-06-29
+
+### Changed
+- **pfSense integration page now matches the OPNsense page**: adds a TLS column, a "TLS verification disabled"
+  warning banner when any instance has Verify TLS off, the same in-form TLS warning, and the same action-button
+  order (edit / test / sync / delete).
+- **PVE LXC (xterm) console hint moved into the toolbar** (single line next to the status tags, ellipsis if too
+  long, dismissible) instead of a full-width banner, with shorter wording.
+
+
+## [0.5.37] — 2026-06-29
+
+### Added
+- **Change-log entries older than a configurable number of days are shown dimmed**, so recent changes stand
+  out. Threshold set in 管理 → 系統設定 → 顯示 (default 30 days; 0 = never dim). Applies to the IP-detail
+  change-log timeline and the IP 異動記錄 page.
+
+
+## [0.5.36] — 2026-06-29
+
+### Added
+- **PVE LXC (xterm) console: a dismissible hint banner** reminds you to click the screen and press Enter once
+  if only a cursor shows and no prompt appears (a known PVE LXC console quirk).
+
+
+## [0.5.35] — 2026-06-28
+
+### Fixed
+- **RDP: modifier shortcuts (Ctrl+V / Ctrl+C / Ctrl+A …) now work — which makes the clipboard paste actually
+  paste.** Letter/number keys were sent as Unicode characters, and RDP does not combine a Unicode key event
+  with the scancode Ctrl/Alt modifier, so Ctrl+V did nothing (it just typed "v"). When a modifier is held the
+  key is now sent as a scancode. Verified end-to-end against a real Windows host (server issues
+  `CB_FORMAT_DATA_REQUEST` on Ctrl+V and we answer with the clipboard text).
+- The RDP Paste button now reports the number of characters actually sent to the remote clipboard.
+
+
+## [0.5.34] — 2026-06-28
+
+### Fixed
+- **RDP clipboard paste: fixed RDP dropping ~10–20s after connecting when the feature was enabled.** When the
+  remote requested our clipboard before any text had been set, aardwolf's cliprdr channel crashed
+  (`'NoneType' object has no attribute 'datatype'`) and tore down the session. We now seed an empty clipboard
+  on connect so `clipboard.data` is never null.
+
+### Changed
+- **All consoles (SSH / RDP / VNC / noVNC / xterm): the display area is greyed out** (grayscale + dimmed,
+  non-interactive) once the session disconnects, so it is obvious the connection is closed.
+
+
+## [0.5.33] — 2026-06-28
+
+### Fixed
+- **Users admin table: the Actions column is now pinned to the right** so it stays visible when the table
+  scrolls horizontally on narrow screens (previously it scrolled off-screen).
+
+
+## [0.5.32] — 2026-06-28
+
+### Added
+- **RDP console: optional one-way clipboard paste (controller → controlled host).** A new "貼上" button in the
+  RDP toolbar pushes your local clipboard text into the remote's clipboard (text only; then press Ctrl+V on the
+  remote). The remote clipboard is **never** sent back to the browser/server. Gated by a new admin security
+  toggle **管理 → 系統設定 → 資安 → 允許 RDP 控制端貼上文字到被控端**, **off by default (deny by default)**.
+  Backend only attaches the RDP clipboard (cliprdr) channel when the toggle is on; pastes are length-capped.
+  Verified end-to-end against a real Windows RDP host.
+
+
+## [0.5.31] — 2026-06-28
+
+### Fixed
+- **Connections page: the PVE console buttons now match the IP detail page** — the label is just noVNC / xterm
+  with a small "PVE" badge in the top-right corner (instead of an inline "·PVE").
+
+
+## [0.5.30] — 2026-06-28
+
+### Fixed
+- **PVE console (noVNC/xterm) disconnect now behaves like RDP** — clicking 中斷連線 (or a dropped connection)
+  leaves the last frame frozen in a "已關閉" state with a 重新連線 button, instead of jumping back to the
+  connection form.
+
+
+## [0.5.29] — 2026-06-27
+
+### Fixed
+- **noVNC / xterm console screen now has the same framed look as the RDP console** — border, rounded corners
+  and drop shadow (previously it was flush with no frame).
+
+
+## [0.5.28] — 2026-06-27
+
+### Fixed
+- **PVE console connect form now matches the SSH form.** It auto-selects the most recent saved PVE credential
+  (compact form, ready to connect), the hint switches to the saved-credential wording when one is selected,
+  and the card title / connect button icon reflects the protocol (xterm → terminal, noVNC → screen).
+
+
+## [0.5.27] — 2026-06-27
+
+### Fixed
+- **PVE xterm (CT) console now has padding around the terminal** (like the SSH console) instead of sitting
+  flush against the edges.
+
+
+## [0.5.26] — 2026-06-27
+
+### Fixed
+- **Version page now lists the noVNC dependencies** that were missing: backend `websockets` (the PVE
+  console relay) and frontend `@novnc/novnc`.
+- **Connections page: the PVE console button now matches the IP detail page** — it shows xterm (CT) / noVNC
+  (VM), is highlighted (orange / PVE), and its tooltip reads "xterm 連線" / "noVNC 連線" instead of a generic
+  "連線".
+- **Global search: a matching Proxmox VMID now surfaces the VM/CT itself** — by name, under a "Virtualization"
+  group. Previously the result used a type the dropdown didn't recognise, so it was dropped entirely (only
+  unrelated IP matches showed).
+
+
+## [0.5.25] — 2026-06-27
+
+### Fixed
+- **noVNC button now uses a distinct icon** (a screen with "N") instead of reusing the RDP icon, so noVNC and
+  RDP are no longer visually identical.
+- **PVE console connect form is now centred on the page in the error state too** (previously only the initial
+  form was centred; an error left the card stuck top-left).
+- **Console connection buttons (SSH / RDP / VNC / noVNC) now use the in-app tooltip** instead of the
+  browser-native `title` popup, on both the Connections page and the IP detail header.
+- **Audit log** now resolves PVE-credential targets to their label instead of showing a raw UUID.
+- **Fixed a 500 when connecting with a *saved* PVE credential** — the stored password was decoded twice
+  (`str` has no `.decode()`); now decrypts once like the RDP/VNC paths.
+
+
+## [0.5.24] — 2026-06-27
+
+### Fixed
+- **Device detail page: Edit now opens the dialog in-place** (it used to jump to the device list). The device
+  edit dialog is now a shared `DeviceEditModal` component.
+- **Virtualization VM table filter:** a numeric query (e.g. `102`) no longer matches internal fields such as
+  `memory_mb` (1024) — the quick filter now only matches the **displayed columns** (name / VMID / node / IP /
+  MAC / status), and matches inside IP/MAC lists.
+
+
+## [0.5.23] — 2026-06-27
+
+### Fixed / Changed
+- **PVE console (noVNC/xterm) UI now matches SSH/RDP/VNC.** Same card connect form (帳號 → 密碼 → realm order,
+  short "記住此帳密"), and the connected toolbar gains **send-keys + scale (fit / native) + "中斷連線"** for
+  graphical VM consoles. The connect button uses the right icon/tooltip (noVNC vs xterm), and the
+  connection-type filter no longer truncates "noVNC/xterm".
+- The PVE console toggle now appears on **all of a VM's IPs** — a multi-IP VM resolves via its interface MAC,
+  not only its primary IP.
+- **Global search:** a numeric query (e.g. `227`) is now also treated as a possible Proxmox **VMID** and finds
+  the matching VM/CT; the right-side hint shows "VLAN / VMID" instead of only "vlan_number".
+- **Rack:** the device dialog's "U 位 (起始)" field is wider (the number shows), and the U-position picker now
+  reflects **half-U** occupancy (left/right) — you can place into the free half.
+
+
+## [0.5.22] — 2026-06-27
+
+### Added
+- **In-browser PVE console (noVNC / xterm) for Proxmox VE VMs/CTs.** For an IP that maps to a Proxmox VM/CT,
+  a per-IP toggle adds an in-browser console button (with a **PVE** badge): QEMU VMs open a graphical **noVNC**
+  console, LXC containers open an **xterm** terminal. The connection uses the **PVE credentials you enter at
+  connect time** (optionally saved to the encrypted vault, like SSH/RDP/VNC) and is gated by PVE's own
+  permissions — without `VM.Console` you can't connect. The browser talks only to jt-ipam's **same-origin**
+  WebSocket, which byte-relays to PVE's `vncwebsocket` (vncproxy for VMs, termproxy for CTs); credentials are
+  never stored on the server beyond the optional vault, the WebSocket relay is single-use-ticketed, and every
+  session is audited (`novnc.session_open` / `novnc.session_close`).
+- The Proxmox sync now back-links each VM/CT's primary IP (`VirtualMachine.primary_ip_id`) so an IP can resolve
+  to its PVE console target (also backfills existing VMs).
+
+
+## [0.5.21] — 2026-06-27
+
+### Fixed
+- Traditional-Chinese wording: use 內建 / 本機 phrasing instead of the mainland terms 自帶 / 同源 in the map-provider UI text and comments.
+
+
+## [0.5.20] — 2026-06-27
+
+### Added / Changed
+- **Map provider now defaults to "Built-in (offline)"** — the self-contained world map (no external calls).
+  Admins can still switch the Locations preview to **OpenStreetMap** or **Google Maps** under
+  Settings → System.
+- **OpenStreetMap tiles load through a same-origin backend proxy** (`/api/v1/system/map-tile/{z}/{x}/{y}`):
+  the browser never contacts OSM directly, so the CSP stays `img-src 'self'` + COEP `require-corp` (ZAP clean)
+  even when an admin selects OSM. The proxy is bounded read-only (server-built OSM-only URL, validated tile
+  coordinates, small in-memory LRU cache, nginx-rate-limited).
+- Google Maps: the in-page preview uses the built-in map (Google tiles cannot be proxied per their Terms);
+  the "open externally" link opens Google Maps.
+
+
+## [0.5.19] — 2026-06-27
+
+### Security
+- Hardening + documentation around the one remaining accepted finding (CSP `style-src 'unsafe-inline'`,
+  inherent to Vue + Naive UI — `v-show` / `:style` / floating-element positioning emit inline style
+  *attributes*, which CSP cannot nonce/hash). Enabled Naive UI's **`inline-theme-disabled`** to move theme
+  styling out of inline attributes into `<style>` blocks (smaller inline surface + SSR/perf), and documented it
+  as an **accepted risk with compensating controls** in `SECURITY.md` (EN/zh): strict `script-src 'self'` (no JS
+  exec) + `img-src`/`connect-src 'self'` (no exfiltration) + Vue auto-escaping. No real exploitability remains.
+
+
+## [0.5.18] — 2026-06-27
+
+### Security / Changed
+- **The Locations map is now fully self-contained — no embedded OpenStreetMap.** The OSM tile renderer is
+  replaced by a bundled Natural Earth world outline (public domain) projected locally. The map now works on
+  isolated/offline networks, sends **no requests to OSM** (it no longer leaks which sites an admin is viewing),
+  and lets the headers tighten: the OSM exception is dropped from CSP `img-src`, and
+  `Cross-Origin-Embedder-Policy` is upgraded to **`require-corp`** (the strongest value — now that there are
+  zero cross-origin subresources). nginx proxy snippets `proxy_hide_header` COEP too (single source).
+- **Column-picker labels across all admin tables re-translate on a live language switch** — 19 pickers wrapped
+  in `computed` (they were frozen at the language active when the page first loaded).
+- pfSense NAT sync was **verified against a live port-forward** and refined (external `destination_port` for the
+  NAT port; `target` linked to the internal IP).
+
+### Added
+- `deploy/zap-baseline.conf` — a documented ZAP baseline-triage of accepted, justified low/informational
+  exceptions (Naive-UI `style-src 'unsafe-inline'`, IPAM example IPs, asset caching, SPA detection). The release
+  gate is now: a ZAP scan with **no findings beyond this baseline** (0 FAIL / 0 WARN).
+
+
+## [0.5.17] — 2026-06-27
+
+### Changed
+- **More pfSense/OPNsense parity.** The "pfSense firewall" admin page no longer has a view-rules button —
+  rule/alias viewing lives in **Advanced → Firewall (pfSense)** (read-only), matching OPNsense. Menu entries
+  renamed: **Firewall (OPN) → Firewall (OPNsense)**, **Firewall (pf) → Firewall (pfSense)**, with the in-page
+  titles made consistent; the pfSense rules tab is now labelled **"Firewall rules"**.
+- The NAT-rules **Source** filter now offers **pfSense**, and pfSense NAT port-forwards are synced into the NAT
+  table (`source_origin = pfsense:<id>`) so they list alongside OPNsense NAT.
+
+### Fixed
+- Column-picker labels now re-translate immediately on a live language switch (no page refresh needed) on the
+  pfSense pages and the NAT source filter — they were frozen at the language active when the page first loaded.
+
+
+## [0.5.16] — 2026-06-27
+
+### Changed
+- **pfSense UI aligned with the OPNsense pages.** The "pfSense firewall" admin table now has a column picker
+  + export and a fitting default column set (the actions column is no longer cut off on narrow widths); the
+  add/edit dialog spacing is fixed (sync toggles / Expose-DSV grouped into form rows); and the page title is
+  now **"pfSense firewall"** (was "Integrate pfSense").
+- The Advanced → "Firewall rules / aliases" entry (OPNsense) was renamed to **"Firewall (OPN)"**.
+
+### Added
+- **Advanced → "Firewall (pf)"** — a read-only pfSense rules & aliases viewer (instance selector + tabs +
+  quick filter + column picker + export), mirroring the OPNsense "Firewall (OPN)" page.
+- `pfsense` is registered in the **hostname/ARP source precedence**, defaulting just below `opnsense`.
+
+
+## [0.5.15] — 2026-06-27
+
+### Security / Docs
+- **The security headers are now documented as a required deployment setting and surfaced in install/upgrade
+  output.** When jt-ipam is fronted by your *own* edge reverse proxy / load balancer (Mode C), that proxy
+  **must** set the security headers itself — they don't survive an extra proxy hop, so otherwise the public
+  site ships with no CSP/HSTS. The external-proxy snippet (`jt-ipam-external-proxy-snippet.conf`) now also
+  `proxy_hide_header`s the upstream's security headers (dedup, matching the internal snippet in v0.5.14);
+  INSTALL (EN/zh), README (EN/zh) and the landing page now call this out as **required** with a
+  verify-through-the-public-URL step; and `jt-ipam.sh install`/`upgrade` print a required-headers notice.
+
+
+## [0.5.14] — 2026-06-27
+
+### Security
+- **Fixed duplicate security headers + a stale CSP on `/api/*` responses** (found by an authenticated ZAP
+  scan). The backend middleware still emitted the pre-v0.5.8 permissive CSP (`frame-src` allowing
+  google/openstreetmap), and behind nginx every proxied `/api` response carried **two** copies of each
+  security header (HSTS / CSP / X-Frame-Options / Referrer-Policy / Permissions-Policy / COOP / CORP) — ZAP
+  flagged "Strict-Transport-Security multiple header entries". Backend CSP tightened to `frame-src 'self'`
+  (so the `direct`/`self-signed` TLS mode is also correct), and the nginx proxy snippet now
+  `proxy_hide_header`s the upstream's security headers so the server block's hardened values are the single
+  canonical source. Verified live: one of each header, tightened CSP.
+
+
+## [0.5.13] — 2026-06-27
+
+### Fixed
+- **Full test suite & lint green.** Ran the complete pytest suite (412 tests) + migrations 0001→0088 on a
+  fresh DB and fixed 4 test assertions that had drifted behind earlier feature work — the new
+  `list_connection_targets` MCP tool (missing from the tool-args guard), the Proxmox guest-agent `timeout`
+  arg (test mock signature), and the external-MCP toggle now returning **403** when disabled (was asserted
+  as 401). Also removed two dead-code lint errors and sorted imports. No product behaviour change.
+
+
+## [0.5.12] — 2026-06-27
+
+### Added
+- **pfSense integration Phase 2** — firewall **rules sync** + a read-only **Rules / NAT viewer** (eye action
+  on the pfSense page), and **Graylog DSV** endpoints for pfSense: `…/lookup/pfsense/{id}/aliases`
+  (alias → members) and `…/lookup/pfsense/{id}/rules` (filterlog `tracker` → rule description), token-gated
+  and per-instance `expose_dsv`. New per-instance toggles: sync rules, expose DSV. Verified against pfSense
+  CE 2.8.1. (migration 0088)
+- TEST_CHECKLIST: added a pfSense integration section + spot-checks for recent features.
+
+
+## [0.5.11] — 2026-06-27
+
+### Added
+- **pfSense integration (Phase 1)** — a separate integration with its own settings page (Admin →
+  pfSense), independent of OPNsense. pfSense CE has no built-in REST API, so this connects via the
+  third-party **pfSense-pkg-RESTAPI** package (pfrest.org): base path `/api/v2`, `X-API-Key` auth. It pulls
+  the **ARP table** and **DHCP leases** to stamp IP liveness / MAC / hostname within scoped subnets
+  (overlap-safe), and reads **firewall aliases**. Per-instance sync toggles (DHCP off by default to avoid
+  clashing with another DHCP server), subnet scoping, verify-TLS, test-connection and sync-now; runs in the
+  periodic sync loop. `pfsense` is registered as a hostname/ARP source. Verified end-to-end against pfSense
+  CE 2.8.1. (migration 0087; firewall rules / NAT / Graylog-DSV are planned for Phase 2.)
+
+
+## [0.5.10] — 2026-06-27
+
+### Fixed
+- **"Add address" inside a subnet's IP list had no IP input field**, so submitting failed with HTTP 422
+  (missing IP) (issue #14). The create form now shows a required **IP** field (prefilled from context when
+  one is provided), and submitting with an empty IP is blocked client-side with a clear message.
+
+
+## [0.5.9] — 2026-06-27
+
+### Added
+- **Notification matrix** (Admin → Notification settings): a per-event × per-channel grid (in-app bell /
+  email) to choose which events send notifications. Events: IP request submitted / approved / rejected,
+  certificate expiring or expired, **agent deployed a new certificate** (new), certificate drift, anomaly
+  detected. Every notification site now respects the matrix; certificate and anomaly events can now also be
+  emailed (previously in-app only).
+- **New event `cert.deployed`**: when a distribution agent successfully swaps a cert for a new version, admins
+  are notified (the agent report endpoint diffs the previous vs new fingerprint per cert/service).
+- **Certificate distribution: a `files` service profile** that only writes the cert files (fullchain + key to
+  `/etc/ssl/jt-ipam`) and does **not** test, reload or restart any service — for operators who reload
+  themselves.
+
+
+## [0.5.8] — 2026-06-26
+
+### Security
+- **Removed the embedded third-party map iframe** on the Locations page (Google Maps / OpenStreetMap); the
+  map now opens in a new tab. The embed pulled a third-party page (and its scripts) into ours — a privacy
+  leak and the source of the ZAP findings **Cross-Domain JavaScript Source File Inclusion** and **Sub
+  Resource Integrity Attribute Missing** (they came from Google's/OSM's embed page, not jt-ipam). Google/OSM
+  are now contacted only when the user clicks.
+- **Tightened CSP `frame-src` to `'self'`** (dropped the google/openstreetmap allowances now that nothing is framed).
+- **nginx reference config hardened**: hide the upstream (uvicorn) `Server` / `X-Powered-By` headers (no
+  framework fingerprint), and add `Cross-Origin-Resource-Policy: same-origin`.
+
+### Docs
+- INSTALL (EN/zh) and the landing page now document the **hardened nginx reverse proxy as the production
+  standard** (TLS 1.2/1.3, HSTS preload, strict CSP, full security-header set, hidden upstream banner,
+  backend bound to loopback).
+
+
+## [0.5.7] — 2026-06-26
+
+### Added
+- **MCP client-config generator.** On Admin → LLM/AI, the "expose MCP" card has a "Generate client config"
+  button that produces ready-to-paste MCP server snippets for Claude Desktop (via `mcp-remote`), opencode,
+  mcpo, and generic clients (Cursor / Cline / VS Code) — with the endpoint URL and API key filled in, each
+  with its own copy button.
+
+
+## [0.5.6] — 2026-06-26
+
+### Changed
+- **Anomaly detection page reorganized into tabs.** The four detectors (IP conflicts / MAC drift / ghost
+  IPs / unauthorized IPs) are now tabs instead of one long stacked page.
+- **Each anomaly table now has a column picker**, and the internal `ip_address_id` UUID column is hidden by
+  default (still selectable).
+
+### Added
+- **MAC drift now also shows the matching IP / hostname** for each drifting MAC (resolved from IPAM, with
+  ARP fallback) — so you can tell which host a roaming MAC belongs to.
+
+
+## [0.5.5] — 2026-06-26
+
+### Added
+- **Scan agents: a "Dependencies" column.** Each agent now reports its probe-tool inventory; the column
+  shows how many are installed (e.g. `4/7`) and clicking opens a detail dialog listing every tool — whether
+  it is installed and at which version, which probes it enables (nmap → OS/ports, nmblookup → NetBIOS,
+  avahi-resolve → mDNS …), and the install command for the missing ones. Helps diagnose "no machine name"
+  (NetBIOS needs `nmblookup`) at a glance. Agent self-updates to v1.5.0 to report this (migration 0086).
+
+
+## [0.5.4] — 2026-06-24
+
+### Fixed
+- **Background tasks could stay "in progress" forever after a restart (issue #9).** Tasks run via
+  `asyncio.create_task` inside the worker process, so a backend restart (deploy / upgrade / crash) orphaned
+  any in-flight task with no terminal status, leaving it stuck "running" in Operations. On startup, lingering
+  pending/running tasks are now reconciled to `failed` ("interrupted: backend restarted").
+- **LibreNMS sync aborted midway with a duplicate device-port error (issue #12).** Port sync now upserts
+  (`ON CONFLICT (device_id, name)`) instead of a plain insert, so an existing port (e.g. two LibreNMS
+  devices mapped to one jt-ipam device, or a re-processed interface) no longer breaks the whole sync with
+  `UniqueViolationError` on `device_port_unique_name`.
+
+
+## [0.5.3] — 2026-06-24
+
+### Fixed
+- **Contact groups could not be created / edited / deleted — "Method Not Allowed" (issue #11).** The
+  backend only had `GET /contact-groups`; added `POST` / `PATCH` / `DELETE`.
+- Added the missing `DELETE` endpoints for **providers, circuits, wireless SSIDs and wireless links** —
+  their delete buttons previously returned 405 (same class of bug).
+
+
+## [0.5.2] — 2026-06-24
+
+### Fixed
+- **Proxmox VM list capped at 500 (issue #9).** The list now fetches every page, so all VMs show
+  (e.g. 592, not 500). The same paginate-all fix covers other advanced-resource lists.
+- **Proxmox sync slow / stuck "in progress" (issue #9).** The best-effort per-VM guest-agent IP query
+  now uses a short 6 s timeout, so unresponsive guest agents on running VMs no longer stall the whole
+  sync (previously each could hold the shared 20 s timeout).
+- **Wazuh agent list showed only 200 (issue #10).** All agents were stored; the admin page now fetches
+  every page instead of just the first 200.
+- **Other integrations audited for the same cap.** LibreNMS `/devices` and AdGuard already return
+  everything; OPNsense alias / rule / IPsec searches no longer cap at 1000 / 500 (`rowCount = -1` = all).
+
+### Changed
+- Table footers now show the total row count on the left (e.g. "Total: 592").
+- The floating AI-chat button is semi-transparent at rest and turns solid on hover.
+
+
 ## [0.5.1] — 2026-06-24
 
 ### Added

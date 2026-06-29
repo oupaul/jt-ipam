@@ -164,7 +164,49 @@ openssl s_client -connect ipam.example.com:443 -servername ipam.example.com </de
 > To regenerate a self-signed cert yourself: `sudo bash /opt/jt-ipam/scripts/generate-self-signed-cert.sh` then `systemctl restart jt-ipam-backend`.
 > To move from direct to an nginx reverse proxy: set `BACKEND_TLS_MODE=nginx` in `/etc/jt-ipam/backend.env`, install the nginx site, then restart the backend + reload nginx.
 
-### 2.7 Optional: Docker Compose (NOT the preferred mode)
+### 2.7 Production standard: hardened nginx reverse proxy
+
+For any internet-facing or production deployment, the **standard is to run jt-ipam behind the bundled
+hardened nginx reverse proxy** (`--tls-mode nginx`, reference config `deploy/nginx/jt-ipam.conf`). nginx
+terminates TLS, the backend stays bound to loopback, and the proxy enforces a strict security baseline so the
+app server is never exposed directly:
+
+- **TLS**: TLS 1.2/1.3 only, modern cipher suite, OCSP stapling, session tickets off.
+- **HSTS**: `max-age` 2y + `includeSubDomains` + `preload`.
+- **CSP**: `default-src 'self'`; `script-src 'self'`; `connect-src 'self'`; `frame-src 'self'`;
+  `frame-ancestors 'none'`; `base-uri 'self'`; `form-action 'self'` — no third-party script/frame origins.
+- **Headers**: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`,
+  `Permissions-Policy` (geolocation/mic/camera/payment/usb off), `Cross-Origin-Opener-Policy` and
+  `Cross-Origin-Resource-Policy: same-origin`.
+- **No banner leak**: `server_tokens off` and the upstream (uvicorn) `Server`/`X-Powered-By` headers are
+  hidden — no version or framework fingerprint.
+- Backend listens on `127.0.0.1` only; nginx is the sole public listener.
+
+> Do **not** expose uvicorn directly to the internet. `--tls-mode self-signed`/`direct` is for internal/dev.
+
+> ### ⚠️ Required when you put your OWN reverse proxy in front (Mode C)
+> The security headers above are applied by whatever nginx **terminates TLS at the public edge**. If you front
+> jt-ipam with a separate reverse proxy (e.g. a company edge nginx / load balancer), **that proxy MUST set the
+> security headers itself** — they will NOT automatically survive an extra hop, so the public site would ship
+> with *no* CSP / HSTS / Permissions-Policy. This is a **required** part of the deployment, not optional.
+>
+> Install the bundled hardened external-proxy config on that edge box —
+> [`deploy/nginx/jt-ipam-external-proxy.conf`](https://github.com/jasoncheng7115/jt-ipam/blob/main/deploy/nginx/jt-ipam-external-proxy.conf)
+> + [`jt-ipam-external-proxy-snippet.conf`](https://github.com/jasoncheng7115/jt-ipam/blob/main/deploy/nginx/jt-ipam-external-proxy-snippet.conf)
+> (sets HSTS preload, the tightened CSP, X-Frame-Options DENY, nosniff, Referrer-Policy, Permissions-Policy,
+> COOP + CORP, `server_tokens off`, and `proxy_hide_header`s the upstream copies so each header appears once).
+
+**Verify the headers are present *through the public URL the users actually hit*** (i.e. through your edge
+proxy, not just the local box):
+
+```bash
+curl -skI https://ipam.example.com/ \
+  | grep -iE 'strict-transport|content-security|x-frame|x-content|referrer|permissions|cross-origin|^server'
+# Must show: HSTS, Content-Security-Policy (frame-src 'self'), X-Frame-Options, X-Content-Type-Options,
+# Referrer-Policy, Permissions-Policy, COOP, CORP — each exactly ONCE, and Server: nginx (no version).
+```
+
+### 2.8 Optional: Docker Compose (NOT the preferred mode)
 
 > ⚠️ **Docker Compose is a secondary / optional path — it is NOT the project's preferred or primary
 > deployment mode.** The supported, recommended install is **systemd + apt** (sections above). Use Compose
@@ -200,6 +242,21 @@ docker compose up -d --build   # build images and start the stack
 
 Database migrations run **automatically** when the backend container starts (its entrypoint runs
 `alembic upgrade head`), so there is no separate migration step.
+
+**Air-gapped / no-internet host** (build outside, run inside): build the images on an internet-connected
+host, carry them over, and load them — same flow for install and upgrade.
+
+```bash
+# on the internet-connected host (in deploy/docker/)
+git pull && ./offline-export.sh        # -> jt-ipam-images-<sha>.tar.gz (app + postgres/redis images)
+
+# copy that archive + the jt-ipam repo folder to the air-gapped host, then there:
+./gen-env.sh                           # first install only (needs openssl, no internet)
+./offline-import.sh jt-ipam-images-<sha>.tar.gz   # docker load + up -d --no-build --pull never
+```
+
+To upgrade an air-gapped host, re-export on the online host after `git pull`, copy the newer archive over,
+and run `./offline-import.sh <newer-archive>` again (`.env` stays put).
 
 > Not bundled in the Compose setup: the plaintext Graylog DSV port 8088, and the GeoIP / OUI scheduled
 > refreshes. See [`deploy/docker/README.md`](https://github.com/jasoncheng7115/jt-ipam/blob/main/deploy/docker/README.md)
@@ -244,6 +301,16 @@ Once added, `jt-ipam-sync.timer` syncs them automatically every 5 minutes by def
 1. OPNsense → System → Access → Users → add a service user → get API key/secret
 2. jt-ipam → Firewall → Add → fill in `https://opnsense:443`, key, secret
 3. Add alias mappings (selector JSON example: `{"type":"section","section_id":"<uuid>"}`)
+
+### pfSense firewall
+
+pfSense has no built-in REST API, so install the third-party **pfSense-pkg-RESTAPI** package (pfrest.org):
+
+1. pfSense → System → Package Manager → install **pfSense-pkg-RESTAPI**
+2. System → REST API → Settings → add **API Key** to the auth methods (the default is BasicAuth only)
+3. System → REST API → Keys → create a key
+4. jt-ipam → Integrate pfSense → Add → fill in `https://pfsense`, the API key; turn off Verify TLS for a self-signed cert
+5. Syncs DHCP / ARP / aliases / rules / NAT (base path `/api/v2`, `X-API-Key` auth). pfSense has its own settings page (not shared with OPNsense)
 
 ### Wazuh
 

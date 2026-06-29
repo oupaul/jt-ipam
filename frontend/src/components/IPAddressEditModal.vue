@@ -18,10 +18,11 @@ import type { IPAddress } from "@/types";
 import { updateAddress, deleteAddress, createAddress, type IPAddressUpdate } from "@/api/addresses";
 import { getAddressHistory, getAddressSwitchPort, type IPChangeLog, type SwitchPortInfo } from "@/api/ip_history";
 import { getHostnameSources, clearHostnameSource, type HostnameSources } from "@/api/hostname";
-import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon, TerminalIcon, DisplayIcon, VncIcon, ChevronDownIcon, OpenNewWindowIcon, renderIcon } from "@/icons";
+import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon, TerminalIcon, DisplayIcon, VncIcon, NoVncIcon, ChevronDownIcon, OpenNewWindowIcon, renderIcon } from "@/icons";
 import { ArrowLeft as ArrowLeftIcon } from "@iconoir/vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useCustomers } from "@/composables/useCustomers";
+import { useChangeLogDim } from "@/composables/useChangeLogDim";
 import { useRouter } from "vue-router";
 import { listDevices, type Device } from "@/api/basic";
 import { getAddressRelations, type RelationNode } from "@/api/relations";
@@ -33,6 +34,7 @@ import OsIcon from "@/components/OsIcon.vue";
 
 const router = useRouter();
 const { options: customerOptions, labelFor: customerLabelFor, ensureLoaded: ensureCustomersLoaded } = useCustomers();
+const { isOld: isOldLog } = useChangeLogDim();
 const devices = ref<Device[]>([]);
 
 async function loadDevices() {
@@ -180,6 +182,8 @@ const emit = defineEmits<{
   (e: "rdp-popout"): void;
   (e: "vnc-open"): void;
   (e: "vnc-popout"): void;
+  (e: "novnc-open"): void;
+  (e: "novnc-popout"): void;
 }>();
 
 const { t, locale } = useI18n();
@@ -227,6 +231,12 @@ const vncMenuOptions = computed(() => [
 function onVncMenu(key: string) {
   if (key === "popout") emit("vnc-popout");
 }
+const novncMenuOptions = computed(() => [
+  { label: t("vnc.open_popout"), key: "popout", icon: renderIcon(OpenNewWindowIcon) },
+]);
+function onNovncMenu(key: string) {
+  if (key === "popout") emit("novnc-popout");
+}
 
 const isCreate = computed(() => !props.address && !!props.createContext);
 
@@ -245,9 +255,12 @@ interface FormState {
   ssh_enabled: boolean;
   rdp_enabled: boolean;
   vnc_enabled: boolean;
+  novnc_enabled: boolean;
 }
 
 const form = ref<FormState>(emptyForm());
+// create 模式要填的 IP（FormState 不含 ip；新增時用此欄，可帶入 createContext.ip 預設值）
+const createIp = ref("");
 
 function emptyForm(): FormState {
   return {
@@ -260,6 +273,7 @@ function emptyForm(): FormState {
     ssh_enabled: false,
     rdp_enabled: false,
     vnc_enabled: false,
+    novnc_enabled: false,
   };
 }
 
@@ -304,6 +318,7 @@ function fromAddress(a: IPAddress): FormState {
     ssh_enabled: !!a.ssh_enabled,
     rdp_enabled: !!a.rdp_enabled,
     vnc_enabled: !!a.vnc_enabled,
+    novnc_enabled: !!a.novnc_enabled,
   };
 }
 
@@ -321,7 +336,7 @@ watch(
     // create 模式自動進 edit form；既有 IP 進 view
     editMode.value = isCreate.value;
     form.value = props.address ? fromAddress(props.address) : emptyForm();
-    // create 模式 IP 由 createContext.ip 直接提供，不存在 form 中
+    createIp.value = (props.createContext?.ip ?? "").trim();
     // 略過探測初始化：優先用 excluded_probes；空但舊 exclude_from_ping=true → 回填 ['icmp']
     const a = props.address;
     if (a) {
@@ -461,9 +476,11 @@ async function save() {
   saving.value = true;
   try {
     if (isCreate.value && props.createContext) {
+      const ipv = createIp.value.trim();
+      if (!ipv) { msg.warning(t("addresses.ip_required")); saving.value = false; return; }
       const created = await createAddress({
         subnet_id: props.createContext.subnet_id,
-        ip: props.createContext.ip,
+        ip: ipv,
         hostname: form.value.hostname.trim() || null,
         description: form.value.description.trim() || null,
         state: form.value.state,
@@ -496,6 +513,7 @@ async function save() {
       ssh_enabled: form.value.ssh_enabled,
       rdp_enabled: form.value.rdp_enabled,
       vnc_enabled: form.value.vnc_enabled,
+      novnc_enabled: form.value.novnc_enabled,
     };
     const updated = await updateAddress(props.address?.id, payload);
     hostnameSourcesLoaded.value = false;  // 重新整理來源/有效 hostname
@@ -561,50 +579,87 @@ async function remove() {
           <template v-if="!editMode">
             <!-- SSH 連線分割按鈕：主鍵嵌入終端機、下箭頭可另開視窗（僅在啟用且有權限時顯示） -->
             <template v-if="props.address?.ssh_available">
-              <n-button-group key="hx-ssh">
-                <n-button type="info" size="small" :title="t('ssh.connect')" @click="emit('ssh-open')">
-                  <template #icon><n-icon><TerminalIcon /></n-icon></template>
-                  <span v-if="!consoleCompact">{{ t("ssh.connect") }}</span>
-                </n-button>
-                <n-dropdown trigger="click" :options="sshMenuOptions" @select="onSshMenu">
-                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
-                    <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
-                  </n-button>
-                </n-dropdown>
-              </n-button-group>
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group key="hx-ssh">
+                    <n-button type="info" size="small" @click="emit('ssh-open')">
+                      <template #icon><n-icon><TerminalIcon /></n-icon></template>
+                      <span v-if="!consoleCompact">{{ t("ssh.connect") }}</span>
+                    </n-button>
+                    <n-dropdown trigger="click" :options="sshMenuOptions" @select="onSshMenu">
+                      <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
+                        <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
+                      </n-button>
+                    </n-dropdown>
+                  </n-button-group>
+                </template>
+                {{ t("ssh.connect") }}
+              </n-tooltip>
             </template>
             <!-- RDP 連線分割按鈕：主鍵新分頁、下箭頭另開視窗（僅在啟用且有權限時顯示） -->
             <span v-if="props.address?.rdp_available" key="hx-rdp" class="conn-beta-wrap">
-              <n-button-group>
-                <n-button type="info" size="small" :title="t('rdp.connect')" @click="emit('rdp-open')">
-                  <template #icon><n-icon><DisplayIcon /></n-icon></template>
-                  <span v-if="!consoleCompact">{{ t("rdp.connect") }}</span>
-                </n-button>
-                <n-dropdown trigger="click" :options="rdpMenuOptions" @select="onRdpMenu">
-                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
-                    <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
-                  </n-button>
-                </n-dropdown>
-              </n-button-group>
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group>
+                    <n-button type="info" size="small" @click="emit('rdp-open')">
+                      <template #icon><n-icon><DisplayIcon /></n-icon></template>
+                      <span v-if="!consoleCompact">{{ t("rdp.connect") }}</span>
+                    </n-button>
+                    <n-dropdown trigger="click" :options="rdpMenuOptions" @select="onRdpMenu">
+                      <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
+                        <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
+                      </n-button>
+                    </n-dropdown>
+                  </n-button-group>
+                </template>
+                {{ t("rdp.connect") }}
+              </n-tooltip>
               <span class="conn-beta-badge">{{ t("rdp.beta") }}</span>
             </span>
             <!-- VNC 連線分割按鈕：主鍵新分頁、下箭頭另開視窗（僅在啟用且有權限時顯示） -->
             <span v-if="props.address?.vnc_available" key="hx-vnc" class="conn-beta-wrap">
-              <n-button-group>
-                <n-button type="info" size="small" :title="t('vnc.connect')" @click="emit('vnc-open')">
-                  <template #icon><n-icon><VncIcon /></n-icon></template>
-                  <span v-if="!consoleCompact">{{ t("vnc.connect") }}</span>
-                </n-button>
-                <n-dropdown trigger="click" :options="vncMenuOptions" @select="onVncMenu">
-                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
-                    <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
-                  </n-button>
-                </n-dropdown>
-              </n-button-group>
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group>
+                    <n-button type="info" size="small" @click="emit('vnc-open')">
+                      <template #icon><n-icon><VncIcon /></n-icon></template>
+                      <span v-if="!consoleCompact">{{ t("vnc.connect") }}</span>
+                    </n-button>
+                    <n-dropdown trigger="click" :options="vncMenuOptions" @select="onVncMenu">
+                      <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
+                        <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
+                      </n-button>
+                    </n-dropdown>
+                  </n-button-group>
+                </template>
+                {{ t("vnc.connect") }}
+              </n-tooltip>
               <span class="conn-beta-badge">{{ t("vnc.beta") }}</span>
             </span>
-            <!-- 連線鈕（SSH/RDP/VNC）與編輯/刪除間只留一條分隔線 -->
-            <n-divider v-if="props.address?.ssh_available || props.address?.rdp_available || props.address?.vnc_available"
+            <!-- PVE 主控台連線按鈕（noVNC/xterm；僅在該 IP 是 PVE VM/CT 且有權限時顯示），右上小標 PVE -->
+            <span v-if="props.address?.novnc_available" key="hx-novnc" class="conn-beta-wrap">
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group>
+                    <n-button type="warning" size="small" @click="emit('novnc-open')">
+                      <template #icon>
+                        <n-icon><TerminalIcon v-if="props.address?.pve?.kind === 'ct'" /><NoVncIcon v-else /></n-icon>
+                      </template>
+                      <span v-if="!consoleCompact">{{ props.address?.pve?.kind === 'ct' ? 'xterm' : 'noVNC' }}</span>
+                    </n-button>
+                    <n-dropdown trigger="click" :options="novncMenuOptions" @select="onNovncMenu">
+                      <n-button type="warning" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
+                        <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
+                      </n-button>
+                    </n-dropdown>
+                  </n-button-group>
+                </template>
+                {{ `${props.address?.pve?.kind === 'ct' ? 'xterm' : 'noVNC'} ${t('novnc.connect')}` }}
+              </n-tooltip>
+              <span class="conn-beta-badge conn-pve-badge">PVE</span>
+            </span>
+            <!-- 連線鈕（SSH/RDP/VNC/PVE）與編輯/刪除間只留一條分隔線 -->
+            <n-divider v-if="props.address?.ssh_available || props.address?.rdp_available || props.address?.vnc_available || props.address?.novnc_available"
                        key="hx-conn-div" vertical />
             <n-button key="hx-edit" type="primary" size="small" @click="editMode = true">
               <template #icon><n-icon><EditIcon /></n-icon></template>{{ t("common.edit") }}
@@ -768,6 +823,7 @@ async function remove() {
                   v-for="h in history" :key="h.id"
                   :type="HISTORY_TYPE[h.event_type] ?? 'default'"
                   :time="fmtDateTime(h.created_at)"
+                  :class="{ 'log-dim': isOldLog(h.created_at) }"
                 >
                   <template #header>
                     <n-space align="center" :size="6">
@@ -796,9 +852,8 @@ async function remove() {
 
         <!-- edit mode -->
         <n-form v-else label-placement="top">
-          <!-- create 模式：IP 輸入框（edit 模式 IP 不可改，顯示在標題） -->
-          <n-form-item v-if="isCreate" :label="t('addresses.ip')" style="margin-bottom: 4px">
-            <n-input :value="props.createContext?.ip" disabled placeholder="192.168.1.100" />
+          <n-form-item v-if="isCreate" :label="t('addresses.ip')" required style="margin-bottom: 12px">
+            <n-input v-model:value="createIp" placeholder="192.168.1.10" />
           </n-form-item>
           <n-space :size="12" :wrap-item="false" style="flex-wrap: wrap">
             <n-form-item :label="t('addresses.hostname')" style="flex: 1 1 300px">
@@ -890,6 +945,17 @@ async function remove() {
               <span style="font-size: 11px; opacity: .7">{{ t("vnc.enable_hint") }}</span>
             </n-space>
           </n-form-item>
+          <!-- PVE 主控台開關：僅在此 IP 對應到 Proxmox VE 的 VM/CT 時出現 -->
+          <n-form-item v-if="props.address?.pve">
+            <template #label>
+              {{ t("novnc.enable") }}
+              <n-tag size="tiny" type="warning" :bordered="false" style="margin-left:6px">PVE</n-tag>
+            </template>
+            <n-space vertical :size="2" style="width:100%">
+              <n-switch v-model:value="form.novnc_enabled" />
+              <span style="font-size: 11px; opacity: .7">{{ t("novnc.enable_hint") }}（{{ props.address.pve.kind === 'ct' ? 'LXC → xterm' : 'QEMU → noVNC' }} · vmid {{ props.address.pve.vmid }}）</span>
+            </n-space>
+          </n-form-item>
         </n-form>
       </div>
 
@@ -947,4 +1013,6 @@ async function remove() {
   padding: 1px 4px; border-radius: 999px;
   color: #fff; background: #d99812; box-shadow: 0 0 0 1.5px var(--n-color, #fff);
 }
+/* 異動記錄超過 N 天（系統設定）的項目以淡色顯示 */
+.log-dim { opacity: .45; }
 </style>

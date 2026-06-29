@@ -90,6 +90,7 @@ import {
   List,
   ChatBubbleQuestion,
   Download,
+  PasteClipboard,
 } from "@iconoir/vue";
 
 // ── 通用 ──
@@ -190,6 +191,7 @@ export const TestIcon = CheckCircle;
  */
 export const ChatHistoryIcon = ChatBubbleQuestion;
 export const ExportIcon = Download;
+export const PasteIcon = PasteClipboard;
 export const CopyIcon = Copy;
 export const TerminalIcon = Terminal;
 // 螢幕外框 + 字母圖示：RDP=R / VNC=V，靠字母直接區分（比找近似 glyph 更直觀）。
@@ -211,6 +213,7 @@ function screenLetterIcon(letter: string) {
 }
 export const DisplayIcon = screenLetterIcon("R");  // RDP
 export const VncIcon = screenLetterIcon("V");      // VNC
+export const NoVncIcon = screenLetterIcon("N");    // noVNC（PVE 圖形主控台）
 export const ExpandIcon = Expand;                  // 重新調整大小 / 自動縮放
 export const ReduceIcon = Reduce;                  // 原始解析度（1:1）
 export const KeyIcon = Key;                        // 送出按鍵

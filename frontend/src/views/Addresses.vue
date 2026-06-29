@@ -237,7 +237,7 @@ const allColumns: DataTableColumns<IPAddress> = [
     sorter: true,
   },
   {
-    title: () => t("addresses.switch_port"), key: "switch_port", width: 140, ellipsis: { tooltip: false },
+    title: () => t("addresses.switch_port"), key: "switch_port", width: 210, ellipsis: { tooltip: false },
     render: (r) => switchPortCell(r), sorter: true,
   },
   {
@@ -474,6 +474,7 @@ onMounted(() => {
         itemCount: total,
         showSizePicker: true,
         pageSizes: [50, 100, 200, 500],
+        prefix: ({ itemCount }) => t('common.total_rows', { n: itemCount ?? 0 }),
         onUpdatePage: (p) => { page = p; void refresh(); },
         onUpdatePageSize: (ps) => { pageSize = ps; page = 1; void refresh(); },
       }"

@@ -375,6 +375,118 @@ async def delete_google_maps_api_key(
     return GoogleMapsKeyStatusOut(has_key=False)
 
 
+
+class UiDisplayOut(StrictModel):
+    # 異動記錄超過幾天的項目以淡色顯示；0 = 不淡化
+    change_log_dim_days: int = 30
+
+
+@public_router.get("/ui-display", response_model=UiDisplayOut)
+async def get_ui_display(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> UiDisplayOut:
+    from app.services.system_config import get_change_log_dim_days
+    return UiDisplayOut(change_log_dim_days=await get_change_log_dim_days(session))
+
+
+@router.put("/ui-display", response_model=UiDisplayOut)
+async def put_ui_display(
+    payload: UiDisplayOut,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> UiDisplayOut:
+    from app.services.system_config import set_change_log_dim_days
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "ui_display", "change_log_dim_days": payload.change_log_dim_days},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    days = await set_change_log_dim_days(
+        session, days=payload.change_log_dim_days, updated_by_user_id=user.id)
+    return UiDisplayOut(change_log_dim_days=days)
+
+
+class ConsoleSecurityOut(StrictModel):
+    # 允許 RDP 控制端把文字貼到被控端（剪貼簿單向重導；預設關閉）
+    rdp_clipboard_paste: bool = False
+
+
+@public_router.get("/console-security", response_model=ConsoleSecurityOut)
+async def get_console_security(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ConsoleSecurityOut:
+    from app.services.system_config import get_rdp_clipboard_paste
+    return ConsoleSecurityOut(rdp_clipboard_paste=await get_rdp_clipboard_paste(session))
+
+
+@router.put("/console-security", response_model=ConsoleSecurityOut)
+async def put_console_security(
+    payload: ConsoleSecurityOut,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ConsoleSecurityOut:
+    from app.services.system_config import set_rdp_clipboard_paste
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "console_security", "rdp_clipboard_paste": payload.rdp_clipboard_paste},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    enabled = await set_rdp_clipboard_paste(
+        session, enabled=payload.rdp_clipboard_paste, updated_by_user_id=user.id)
+    return ConsoleSecurityOut(rdp_clipboard_paste=enabled)
+
+
+# 本機地圖圖磚代理（OSM）：讓「OpenStreetMap」供應商在維持嚴格 CSP（img-src 'self'）+ COEP require-corp
+# 下仍能在頁內顯示圖磚。URL 由伺服器端組（只連 OSM、z/x/y 驗證為整數範圍）→ 非開放代理、非 SSRF。
+# 供 <img> 載入故不帶 auth header（token 走 Authorization，圖磚標籤帶不了）；由 nginx /api 限流保護。
+# 小型記憶體 LRU 對 OSM 圖磚政策友善（避免重複抓取）。
+_TILE_CACHE: OrderedDict[str, bytes] = OrderedDict()
+_TILE_CACHE_MAX = 512
+_OSM_HOSTS = ("a", "b", "c")
+_TILE_HEADERS = {"Cache-Control": "public, max-age=604800"}
+
+
+@public_router.get("/map-tile/{z}/{x}/{y}")
+async def map_tile(z: int, x: int, y: int) -> Response:
+    if not (0 <= z <= 19):
+        raise HTTPException(status_code=400, detail="bad zoom")
+    n = 1 << z
+    if not (0 <= x < n and 0 <= y < n):
+        raise HTTPException(status_code=400, detail="bad tile coordinate")
+    key = f"{z}/{x}/{y}"
+    cached = _TILE_CACHE.get(key)
+    if cached is not None:
+        _TILE_CACHE.move_to_end(key)
+        return Response(content=cached, media_type="image/png", headers=_TILE_HEADERS)
+    host = _OSM_HOSTS[(x + y) % 3]
+    url = f"https://{host}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+    try:
+        resp = await safe_request(
+            "GET", url, timeout=10.0,
+            headers={"User-Agent": "jt-ipam/1.0 (self-hosted IPAM; +https://github.com/jasoncheng7115/jt-ipam)"},
+        )
+    except (UnsafeOutboundURL, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=502, detail="tile upstream error") from exc
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"tile upstream {resp.status_code}")
+    data = resp.content
+    _TILE_CACHE[key] = data
+    _TILE_CACHE.move_to_end(key)
+    while len(_TILE_CACHE) > _TILE_CACHE_MAX:
+        _TILE_CACHE.popitem(last=False)
+    return Response(content=data, media_type="image/png", headers=_TILE_HEADERS)
+
+
 # ─────────────────── 機櫃示意圖：裝置名稱對齊（全域）───────────────────
 class RackNameAlignOut(StrictModel):
     align: str   # "left" | "center" | "right"

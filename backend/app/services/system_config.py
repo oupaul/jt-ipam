@@ -210,6 +210,68 @@ async def set_ai_chat_retention_days(
     return days
 
 
+# ─────────────────── 連線管理資安設定（console security）───────────────────
+CONSOLE_SECURITY_KEY = "console_security"
+
+
+async def get_rdp_clipboard_paste(session: AsyncSession) -> bool:
+    """是否允許 RDP 控制端把文字貼到被控端（剪貼簿單向重導）。預設關閉（deny by default）。"""
+    row = await session.get(SystemSetting, CONSOLE_SECURITY_KEY)
+    if row and isinstance(row.value, dict):
+        return bool(row.value.get("rdp_clipboard_paste", False))
+    return False
+
+
+async def set_rdp_clipboard_paste(
+    session: AsyncSession, *, enabled: bool, updated_by_user_id: uuid.UUID | None = None,
+) -> bool:
+    row = await session.get(SystemSetting, CONSOLE_SECURITY_KEY)
+    if row is None:
+        row = SystemSetting(key=CONSOLE_SECURITY_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    current = dict(row.value or {})
+    current["rdp_clipboard_paste"] = bool(enabled)
+    row.value = current
+    row.updated_by = updated_by_user_id
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(row, "value")
+    await session.commit()
+    return bool(enabled)
+
+
+# ─────────────────── 介面顯示設定（UI display）───────────────────
+UI_DISPLAY_KEY = "ui_display"
+_DEFAULT_CHANGE_LOG_DIM_DAYS = 30
+
+
+async def get_change_log_dim_days(session: AsyncSession) -> int:
+    """異動記錄超過幾天的項目以淡色顯示；0 = 不淡化。預設 30 天。"""
+    row = await session.get(SystemSetting, UI_DISPLAY_KEY)
+    if row and isinstance(row.value, dict):
+        v = row.value.get("change_log_dim_days")
+        if isinstance(v, int) and v >= 0:
+            return v
+    return _DEFAULT_CHANGE_LOG_DIM_DAYS
+
+
+async def set_change_log_dim_days(
+    session: AsyncSession, *, days: int, updated_by_user_id: uuid.UUID | None = None,
+) -> int:
+    days = max(0, min(3650, int(days)))
+    row = await session.get(SystemSetting, UI_DISPLAY_KEY)
+    if row is None:
+        row = SystemSetting(key=UI_DISPLAY_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    current = dict(row.value or {})
+    current["change_log_dim_days"] = days
+    row.value = current
+    row.updated_by = updated_by_user_id
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(row, "value")
+    await session.commit()
+    return days
+
+
 # ─────────────────── Graylog DSV 查表（lookup table adapter）───────────────────
 
 GRAYLOG_DSV_KEY = "graylog_dsv"
@@ -737,3 +799,57 @@ async def set_notification_channels(
     await session.commit()
     _ncfg_cache.pop(NOTIFY_CH_KEY, None)
     return await get_notification_channels(session)
+
+
+# ─────────────────── 通知矩陣（哪些事件、走哪些管道）───────────────────
+NOTIFY_MATRIX_KEY = "notification_matrix"
+# 可通知事件登錄（矩陣的列）：(key, 預設站內, 預設 email)。新增事件只要在這裡加一列。
+NOTIFY_EVENTS: tuple[tuple[str, bool, bool], ...] = (
+    ("ip_request.created", True, True),    # 審核者：有新 IP 申請待審
+    ("ip_request.approved", True, True),   # 申請人：申請已核准（含配發 IP）
+    ("ip_request.rejected", True, True),   # 申請人：申請已拒絕
+    ("cert.expiring", True, False),        # 憑證即將到期 / 已過期
+    ("cert.deployed", True, False),        # 代理成功部署新憑證
+    ("cert.drift", True, False),           # 憑證飄移（某代理未套到最新版）
+    ("anomaly.detected", True, False),     # 異常偵測有新發現
+)
+
+
+def _default_matrix() -> dict[str, dict[str, bool]]:
+    return {k: {"in_app": ia, "email": em} for k, ia, em in NOTIFY_EVENTS}
+
+
+async def get_notification_matrix(session: AsyncSession) -> dict[str, dict[str, bool]]:
+    """回傳通知矩陣 {event: {in_app, email}}，未設定的事件用預設值補齊。"""
+    out = _default_matrix()
+    row = await session.get(SystemSetting, NOTIFY_MATRIX_KEY)
+    if row and isinstance(row.value, dict):
+        for k, v in row.value.items():
+            if k in out and isinstance(v, dict):
+                if isinstance(v.get("in_app"), bool):
+                    out[k]["in_app"] = v["in_app"]
+                if isinstance(v.get("email"), bool):
+                    out[k]["email"] = v["email"]
+    return out
+
+
+async def set_notification_matrix(
+    session: AsyncSession, *, data: dict[str, Any], updated_by_user_id: uuid.UUID,
+) -> dict[str, dict[str, bool]]:
+    from sqlalchemy.orm.attributes import flag_modified
+    row = await session.get(SystemSetting, NOTIFY_MATRIX_KEY)
+    if row is None:
+        row = SystemSetting(key=NOTIFY_MATRIX_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    defaults = _default_matrix()
+    val: dict[str, dict[str, bool]] = {}
+    for k, dflt in defaults.items():
+        v = data.get(k) if isinstance(data, dict) else None
+        ia = bool(v["in_app"]) if isinstance(v, dict) and isinstance(v.get("in_app"), bool) else dflt["in_app"]
+        em = bool(v["email"]) if isinstance(v, dict) and isinstance(v.get("email"), bool) else dflt["email"]
+        val[k] = {"in_app": ia, "email": em}
+    row.value = val
+    row.updated_by = updated_by_user_id
+    flag_modified(row, "value")
+    await session.commit()
+    return await get_notification_matrix(session)

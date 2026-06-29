@@ -204,6 +204,7 @@ const menuOptions = computed<MenuOption[]>(() => {
         { label: () => t("nav.connections"),     key: "adv-connections", icon: renderIcon(TerminalIcon) },
         { label: () => t("nav.virtualization"), key: "virt",     icon: renderIcon(VirtualizationIcon) },
         { label: () => t("nav.firewall"),       key: "firewall",    icon: renderIcon(FirewallIcon) },
+        { label: () => t("nav.pfsense_fw"),     key: "pfsense_fw",  icon: renderIcon(FirewallIcon) },
         { label: () => t("nav.nat"),            key: "nat",         icon: renderIcon(NatIcon) },
         { label: () => t("nav.cabling"),        key: "cabling",     icon: renderIcon(PhysicalIcon) },
         { label: () => t("nav.power"),          key: "power",       icon: renderIcon(PowerIcon) },
@@ -233,6 +234,7 @@ const menuOptions = computed<MenuOption[]>(() => {
           { label: () => t("nav.adguard"),       key: "adguard",        icon: renderIcon(DnsIcon) },
           { label: () => t("nav.librenms"),      key: "librenms",       icon: renderIcon(LibreNMSIcon) },
           { label: () => t("nav.firewall_admin"), key: "firewall_admin", icon: renderIcon(FirewallIcon) },
+          { label: () => t("nav.pfsense"),        key: "pfsense",        icon: renderIcon(FirewallIcon) },
           { label: () => t("nav.virt_admin"),    key: "virt_admin",     icon: renderIcon(VirtualizationIcon) },
           { label: () => t("nav.wazuh"),         key: "wazuh",          icon: renderIcon(WazuhIcon) },
           { label: () => t("nav.graylog_dsv"),   key: "graylog_dsv",    icon: renderIcon(ExportIcon) },
@@ -272,6 +274,28 @@ const localeOptions = [
   { label: "繁體中文", value: "zh-TW" },
   { label: "English",  value: "en-US" },
 ];
+
+// 進入（或從別處點進）某頁時，自動展開其所屬的左側群組（管理 / 進階 / 子網路群組），
+// 讓使用者一眼看到目前位置。只加不減 → 其他已展開群組維持原狀。
+function ancestorGroupKeys(opts: MenuOption[], target: string, trail: string[] = []): string[] | null {
+  for (const o of opts) {
+    if (o.key === target) return trail;
+    const kids = (o as { children?: MenuOption[] }).children;
+    if (kids) {
+      const r = ancestorGroupKeys(kids, target, [...trail, o.key as string]);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+watch([menuValue, menuOptions], () => {
+  const trail = ancestorGroupKeys(menuOptions.value, menuValue.value);
+  if (!trail || !trail.length) return;
+  const keys = new Set(expandedKeys.value);
+  const before = keys.size;
+  trail.forEach((k) => keys.add(k));
+  if (keys.size !== before) expandedKeys.value = [...keys];
+}, { immediate: true });
 
 const themeOptions = computed(() => [
   { label: t("topbar.theme.light"), value: "light" },
