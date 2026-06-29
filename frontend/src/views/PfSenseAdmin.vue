@@ -29,16 +29,13 @@ const insecureFws = computed(() => rows.value.filter((f) => !f.verify_tls));
 const loading = ref(false);
 
 // 表格欄位偏好（比照 OPNsense）：預設只顯示會撐爆的那幾欄以外的核心欄，其餘可在「欄位」勾選
-const PF_ALL = ["name", "api_url", "verify_tls", "enabled", "syncs", "alias_count", "rule_count",
-  "last_sync_at", "last_error", "actions"];
-const PF_DEFAULT = ["name", "api_url", "verify_tls", "enabled", "syncs", "last_sync_at", "actions"];
+const PF_ALL = ["name", "api_url", "verify_tls", "last_sync_at", "last_error", "actions"];
+const PF_DEFAULT = ["name", "api_url", "verify_tls", "last_sync_at", "actions"];
 const pfPrefs = useColumnPrefs("pfsense_fws", PF_ALL, PF_DEFAULT);
 // computed 讓欄位選單標籤在切換語言（不重整）時即時重新翻譯
 const pfPicker = computed(() => [
   { key: "name", label: t("common.name") }, { key: "api_url", label: "API URL" },
   { key: "verify_tls", label: "TLS" },
-  { key: "enabled", label: t("cols.enabled") }, { key: "syncs", label: t("pfsense_admin.syncs") },
-  { key: "alias_count", label: t("pfsense_admin.aliases") }, { key: "rule_count", label: t("pfsense_admin.rules") },
   { key: "last_sync_at", label: t("cols.last_sync") }, { key: "last_error", label: t("cols.last_error") },
   { key: "actions", label: t("common.actions") },
 ]);
@@ -139,15 +136,6 @@ function iconAction(icon: any, label: string, onClick: () => void, type?: any) {
     default: () => label,
   });
 }
-function syncSummary(r: PfSense): string {
-  const on = [
-    r.sync_dhcp ? "DHCP" : null, r.sync_arp ? "ARP" : null,
-    r.sync_aliases ? t("pfsense_admin.alias") : null,
-    r.sync_rules ? t("pfsense_admin.rules") : null,
-    r.expose_dsv ? "DSV" : null,
-  ].filter(Boolean);
-  return on.length ? on.join(" · ") : "—";
-}
 
 const allCols = computed<DataTableColumns<PfSense>>(() => autoSort([
   { title: t("common.name"), key: "name", minWidth: 150, ellipsis: { tooltip: true } },
@@ -165,14 +153,6 @@ const allCols = computed<DataTableColumns<PfSense>>(() => autoSort([
           default: () => t("firewall_admin.tls_skip_warning"),
         }),
   },
-  {
-    title: t("cols.enabled"), key: "enabled", width: 80,
-    render: (r) => h(NTag, { size: "small", type: r.enabled ? "success" : "default" },
-      () => r.enabled ? t("common.yes") : t("common.no")),
-  },
-  { title: t("pfsense_admin.syncs"), key: "syncs", width: 150, render: (r) => syncSummary(r) },
-  { title: t("pfsense_admin.aliases"), key: "alias_count", width: 80, render: (r) => r.alias_count ?? 0 },
-  { title: t("pfsense_admin.rules"), key: "rule_count", width: 70, render: (r) => r.rule_count ?? 0 },
   {
     title: t("cols.last_sync"), key: "last_sync_at", width: 168,
     render: (r) => h("span", { style: "white-space:nowrap" }, fmtDateTime(r.last_sync_at)),

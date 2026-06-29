@@ -4,6 +4,17 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.40] — 2026-06-29
+
+### 變更
+- **pfSense 整合表格欄位與 OPNsense 一致**（名稱／API URL／TLS／最後同步／最後錯誤／操作）；移除多出來的
+  啟用／同步項目／別名數／規則欄位。
+
+### 新增
+- **左側功能區會自動展開目前頁面所屬的群組**（管理／進階／子網路群組），不論是導覽過去或直接進入，
+  都能一眼看到所在位置。
+
+
 ## [0.5.39] — 2026-06-29
 
 ### 修正

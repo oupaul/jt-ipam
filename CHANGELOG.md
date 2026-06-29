@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.40] — 2026-06-29
+
+### Changed
+- **pfSense integration table now shows the same columns as OPNsense** (name / API URL / TLS / last sync /
+  last error / actions); removed the extra 啟用 / 同步項目 / 別名數 / 規則 columns.
+
+### Added
+- **The left sidebar auto-expands the group that contains the current page** (管理 / 進階 / a subnet group),
+  whether you navigate there or land on it directly, so your location is visible.
+
+
 ## [0.5.39] — 2026-06-29
 
 ### Fixed
