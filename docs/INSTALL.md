@@ -217,7 +217,15 @@ compose file brings up `postgres` (pgvector), `redis`, `backend` (FastAPI/uvicor
 loop that replaces the systemd timer), and `web` (nginx serving the frontend + reverse-proxying `/api`, with a
 self-signed HTTPS cert on first run).
 
+Prerequisites: **git** and **Docker Engine with the `docker compose` v2 plugin**. The official
+`get.docker.com` script installs both; **do not** use `apt install docker.io` — it lacks the `docker compose`
+subcommand. On non-Debian distros install git with your own package manager.
+
 ```bash
+# prerequisites: git + Docker Engine (incl. the compose plugin)
+curl -fsSL https://get.docker.com | sudo sh
+sudo apt-get install -y git
+
 # clone the repo first — gen-env.sh / docker-compose.yml live inside it under deploy/docker/
 git clone https://github.com/jasoncheng7115/jt-ipam.git
 cd jt-ipam/deploy/docker

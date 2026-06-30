@@ -674,8 +674,16 @@
       </p>
 
       <h3 class="dz-h3"><span class="zh">安裝</span><span class="en">Install</span></h3>
-      <pre>git clone https://github.com/jasoncheng7115/jt-ipam.git
+      <pre><span class="zh"># 前置：安裝 git + Docker Engine（含 compose 外掛）</span><span class="en"># prerequisites: git + Docker Engine (incl. the compose plugin)</span>
+curl -fsSL https://get.docker.com | sudo sh
+sudo apt-get install -y git
+
+git clone https://github.com/jasoncheng7115/jt-ipam.git
 cd jt-ipam/deploy/docker &amp;&amp; ./gen-env.sh &amp;&amp; <span class="g">docker compose up -d --build</span></pre>
+      <p style="margin:10px 0 0" class="disclaimer">
+        <span class="zh"><strong>前置需求：</strong>需要 <strong>git</strong> 與 <strong>Docker Engine（含 <code>docker compose</code> v2 外掛）</strong>。建議用官方腳本 <code>get.docker.com</code> 安裝（已含 compose 外掛）；<strong>不要用 <code>apt install docker.io</code></strong>，那個版本沒有 <code>docker compose</code> 子指令。其他發行版請用各自的套件管理員裝 git。</span>
+        <span class="en"><strong>Prerequisites:</strong> you need <strong>git</strong> and <strong>Docker Engine (with the <code>docker compose</code> v2 plugin)</strong>. The official <code>get.docker.com</code> script installs both the engine and the compose plugin; <strong>do not use <code>apt install docker.io</code></strong> — it lacks the <code>docker compose</code> subcommand. On non-Debian distros install git via your package manager.</span>
+      </p>
       <p style="margin:10px 0 0" class="disclaimer">
         <span class="zh"><strong>首次登入密碼：</strong><code>gen-env.sh</code> 會自動產生一組隨機 <code>admin</code> 密碼，印在它的輸出、並存進 <code>.env</code> 的 <code>JT_IPAM_ADMIN_PASSWORD</code>（檔案 0600）；首次啟動 backend 會用它建立 admin 帳號。登入後請立即更換。也可自己改 <code>.env</code> 指定，或留空、之後用 <code>docker compose exec backend python -m app.cli.bootstrap create-admin …</code> 手動建立。</span>
         <span class="en"><strong>First-login password:</strong> <code>gen-env.sh</code> generates a random <code>admin</code> password, prints it in its output and stores it as <code>JT_IPAM_ADMIN_PASSWORD</code> in <code>.env</code> (mode 0600); the backend creates the admin on first boot using it. Change it right after logging in. You can also set your own in <code>.env</code>, or leave it empty and create the admin later with <code>docker compose exec backend python -m app.cli.bootstrap create-admin …</code>.</span>

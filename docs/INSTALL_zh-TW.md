@@ -209,7 +209,15 @@ curl -skI https://ipam.example.com/ \
 `postgres`（pgvector）、`redis`、`backend`（FastAPI/uvicorn）、`sync`（背景同步迴圈，取代 systemd timer）、
 `web`（nginx：服務前端 + 反代 `/api`，首次啟動自動產自簽 HTTPS 憑證）。
 
+前置需求：**git** 與 **Docker Engine（含 `docker compose` v2 外掛）**。建議用官方腳本 `get.docker.com` 安裝
+（同時裝好引擎與 compose 外掛）；**不要用 `apt install docker.io`**，那個版本沒有 `docker compose` 子指令。
+非 Debian 系發行版請用各自的套件管理員裝 git。
+
 ```bash
+# 前置：安裝 git + Docker Engine（含 compose 外掛）
+curl -fsSL https://get.docker.com | sudo sh
+sudo apt-get install -y git
+
 # 先 git clone 取得專案——gen-env.sh / docker-compose.yml 都在 repo 的 deploy/docker/ 內
 git clone https://github.com/jasoncheng7115/jt-ipam.git
 cd jt-ipam/deploy/docker

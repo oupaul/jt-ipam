@@ -12,6 +12,17 @@ terminating HTTPS).
 
 ## Quick start
 
+Prerequisites: **git** and **Docker Engine with the `docker compose` v2 plugin**. The official
+`get.docker.com` script installs both. **Do not** `apt install docker.io` — that package has **no
+`docker compose` subcommand** (you'll hit `unknown shorthand flag: 'd' in -d`); remove it and use the script:
+
+```bash
+sudo apt-get remove -y docker.io docker-compose podman-docker   # if you installed those
+curl -fsSL https://get.docker.com | sudo sh                     # Docker Engine + compose plugin
+sudo apt-get install -y git
+docker compose version                                          # verify the v2 plugin is present
+```
+
 `gen-env.sh`, `docker-compose.yml` and the rest live in the repo under `deploy/docker/`, so **clone the repo
 first**:
 
