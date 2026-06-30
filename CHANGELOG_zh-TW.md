@@ -4,6 +4,13 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.49] — 2026-06-30
+
+### 新增
+- **本機帳號自助變更密碼**：右上角帳號選單新增「變更密碼」，開啟對話框驗證目前密碼並設定新密碼（≥ 12 字）。
+  外部認證帳號（LDAP／SSO）不顯示此入口。新端點 `POST /api/v1/auth/change-password`（有稽核）。
+
+
 ## [0.5.48] — 2026-06-30
 
 ### 修正

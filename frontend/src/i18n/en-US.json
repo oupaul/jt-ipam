@@ -2512,5 +2512,18 @@
     "use_saved_hint": "Using a saved PVE credential: the password is stored encrypted on the server, decrypted only at connect time, never returned to the browser.",
     "state_closed": "Closed",
     "lxc_enter_hint": "No prompt? Press Enter once"
+  },
+  "account": {
+    "change_password": "Change password",
+    "current_pw": "Current password",
+    "new_pw": "New password",
+    "confirm_pw": "Confirm new password",
+    "pw_min": "New password must be at least 12 characters",
+    "pw_mismatch": "The new passwords don't match",
+    "same_pw": "New password must differ from the current one",
+    "current_pw_wrong": "Current password is incorrect",
+    "external_auth": "This account is authenticated externally (LDAP/SSO); change its password there.",
+    "pw_changed": "Password changed",
+    "pw_change_failed": "Failed to change password"
   }
 }

@@ -2510,5 +2510,18 @@
     "use_saved_hint": "使用已儲存的 PVE 帳密：密碼以加密方式保管於伺服器，僅連線當下於後端解密取用，不會回傳前端。",
     "state_closed": "已關閉",
     "lxc_enter_hint": "沒看到提示字元？按一下 Enter"
+  },
+  "account": {
+    "change_password": "變更密碼",
+    "current_pw": "目前密碼",
+    "new_pw": "新密碼",
+    "confirm_pw": "確認新密碼",
+    "pw_min": "新密碼至少 12 個字元",
+    "pw_mismatch": "兩次輸入的新密碼不一致",
+    "same_pw": "新密碼不可與目前密碼相同",
+    "current_pw_wrong": "目前密碼不正確",
+    "external_auth": "此帳號由外部認證（LDAP／SSO），無法在此變更密碼",
+    "pw_changed": "密碼已變更",
+    "pw_change_failed": "變更密碼失敗"
   }
 }

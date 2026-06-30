@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.49] — 2026-06-30
+
+### Added
+- **Self-service password change for local accounts**: a "Change password" item in the top-right account menu
+  opens a dialog that verifies the current password and sets a new one (≥ 12 chars). Hidden for externally
+  authenticated accounts (LDAP / SSO). New endpoint `POST /api/v1/auth/change-password` (audited).
+
+
 ## [0.5.48] — 2026-06-30
 
 ### Fixed
