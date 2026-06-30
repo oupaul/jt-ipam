@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.51] — 2026-06-30
+
+### Changed
+- **LibreNMS "auto-add devices" now defaults ON** (and existing instances are flipped on by migration), so every
+  sync / pull also match-or-creates the jt-ipam devices — no more clicking "Link devices" by hand each time.
+
+### Added
+- **DNS integration: a "Sync now" button** on the DNS servers list. DNS was only synced silently by the periodic
+  timer (never showing in Tasks); the manual pull now enqueues a `dns.sync` task that appears in Tasks like the
+  other integrations.
+
+
 ## [0.5.50] — 2026-06-30
 
 ### Changed

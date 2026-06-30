@@ -4,6 +4,17 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.51] — 2026-06-30
+
+### 變更
+- **LibreNMS「自動加入裝置」改為預設開啟**（既有實例也由遷移一併打開），這樣每次同步／拉取就會順帶把裝置
+  match-or-create 成 jt-ipam 裝置 —— 不必每次再手動按「連結裝置」。
+
+### 新增
+- **整合 DNS：清單新增「立即同步」按鈕**。DNS 原本只由排程計時器靜默同步（不會出現在「作業」）；手動拉取現在會
+  排入 `dns.sync` 作業，像其它整合一樣顯示在「作業」裡。
+
+
 ## [0.5.50] — 2026-06-30
 
 ### 變更
