@@ -1416,7 +1416,7 @@
     "cat_dns": "DNS / 網域",
     "cat_power": "機房 / 電力",
     "subtitle": "IP / 子網路 / MAC / DNS / 電力的計算與查詢工具，全部也可在 AI 助理中使用",
-    "oui_search_ph": "依前綴(22 / 00:11)或廠商名搜尋",
+    "oui_search_ph": "依首碼(22 / 00:11)或廠商名搜尋",
     "oui_search_count": "找到 {n} 筆",
     "oui_managed_in_admin": "（資料庫維護在管理區）"
   },

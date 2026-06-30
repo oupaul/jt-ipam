@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.59] — 2026-06-30
+
+### Changed
+- Terminology: replaced the remaining "前綴" with "首碼" (Taiwan usage) — notably the OUI search placeholder.
+
+
 ## [0.5.58] — 2026-06-30
 
 ### Fixed

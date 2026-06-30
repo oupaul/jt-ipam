@@ -4,6 +4,12 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.59] — 2026-06-30
+
+### 變更
+- 用詞：把殘留的「前綴」一律改成「首碼」（台灣慣用）—— 主要是 OUI（MAC 製造商）搜尋框的提示文字。
+
+
 ## [0.5.58] — 2026-06-30
 
 ### 修正
