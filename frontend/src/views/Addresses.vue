@@ -216,7 +216,7 @@ const allColumns: DataTableColumns<IPAddress> = [
   {
     title: () => t("addresses.ip"), key: "ip", width: 200,
     sorter: true,
-    render: (r) => h("span", { style: "display:inline-flex;align-items:center" }, [String(r.ip), h(IpRoleTags, { row: r })]),
+    render: (r) => h("span", { style: "display:inline-flex;align-items:center;white-space:nowrap" }, [String(r.ip), h(IpRoleTags, { row: r })]),
   },
   {
     title: () => t("addresses.hostname"), key: "hostname", minWidth: 140, ellipsis: { tooltip: true },
@@ -251,7 +251,7 @@ const allColumns: DataTableColumns<IPAddress> = [
     render: (r) => labelSource(r.discovery_source), sorter: true,
   },
   {
-    title: () => t("cols.os"), key: "os", width: 110,
+    title: () => t("cols.os"), key: "os", width: 150,
     render: (r) => {
       if (!r.os_family) return "—";
       const label = osFamilyLabel(catalog.value.os_families, r.os_family, locale.value);

@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.53] — 2026-06-30
+
+### Changed
+- **IP list: gateway / DHCP-server markers are now compact icons (with tooltips)** instead of wide text tags,
+  so they no longer squeeze the IP into a one-character-per-line vertical strip. In-DHCP-range shows as a small dot.
+- **IP list: widened the OS column** (110→150 px) so the OS family label is no longer truncated.
+
+
 ## [0.5.52] — 2026-06-30
 
 ### Changed

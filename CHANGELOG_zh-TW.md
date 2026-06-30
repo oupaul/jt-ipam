@@ -4,6 +4,14 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.53] — 2026-06-30
+
+### 變更
+- **IP 清單：閘道／DHCP 伺服器標記改用緊湊 icon（附 tooltip）**，取代原本的寬文字標籤，不再把 IP 擠成一個字一行
+  的直條。落在 DHCP 範圍內以小圓點呈現。
+- **IP 清單：加寬 OS 欄位**（110→150 px），OS 類別標籤不再被截斷。
+
+
 ## [0.5.52] — 2026-06-30
 
 ### 變更
