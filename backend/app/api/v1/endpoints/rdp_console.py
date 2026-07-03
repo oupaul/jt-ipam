@@ -30,7 +30,7 @@ from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser
@@ -127,7 +127,9 @@ async def list_connection_targets(
         | IPAddress.rdp_enabled.is_(True)
         | IPAddress.vnc_enabled.is_(True)
         | IPAddress.novnc_enabled.is_(True)
+        | IPAddress.bmc_enabled.is_(True)
     )
+    vis: set[uuid.UUID] | None = None  # None = 不限（admin 或萬用可見）
     if not user.is_admin:
         vis = await visible_ids(session, user=user, object_type="subnet")
         if vis is not None:
@@ -137,7 +139,7 @@ async def list_connection_targets(
     rows = (await session.execute(stmt)).scalars().all()
 
     perm_cache: dict[uuid.UUID, str] = {}
-    kept: list[tuple[IPAddress, bool, bool, bool]] = []
+    kept: list[tuple[IPAddress, bool, bool, bool, bool]] = []
     for ip in rows:
         if user.is_admin:
             usable = True
@@ -153,9 +155,9 @@ async def list_connection_targets(
             usable = has_permission(lvl, "write") or bool(user.can_ssh)
         if not usable:
             continue
-        kept.append((ip, bool(ip.ssh_enabled), bool(ip.rdp_enabled), bool(ip.vnc_enabled)))
+        kept.append((ip, bool(ip.ssh_enabled), bool(ip.rdp_enabled), bool(ip.vnc_enabled), bool(ip.bmc_enabled)))
 
-    dev_ids = {ip.device_id for ip, _, _, _ in kept if ip.device_id}
+    dev_ids = {ip.device_id for ip, *_ in kept if ip.device_id}
     dev_names: dict[uuid.UUID, str] = {}
     if dev_ids:
         drows = (await session.execute(
@@ -163,13 +165,41 @@ async def list_connection_targets(
         )).all()
         dev_names = {d[0]: d[1] for d in drows}
 
+    # 借用「同一 IP、使用者可見範圍內其它記錄」的最新存活時間 —— 解重疊子網路把同一台
+    # 實體機拆成多筆、掃描 / LibreNMS 只 stamp 其中一筆（.limit(1)）導致連線頁那筆顯示離線。
+    # 只借用可見記錄：多租戶下不會拿到別單位的存活證據（RBAC 安全）。
+    live_map: dict[str, tuple[Any, Any, Any]] = {}
+    ip_values = list({str(ip.ip) for ip, *_ in kept})
+    if ip_values:
+        lstmt = (
+            select(
+                func.host(IPAddress.ip),
+                func.max(IPAddress.last_seen_scanner),
+                func.max(IPAddress.last_seen_librenms),
+                func.max(IPAddress.last_seen_dns),
+            )
+            .where(func.host(IPAddress.ip).in_(ip_values))
+            .group_by(func.host(IPAddress.ip))
+        )
+        if vis is not None:
+            lstmt = lstmt.where(IPAddress.subnet_id.in_(vis))
+        for lr in (await session.execute(lstmt)).all():
+            live_map[str(lr[0])] = (lr[1], lr[2], lr[3])
+
+    from app.services.oui import vendor_for_mac
     from app.services.os_precedence import effective_os
     out: list[IPAddressRead] = []
-    for ip, ssh_ok, rdp_ok, vnc_ok in kept:
+    for ip, ssh_ok, rdp_ok, vnc_ok, bmc_ok in kept:
         r = IPAddressRead.model_validate(ip)
+        r.mac_vendor = await vendor_for_mac(session, ip.mac)
+        lm = live_map.get(str(ip.ip))
+        if lm:
+            # lm 為同 IP 可見記錄的最新值（已含自身），直接採用 → 連線頁的燈反映實際存活
+            r.last_seen_scanner, r.last_seen_librenms, r.last_seen_dns = lm
         r.ssh_available = ssh_ok
         r.rdp_available = rdp_ok
         r.vnc_available = vnc_ok
+        r.bmc_available = bmc_ok
         if ip.novnc_enabled:  # PVE 主控台：已啟用且對應到 PVE VM/CT（權限已在 kept 過濾）
             from app.services.pve_console import resolve_pve_target
             tgt = await resolve_pve_target(session, ip)

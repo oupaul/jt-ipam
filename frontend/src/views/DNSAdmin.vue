@@ -8,12 +8,12 @@ import {
   useMessage, type DataTableColumns,
 } from "naive-ui";
 import {
-  listDNSServers, createDNSServer, updateDNSServer, deleteDNSServer, testDNSServer,
+  listDNSServers, createDNSServer, updateDNSServer, deleteDNSServer, testDNSServer, syncDNSServer,
   type DNSServer, type DNSServerType,
 } from "@/api/integrations";
 import { listSubnets } from "@/api/subnets";
 import {
-  DnsIcon, PlusIcon, EditIcon, DeleteIcon, RefreshIcon, TestIcon, SaveIcon, CancelIcon,
+  DnsIcon, PlusIcon, EditIcon, DeleteIcon, RefreshIcon, SyncIcon, TestIcon, SaveIcon, CancelIcon,
 } from "@/icons";
 import { autoSort } from "@/composables/useTableSort";
 import ColumnPicker from "@/components/ColumnPicker.vue";
@@ -132,6 +132,10 @@ function openEdit(r: DNSServer) {
 }
 async function submit() {
   if (!form.value.name.trim()) { msg.error(t("dns_admin.error_name_required")); return; }
+  // UCS 走 Basic auth：帳號必填（空帳號 → UCS 回 400「basic auth malformed」，整個同步抓 0 筆）
+  if (showUsername.value && !form.value.username.trim()) {
+    msg.error(t("dns_admin.error_username_required")); return;
+  }
   const payload: any = {
     name: form.value.name,
     type: form.value.type,
@@ -168,6 +172,13 @@ async function del(id: string) {
   try { await deleteDNSServer(id); msg.success(t("common.ok")); await refresh(); }
   catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
+async function sync(id: string) {
+  const name = rows.value.find((r) => r.id === id)?.name ?? id.slice(0, 8);
+  try {
+    await syncDNSServer(id);
+    msg.success(t("tasks.queued_toast", { kind: "DNS sync", target: name }));
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+}
 
 function iconAction(icon: any, label: string, onClick: () => void, type?: any) {
   return h(NTooltip, null, {
@@ -191,10 +202,11 @@ const allCols = computed<DataTableColumns<DNSServer>>(() => autoSort([
       () => r.enabled ? t("common.enabled") : t("common.disabled")),
   },
   {
-    title: t("common.actions"), key: "actions", className: "col-actions", width: 124,
+    title: t("common.actions"), key: "actions", className: "col-actions", width: 158,
     render: (r) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
       iconAction(EditIcon, t("common.edit"), () => openEdit(r)),
       iconAction(TestIcon, t("common.test"), () => test(r.id)),
+      iconAction(SyncIcon, t("common.pull"), () => sync(r.id), "primary"),
       h(NPopconfirm, { onPositiveClick: () => del(r.id) }, {
         trigger: () => iconAction(DeleteIcon, t("common.delete"), () => {}, "error"),
         default: () => t("common.confirm_delete"),

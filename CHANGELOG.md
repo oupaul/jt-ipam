@@ -4,6 +4,372 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.91] — 2026-07-03
+
+### Security
+- **Constant-time comparison for the public Graylog DSV access token** — the token-gated lookup endpoints (`/api/v1/lookup/...`, also reachable over plaintext :8088) compared the access token with a plain `!=`, a timing side-channel. They now use `hmac.compare_digest` and encode with `surrogatepass` so a crafted (non-UTF-8) token is rejected safely instead of raising a 500. Found and fixed via an internal security review.
+
+
+## [0.5.90] — 2026-07-03
+
+### Fixed
+- **Connections table status dot for overlapping subnets** — when one physical host is split across multiple overlapping-subnet records for the same IP, the connection-enabled record could show offline because the scanner / LibreNMS only stamps one record per IP. The Connections view now borrows the freshest last-seen from the same IP's other records within the user's visible scope, so the dot reflects the host's real liveness (RBAC-safe: only records the user can see).
+
+
+## [0.5.89] — 2026-07-03
+
+### Added
+- **Connections table — MAC and MAC vendor columns** — both off by default, available in the column picker; the vendor is resolved from the IEEE OUI table.
+
+### Fixed
+- **Liveness tooltip timestamps now show local time** — the IP status-dot tooltip rendered scanner / LibreNMS / DNS last-seen times in UTC; they now follow the browser's local timezone, like the rest of the app.
+
+
+## [0.5.88] — 2026-07-03
+
+### Added
+- **Tasks table — Trigger column (Scheduled / Manual)** — the periodic sync timer now records a rolling heartbeat row per integration (one per integration, upserted each run — no flooding), tagged **Scheduled**, so scheduled syncs are visible in the Tasks table and distinguishable from **Manual** runs. Previously the timer wrote directly to the integration tables without any task record, so the Tasks table looked frozen even while syncs ran fine.
+
+### Fixed
+- **DNS pull now reports failure instead of "succeeded 0"** — a hard adapter error (e.g. UCS UDM returning HTTP 400) during a DNS pull is now surfaced as a failed task rather than a misleading success with zero counts.
+
+
+## [0.5.87] — 2026-07-03
+
+### Added
+- **SSH console — legacy-device compatibility** — the in-browser SSH terminal (and the host-key preview) now also negotiate older algorithms (aes-cbc, 3des-cbc, diffie-hellman-group14/group1-sha1, ssh-rsa host keys, hmac-sha1) so it can reach old network gear (e.g. D-Link DGS-1510 switches, legacy firewalls) that offers nothing newer. Modern devices still negotiate strong algorithms first; the truly broken ciphers (arcfour / blowfish / cast / single-DES) are deliberately excluded.
+
+
+## [0.5.86] — 2026-07-02
+
+### Changed
+- **BMC setup guide — field-tested serial-console lessons** — the in-app guide + README troubleshooting now cover: use **only the SOL port** in `console=` (multiple `ttyS` can make the kernel pick the wrong one → login shows but no boot messages; check `/proc/consoles`), find the SOL port via `/proc/tty/driver/serial` `rx`, disable systemd boot-message emoji with `systemd.setenv=SYSTEMD_EMOJI=0`, and set BIOS Terminal Type to VT100+ (not VT-UTF8) to avoid BIOS-screen emoji.
+
+
+## [0.5.85] — 2026-07-02
+
+### Changed
+- Notification-settings intro reworded — clarifies this page configures **external** channels (opt-in), while in-app notifications (top-right icon) work without any setup (the old “通知不需設定即可使用” was ambiguous after dropping the 站內 prefix).
+
+### Tests
+- pfSense parse regression tests (`_as_text` list-flatten for alias descr; `_valid_ip` rejects alias names like `Web_Test`) — the two DataErrors fixed in v0.5.48.
+
+
+## [0.5.84] — 2026-07-02
+
+### Changed
+- **Dashboard live-status source line reflects the actual setup** — the “Source: …” caption under the IP live-status card is now built from the sources actually configured (enabled scan agents / LibreNMS / OPNsense / pfSense), instead of a fixed “scan agent + LibreNMS + OPNsense ARP”. Shows a hint when none is set up.
+
+
+## [0.5.83] — 2026-07-02
+
+### Changed
+- Notification settings: the **notification matrix** card now sits above all the per-channel settings (right under the intro), so the “which event → which channel” overview comes first instead of being sandwiched between Email and the other channels.
+
+
+## [0.5.82] — 2026-07-02
+
+### Added
+- **Generic Webhook notification channel** — POSTs `{app, subject, text}` JSON to a custom URL (optional Bearer token via Authorization header); config form + Test button like the other channels. For n8n / custom endpoints / anything not covered by the built-in channels.
+
+
+## [0.5.81] — 2026-07-02
+
+### Fixed
+- **Notification channels — send concurrently** — enabled webhook channels now fire in parallel (asyncio.gather) instead of sequentially, so worst-case latency is one channel's timeout, not the sum (avoids stalling IP-request/sync flows when several channels are slow).
+- **Teams webhook — support the new Workflows webhooks** — falls back to an Adaptive Card payload when the legacy `{"text"}` (O365 connector) form is rejected, so both legacy connectors and current Workflows incoming webhooks work.
+
+
+## [0.5.80] — 2026-07-02
+
+### Added
+- **LibreNMS integration: Verify TLS toggle** (migration 0094) — like Wazuh. Turn it off to connect when LibreNMS uses a self-signed cert or the hostname doesn't match (e.g. connecting by IP); the API client then uses `verify=False`. Fixes `transport: ConnectError` on self-signed LibreNMS without hacking the venv's certifi bundle (which upgrades would wipe). Default on.
+
+
+## [0.5.79] — 2026-07-02
+
+### Changed
+- Notification wording: 站內通知 → 通知 (drop the 站內 prefix per Taiwan usage).
+
+
+## [0.5.78] — 2026-07-02
+
+### Changed
+- **Notification wording: 鈴鐺 → 站內通知** (Taiwan usage) in the notification-settings copy and matrix column; the intro now lists all supported channels (Email + Telegram/Slack/Teams/Nextcloud/Zulip) instead of “in development”.
+- docs: TEST_CHECKLIST spot-checks for the recent features; graylog DSV docstring uses RFC 5737 example IPs.
+
+
+## [0.5.77] — 2026-07-01
+
+### Added
+- **Notification channels: Telegram, Slack, Microsoft Teams, Nextcloud Talk, Zulip** — all implemented (previously grayed “coming soon”). Each has a config form (encrypted tokens/webhooks) + a Test button on the notification-settings page; enabled channels receive every alert the matrix fires (IP requests, anomalies, certificate expiry/drift/deploy, stale-IP reminders) alongside Email/in-app. Admin-configured outbound (same trust model as SMTP).
+
+
+## [0.5.76] — 2026-07-01
+
+### Changed
+- **In-app notifications now follow the UI language** — notifications store an i18n key + params (migration 0093); the bell and the Notifications page render them in the current language (falls back to the stored text for older notifications). Covers IP-request approve/reject/pending, anomaly alerts, certificate expiry/drift/deploy, and stale-IP reminders. Emails keep the default-language text.
+
+
+## [0.5.75] — 2026-07-01
+
+### Changed
+- **Connections list OS column matches the IP detail page** — shared `OsCell`: OS icon + localized family name + （source） annotation, with the raw detected string on hover; the OS shown is the source-precedence-resolved value (same as IP detail), not just the raw scanner guess.
+
+
+## [0.5.74] — 2026-07-01
+
+### Changed
+- **Disconnected overlay now covers only the display area** — it no longer dims the toolbar, so the Reconnect button stays fully visible and clickable.
+- **Export button now has a border** — matched the neighbouring Columns / Refresh buttons (was borderless `quaternary`); applies to every table page via the shared `ExportButton`.
+
+
+## [0.5.73] — 2026-07-01
+
+### Fixed
+- **BMC blank-screen hint text no longer hides behind the info icon** — the previous row-tightening also shrank the alert's left padding (which reserves space for the icon); now only the vertical padding is reduced.
+
+
+## [0.5.72] — 2026-07-01
+
+### Changed
+- **Scan agent — much more accurate OS detection (agent 1.7.0)** — OS probe now adds `nmap -sV` service/banner detection + `smb-os-discovery` and derives the OS from **banners** (SSH `OpenSSH … Debian/Ubuntu`, `Service Info: OS:`, SMB) instead of trusting raw TCP/IP-stack fingerprinting, which confidently mis-guessed appliances/BMCs. The aggressive `-O` guess is now the last resort and is dropped when it's a device model (NAS/router/OpenWrt/…) rather than a general-purpose OS — better to show unknown than a wrong model. Verified: Proxmox Datacenter Manager `HP P2000 NAS`→`Debian`, Windows `XP SP3`→`Windows`, BMC `OpenWrt Kamikaze`→unknown.
+
+
+## [0.5.71] — 2026-07-01
+
+### Added
+- **Remote console — clear "Disconnected" overlay** — when an SSH / RDP / VNC / noVNC / xterm / BMC session drops, a large centered overlay with a broken-link icon and "Disconnected" appears over the display so it's obvious at a glance; it fades out automatically on reconnect. Shared `ConsoleDisconnectedOverlay` across all console types.
+
+
+## [0.5.70] — 2026-07-01
+
+### Changed
+- **Connection buttons are now single buttons** — dropped the split-button dropdown chevron (the "open in popout window" menu) on SSH/RDP/VNC/noVNC/BMC in both the Connections list and the IP detail card; the button just opens the console (new tab). Tighter connection-list row height. BMC blank-screen hint trimmed to one line (details behind the Setup-guide link).
+
+
+## [0.5.69] — 2026-07-01
+
+### Changed
+- **Connection buttons — clearer RDP/VNC/noVNC icons** — the three shared a monitor glyph with a tiny 10px letter that was hard to tell apart; the letter is now large (13.5px) and bold, filling the screen, so R / V / N read at a glance. The split-button dropdown chevron is narrower (Connections list + IP detail).
+
+
+## [0.5.68] — 2026-07-01
+
+### Added
+- **BMC console — "Fit to window" button** — serial consoles carry no window-size negotiation, so full-screen apps default to 80×24 with black margins. The button sends an `stty rows/cols` command (using xterm.js's real dimensions) into the session to match the browser window. Hovering shows an immediate tooltip that it **sends a command** and must be pressed at a shell prompt. No per-host script needed.
+- **BMC setup guide — Troubleshooting section** — SPCR can point to the wrong ttyS (echo-test each port), baud must match SOL's bit rate, `TERM=xterm-256color` for clean curses rendering (glances), and the fit-to-window note. README (EN/zh) mirrors it.
+
+
+## [0.5.67] — 2026-07-01
+
+### Fixed
+- **BMC "remember credentials" never saved** — the credential-vault create/list endpoint rejected `protocol='bmc'` (400, swallowed by the UI), so BMC passwords were never stored and every session re-prompted. `bmc` is now accepted in create/list/permission dispatch (password-only, `can_use_bmc`).
+
+### Added
+- **BMC console — built-in serial-console setup guide** — a **Setup guide** button (form + toolbar + blank-screen hint) opens a step-by-step modal: find the ttyS SOL maps to (ACPI SPCR / dmesg), add `console=tty0 console=ttySx,115200n8` (GRUB or PVE `/etc/kernel/cmdline`), enable `serial-getty`, optional BIOS Console Redirection, reboot. README (EN/zh) + docs landing page document the same.
+
+
+## [0.5.66] — 2026-07-01
+
+### Changed
+- **BMC console blank-screen hint now explains the two-layer serial-console requirement** — BIOS Console Redirection (POST/BIOS/boot menu) **and** an OS serial console (kernel `console=ttySx,115200n8` + `serial-getty`; ttyS from ACPI SPCR; PVE uses `/etc/kernel/cmdline` + `proxmox-boot-tool refresh`). Without the OS layer, SOL goes blank once the kernel loads.
+- test: `test_map_provider` accepts the `builtin` default map provider.
+
+
+## [0.5.65] — 2026-07-01
+
+### Fixed
+- BMC console terminal: prominent drop-shadow to match the RDP/VNC console screen.
+- **DNS (Univention UCS): username is now required on save.** An empty username produced a UCS `400 "basic auth malformed"` and the sync silently pulled 0 records.
+
+
+## [0.5.64] — 2026-07-01
+
+### Fixed
+- **BMC console connect button now appears on the IP detail card** (next to SSH/RDP/VNC) — the editor modal wasn't rendering it / emitting the event.
+- **BMC console screen restyled to match SSH/RDP/VNC** (card height, left-label form, `switch` for "remember", aligned title icon, status-pill toolbar, full-height terminal) + a "blank screen is normal — press Enter" hint for an idle SOL console.
+
+
+## [0.5.63] — 2026-07-01
+
+### Fixed
+- **Connections page 500** — `list_connection_targets` had a leftover 4-tuple unpack after BMC added a 5th
+  element; the page errored with no rows. Fixed.
+- BMC console: added the connect button to the IP detail page (it was only on the Connections page).
+
+### Changed
+- Terminology: dropped "帶外" (not Taiwan usage) from the BMC console UI; comments use OOB.
+
+
+## [0.5.62] — 2026-07-01
+
+### Changed
+- BMC console: generic username placeholder (`ADMIN / root`).
+
+
+## [0.5.61] — 2026-07-01
+
+### Added
+- **BMC out-of-band console (Beta)** — a browser IPMI **SOL** console (keyboard + text screen) for BMC
+  management IPs, integrated into the Connections page and the IP editor (per-IP toggle). Standard, vendor-agnostic
+  transport (`ipmitool` SOL over RMCP+) with **cipher auto-fallback (17→3)**, connection self-check (SOL enabled /
+  privilege), single-session handling, credential vault (`protocol=bmc`), **same RBAC as SSH**, and audit on
+  open/close. Non-destructive: keyboard + screen only — no mouse, no power/sensor/boot control. Migration 0092
+  (`bmc_enabled`). Install/upgrade auto-install `ipmitool` + `freeipmi-tools`; the nginx WebSocket location now
+  covers `bmc`. (Graphic screenshot adapters are a future, isolated phase.)
+
+
+## [0.5.60] — 2026-06-30
+
+### Fixed
+- **Subnets list: the CIDR column was squished.** `scroll-x` was set far below the columns' real total, so the
+  table compressed the flexible CIDR/description columns below their `minWidth`. Fixed `scroll-x` to the real
+  total and widened the CIDR minimum, so the CIDR (the key column) stays fully readable — the table scrolls
+  horizontally when the window is narrow.
+
+
+## [0.5.59] — 2026-06-30
+
+### Changed
+- Terminology: replaced the remaining "前綴" with "首碼" (Taiwan usage) — notably the OUI search placeholder.
+
+
+## [0.5.58] — 2026-06-30
+
+### Fixed
+- **IP request list now actually shows the subnet CIDR.** 0.5.56 made the frontend use `subnet_cidr`, but the
+  list endpoint never populated it (only the detail endpoint did), so the column still fell back to the UUID.
+  The list response now fills `subnet_cidr`.
+
+
+## [0.5.57] — 2026-06-30
+
+### Added
+- **IP heatmap legend now has hover tooltips** explaining each state (online / recently-seen / offline /
+  reserved / unknown / idle), including the actual liveness thresholds. "Recently seen" = last detected between
+  the online threshold (default 30 min) and 4× that (default 2 h) — likely a missed scan or flapping.
+
+
+## [0.5.56] — 2026-06-30
+
+### Fixed
+- **IP request list: the "subnet" column now shows the subnet CIDR** instead of the raw subnet UUID (the read
+  already returned `subnet_cidr`; the list just wasn't using it).
+
+### Changed
+- New-IP-request dialog: added an icon to the title and to both buttons (cancel / submit).
+
+
+## [0.5.55] — 2026-06-30
+
+### Fixed
+- **IP request approval now writes the request's hostname and purpose onto the allocated IP.** The hostname is
+  recorded as a **manual** hostname observation (top precedence, so a later scan/sync won't overwrite it) and the
+  purpose is saved to the IP's **note**. (The description was already copied.) Applies to both direct and
+  multi-stage approval (both fulfil through the same path).
+
+
+## [0.5.54] — 2026-06-30
+
+### Changed
+- Change-password dialog: added an icon to the title and to both footer buttons (cancel / change), matching the
+  other dialogs.
+
+
+## [0.5.53] — 2026-06-30
+
+### Changed
+- **IP list: gateway / DHCP-server markers are now compact icons (with tooltips)** instead of wide text tags,
+  so they no longer squeeze the IP into a one-character-per-line vertical strip. In-DHCP-range shows as a small dot.
+- **IP list: widened the OS column** (110→150 px) so the OS family label is no longer truncated.
+
+
+## [0.5.52] — 2026-06-30
+
+### Changed
+- **Scan-agent installer now installs base tools (`curl git sudo`) and, by default, `avahi-utils` for mDNS** —
+  mDNS name resolution works out of the box (previously opt-in via `JT_IPAM_ENABLE_MDNS`). `avahi-utils` brings
+  up `avahi-daemon` (UDP 5353); set `JT_IPAM_NO_MDNS=1` to skip it, `JT_IPAM_SKIP_PROBE_TOOLS=1` to skip all probe tools.
+- **Docs: install instructions now install `curl` first** (a minimal system may not ship it, and the one-liner needs it).
+
+
+## [0.5.51] — 2026-06-30
+
+### Changed
+- **LibreNMS "auto-add devices" now defaults ON** (and existing instances are flipped on by migration), so every
+  sync / pull also match-or-creates the jt-ipam devices — no more clicking "Link devices" by hand each time.
+
+### Added
+- **DNS integration: a "Sync now" button** on the DNS servers list. DNS was only synced silently by the periodic
+  timer (never showing in Tasks); the manual pull now enqueues a `dns.sync` task that appears in Tasks like the
+  other integrations.
+
+
+## [0.5.50] — 2026-06-30
+
+### Changed
+- **Subnet scan: enabling scan now requires an explicit choice** — "Local scan (jt-ipam host)" or a specific
+  scan agent; saving with nothing selected is blocked with a warning. The old ambiguous "blank = scan from the
+  host" became an explicit **Local scan** option, so a scan no longer silently does nothing in setups (e.g.
+  Docker) where the host can't reach the LAN. Existing locally-scanned subnets show as "Local scan".
+
+
+## [0.5.49] — 2026-06-30
+
+### Added
+- **Self-service password change for local accounts**: a "Change password" item in the top-right account menu
+  opens a dialog that verifies the current password and sets a new one (≥ 12 chars). Hidden for externally
+  authenticated accounts (LDAP / SSO). New endpoint `POST /api/v1/auth/change-password` (audited).
+
+
+## [0.5.48] — 2026-06-30
+
+### Fixed
+- **pfSense sync no longer crashes** on (a) aliases whose `detail` is returned as a **list** (now coerced to
+  text) and (b) NAT port-forward **targets that are alias names** rather than IPs (now skipped instead of being
+  cast to INET). Both previously raised an asyncpg `DataError` and aborted the whole fetch.
+
+### Changed
+- **Scan-agent OS detection now uses `nmap --osscan-guess`**: hosts with no exact fingerprint match still get a
+  best-guess OS (the top guess, shown with a confidence %), instead of nothing. Agent v1.6.0 (auto-updates).
+
+
+## [0.5.47] — 2026-06-30
+
+### Fixed
+- **IP relationship chain: a device placed in a rack now inherits the rack's location (machine room)** even when
+  the device row has no location of its own. Previously the chain stopped at the rack for such devices (e.g. a
+  PVE node whose rack has a location but the device's own `location_id` was empty), so two hosts in the same
+  rack could show inconsistently — one with the machine room, one without.
+
+
+## [0.5.46] — 2026-06-29
+
+### Added
+- **IP list: special-role markers on each IP** — **Gateway** (the subnet's gateway), **DHCP server**
+  (auto-detected when the IP matches an integrated OPNsense/pfSense firewall, plus a manual per-IP toggle in
+  the IP editor), and **in DHCP range / lease**. Shown as small colour-coded tags with tooltips next to the IP.
+
+
+## [0.5.45] — 2026-06-29
+
+### Changed
+- **Sections: the "strict mode" toggle (and column) are hidden from the UI.** It was a phpIPAM-compatibility
+  field that jt-ipam never enforced, so the switch did nothing. The field is still stored and round-tripped via
+  the phpIPAM-compatible API / migration (existing values are preserved), just no longer shown as a control.
+
+
+## [0.5.44] — 2026-06-29
+
+### Fixed
+- **AI chat widget no longer shows until LLM/AI is enabled** (管理 → LLM/AI). On a fresh install you could
+  type and click Send before configuring an LLM; `/me` now exposes `ai_enabled` and the widget is gated on it.
+- **LLM/AI settings: the model list is no longer fetched while "啟用 Ollama 伺服器連接" is off**, so it no
+  longer shows a spurious "無法連 Ollama：Internal Server Error". Toggling off clears the list and the error.
+- **LLM/AI: a half-width space before "(未在 Ollama 找到)"** on model names.
+
+
 ## [0.5.43] — 2026-06-29
 
 ### Added

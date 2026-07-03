@@ -81,6 +81,49 @@ async def _require_subnet_perm(
     return subnet
 
 
+async def _enrich_special_flags(
+    session: AsyncSession, items: list[Any], rows: list[Any]
+) -> None:
+    """批次推導清單視覺化用的特殊角色旗標：閘道 / 在 DHCP 範圍 / DHCP 伺服器（對應防火牆 IP）。
+    來源資料（防火牆 / DHCP pool）本身受權限管控，但這裡只回布林旗標，故所有可見此 IP 的使用者都看得到標記。
+    """
+    import ipaddress as _ip
+    from urllib.parse import urlparse
+
+    from app.models.dhcp import DHCPPoolRange
+    from app.models.firewall import OPNsenseFirewall
+    from app.models.pfsense import PfSenseFirewall
+
+    if not rows:
+        return
+    subnet_ids = list({r.subnet_id for r in rows})
+    gw_map = dict((await session.execute(
+        select(Subnet.id, Subnet.gateway).where(Subnet.id.in_(subnet_ids))
+    )).all())
+    ranges: list[tuple[int, int]] = []
+    for s, e in (await session.execute(select(DHCPPoolRange.start_ip, DHCPPoolRange.end_ip))).all():
+        try:
+            ranges.append((int(_ip.ip_address(str(s))), int(_ip.ip_address(str(e)))))
+        except ValueError:
+            continue
+    fw_ips: set[str] = set()
+    for model in (OPNsenseFirewall, PfSenseFirewall):
+        for (url,) in (await session.execute(select(model.api_url))).all():
+            h = urlparse(url).hostname if url else None
+            if h:
+                fw_ips.add(h)
+    for it, r in zip(items, rows, strict=False):
+        ipstr = str(r.ip)
+        gw = gw_map.get(r.subnet_id)
+        it.is_gateway = bool(gw) and ipstr == str(gw)
+        it.dhcp_server_auto = ipstr in fw_ips
+        try:
+            n = int(_ip.ip_address(ipstr))
+            it.in_dhcp_range = any(a <= n <= b for a, b in ranges)
+        except ValueError:
+            it.in_dhcp_range = False
+
+
 @router.get("", response_model=Paginated[IPAddressRead])
 async def list_addresses(
     user: CurrentUser,
@@ -202,6 +245,8 @@ async def list_addresses(
         it.subnet_scan_enabled = scan_map.get(r.subnet_id)
         if r.device_id:
             it.device_name = dev_map.get(r.device_id)
+    # 特殊角色旗標（閘道 / DHCP 範圍 / DHCP 伺服器）→ 清單視覺化
+    await _enrich_special_flags(session, items, rows)
     total = int(await session.scalar(count_stmt) or 0)
     return Paginated[IPAddressRead](items=items, total=total, page=page, page_size=page_size)
 
@@ -231,9 +276,10 @@ async def export_csv(
 
 async def _fill_pve_console(session: AsyncSession, obj: IPAddress, out: Any, user: Any) -> None:
     """填 out.novnc_available + out.pve（此 IP 對應的 Proxmox VE VM/CT；非 PVE 則 pve=None）。"""
-    from app.services.permission import can_use_novnc
+    from app.services.permission import can_use_bmc, can_use_novnc
     from app.services.pve_console import resolve_pve_target
     out.novnc_available = await can_use_novnc(session, user=user, ip=obj)
+    out.bmc_available = await can_use_bmc(session, user=user, ip=obj)
     tgt = await resolve_pve_target(session, obj)
     if tgt is not None:
         from app.schemas.address import PveConsoleTarget
@@ -315,12 +361,16 @@ async def get_address_relations(
     async def _device_tail(dev: Device, *, sub: str | None = None, node_type: str = "device") -> None:
         """把 device → rack → 機房 接到鏈尾（node_type=vmnode 時該裝置代表 PVE 節點）。"""
         chain.append({"type": node_type, "id": str(dev.id), "label": dev.name, "sub": sub})
+        # 地點優先用裝置自身的 location_id；裝置沒設但有掛機櫃時，繼承機櫃所在地點
+        loc_id = dev.location_id
         if dev.rack_id:
             rk = await session.get(Rack, dev.rack_id)
             if rk is not None:
                 chain.append({"type": "rack", "id": str(rk.id), "label": rk.name})
-        if dev.location_id:
-            loc = await session.get(Location, dev.location_id)
+                if loc_id is None:
+                    loc_id = rk.location_id
+        if loc_id:
+            loc = await session.get(Location, loc_id)
             if loc is not None:
                 chain.append({"type": "location", "id": str(loc.id), "label": loc.name})
 
@@ -894,6 +944,7 @@ async def notify_stale(
     )
     title = f"失聯 IP 提醒：{cidr}"
     body = f"子網路 {cidr} 有 {n} 個 IP 失聯超過 {payload.days} 天（由 {user.username} 提出）。"
+    _gp = {"cidr": cidr, "n": n, "days": payload.days, "user": user.username}
     for admin in admins:
         await push_notification(
             session,
@@ -904,7 +955,12 @@ async def notify_stale(
             link=f"/subnets/{payload.subnet_id}",
             object_type="subnet",
             object_id=payload.subnet_id,
+            title_key="notif.ghost_reminder",
+            body_key="notif.ghost_reminder_body",
+            params=_gp,
         )
+    from app.services.notify_channels import broadcast_channels
+    await broadcast_channels(session, subject=title, text=body)
     await session.commit()
     return {"notified_admins": len(admins), "ip_count": n}
 

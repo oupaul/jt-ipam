@@ -68,6 +68,11 @@ export async function deleteDNSServer(id: string): Promise<void> {
   await apiClient.delete(`/api/v1/dns/servers/${id}`);
 }
 
+export async function syncDNSServer(id: string): Promise<unknown> {
+  const { data } = await apiClient.post(`/api/v1/dns/servers/${id}/sync`, null);
+  return data;
+}
+
 export async function testDNSServer(id: string): Promise<unknown> {
   const { data } = await apiClient.post(`/api/v1/dns/servers/${id}/test`);
   return data;
@@ -80,6 +85,7 @@ export interface LibreNMSInstance {
   name: string;
   api_url: string;
   enabled: boolean;
+  verify_tls: boolean;
   sync_devices: boolean;
   sync_arp: boolean;
   sync_fdb: boolean;
@@ -110,6 +116,7 @@ export interface LibreNMSInstanceCreate {
   api_url: string;
   api_token: string;
   enabled?: boolean;
+  verify_tls?: boolean;
   sync_devices?: boolean;
   sync_arp?: boolean;
   sync_fdb?: boolean;
