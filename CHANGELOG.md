@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.95] — 2026-07-07
+
+### Added
+- **`jt-ipam.sh upgrade --force`** — when the working tree has local changes to a tracked file (e.g. a hand-edited or partially-updated `scripts/jt-ipam.sh`), the upgrade previously aborted with "Your local changes would be overwritten by merge". It now detects this and either prompts (interactive) or, with `--force`, discards the local changes to tracked files and continues. Untracked files and config outside the repo are never touched.
+
+### Fixed
+- **Scheduled Proxmox sync showed a raw cluster UUID** in the Tasks table target column; it now shows the cluster name (falling back to the node URL).
+- **Cryptic UCS DNS error on empty credentials** — a UCS DNS server saved with an empty username/password produced UCS's confusing "basic auth credentials are malformed" 400; jt-ipam now returns an actionable message telling you to re-enter the UCS credentials.
+
+
 ## [0.5.94] — 2026-07-07
 
 ### Fixed

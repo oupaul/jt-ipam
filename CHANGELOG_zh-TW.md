@@ -4,6 +4,16 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.95] — 2026-07-07
+
+### 新增
+- **`jt-ipam.sh upgrade --force`** —— 當工作目錄對已追蹤檔案有本機修改（例如被手動改過或前次升級只更新一半的 `scripts/jt-ipam.sh`）時,升級原本會直接中止（"Your local changes would be overwritten by merge"）。現在會偵測到,並在互動模式詢問、或以 `--force` 放棄這些本機修改後繼續。不會動到未追蹤檔案與 repo 外的設定。
+
+### 修正
+- **排程 Proxmox 同步在作業表格顯示叢集 UUID** —— 目標欄原本印出原始 cluster_id UUID,改為顯示叢集名稱（無則退回節點 URL）。
+- **UCS DNS 帳密為空時的含糊錯誤** —— UCS DNS 伺服器若存成空帳號/密碼,原本會回 UCS 那句難懂的「basic auth credentials are malformed」400;jt-ipam 現在改回可行動訊息,提示你重新輸入 UCS 帳號密碼。
+
+
 ## [0.5.94] — 2026-07-07
 
 ### 修正
