@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.97] — 2026-07-07
+
+### Fixed
+- **Completed the Tasks-table count audit across all sync types** — Wazuh syncs now count correctly (`new` → added, `fetched` → total; previously only `updated` was picked up), and the detail popover now renders readable summaries for DNS, pfSense, Wazuh and Proxmox syncs instead of a generic line. All task kinds (LibreNMS / OPNsense / pfSense / DNS / Wazuh / Proxmox / AdGuard / phpIPAM) now show real counts.
+- Minor: a space before the count in the Tasks "Active (0)" tab.
+
+
 ## [0.5.96] — 2026-07-07
 
 ### Fixed

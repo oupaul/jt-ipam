@@ -4,6 +4,13 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.97] — 2026-07-07
+
+### 修正
+- **作業表格計數審查補完所有同步類型** —— Wazuh 同步現在計數正確（`new` → 新增、`fetched` → 總數;原本只抓到 `updated`），明細彈窗也為 DNS／pfSense／Wazuh／Proxmox 同步顯示可讀摘要,不再是籠統一行。所有作業類型（LibreNMS／OPNsense／pfSense／DNS／Wazuh／Proxmox／AdGuard／phpIPAM）現在都顯示實際數字。
+- 小修:作業頁「進行中 (0)」分頁的計數前補一個半形空格。
+
+
 ## [0.5.96] — 2026-07-07
 
 ### 修正

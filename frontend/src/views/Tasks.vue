@@ -169,10 +169,10 @@ function aggregateCounts(summary: any): { ins: number; upd: number; err: number;
   // 3) 通用：top-level 數字，或「一層巢狀分組」
   //    （librenms：{devices:{seen,inserted,updated}, arp:{...}, fdb:{...}, vlans:{seen,upserted,mappings}}）
   const bump = (k: string, v: number) => {
-    if (k.endsWith("_inserted") || k === "inserted" || k === "upserted") out.ins += v;
+    if (k.endsWith("_inserted") || k === "inserted" || k === "upserted" || k === "new") out.ins += v;
     else if (k.endsWith("_updated") || k === "updated" || k.endsWith("_matched") || k.endsWith("_filled") || k === "mappings") out.upd += v;
     else if (k.endsWith("_errored") || k === "errored" || k.endsWith("_failed") || k === "missing_agents") out.err += v;
-    else if (k.endsWith("_seen") || k === "seen" || k.endsWith("_count")) out.total += v;
+    else if (k.endsWith("_seen") || k === "seen" || k.endsWith("_count") || k === "fetched") out.total += v;
   };
   for (const [k, v] of Object.entries(summary)) {
     if (typeof v === "number") bump(k, v);
@@ -246,6 +246,27 @@ function formatSummary(kind: string, summary: any): string {
     if (num(summary.rules)) p.push(`rules ${num(summary.rules)}`);
     if (num(summary.aliases)) p.push(`aliases ${num(summary.aliases)}`);
     if (num(summary.nat)) p.push(`NAT ${num(summary.nat)}`);
+    return p.length ? p.join("；") : t("tasks.summary.no_change");
+  }
+
+  // 2d) Wazuh sync 風格：{fetched, new, updated, matched_ip}
+  if ("fetched" in summary && ("new" in summary || "matched_ip" in summary)) {
+    const p: string[] = [];
+    if (num(summary.new)) p.push(t("common.added_n", { n: num(summary.new) }));
+    if (num(summary.updated)) p.push(t("common.updated_n", { n: num(summary.updated) }));
+    if (num(summary.fetched)) p.push(`fetched ${num(summary.fetched)}`);
+    if (num(summary.matched_ip)) p.push(`matched IP ${num(summary.matched_ip)}`);
+    return p.length ? p.join("；") : t("tasks.summary.no_change");
+  }
+
+  // 2e) Proxmox sync 風格：{cluster, vms_seen, vms_updated, vms_inserted, nodes_seen, ipam_linked, interfaces_seen}
+  if ("vms_seen" in summary || "ipam_linked" in summary) {
+    const p: string[] = [];
+    if (num(summary.vms_inserted)) p.push(t("common.added_n", { n: num(summary.vms_inserted) }));
+    if (num(summary.vms_updated)) p.push(t("common.updated_n", { n: num(summary.vms_updated) }));
+    if (num(summary.vms_seen)) p.push(`VM ${num(summary.vms_seen)}`);
+    if (num(summary.nodes_seen)) p.push(`nodes ${num(summary.nodes_seen)}`);
+    if (num(summary.ipam_linked)) p.push(`IPAM ${num(summary.ipam_linked)}`);
     return p.length ? p.join("；") : t("tasks.summary.no_change");
   }
 
@@ -367,7 +388,7 @@ onUnmounted(() => {
       <n-tabs type="line" animated>
         <n-tab-pane name="active">
           <template #tab>
-            <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><PendingIcon /></n-icon>{{ `${t('tasks.tab_active')}(${active.length})` }}</span>
+            <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><PendingIcon /></n-icon>{{ `${t('tasks.tab_active')} (${active.length})` }}</span>
           </template>
           <n-data-table
             :columns="activeCols"
