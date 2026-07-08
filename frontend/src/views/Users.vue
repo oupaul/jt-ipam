@@ -37,7 +37,7 @@ const router = useRouter();
 function goPerms(r: User) { router.push({ name: "permissions", query: { ptype: "user", pid: r.id } }); }
 
 const { visibleKeys: usrVis, setVisible: usrSet, reset: usrReset } = useColumnPrefs(
-  "users",
+  "users_v2",
   ["username", "email", "display_name", "auth_provider", "is_active", "is_admin", "is_ops_admin", "can_ssh", "last_login_at", "locked_until", "actions"],
   ["username", "email", "display_name", "auth_provider", "is_active", "is_admin", "is_ops_admin", "can_ssh", "last_login_at", "locked_until", "actions"],
 );
