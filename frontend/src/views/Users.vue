@@ -67,7 +67,7 @@ const offset = ref(0);
 
 const showCreate = ref(false);
 const newUser = ref<UserCreate>({
-  username: "", email: "", display_name: "", password: "", is_admin: false, can_ssh: false,
+  username: "", email: "", display_name: "", password: "", is_admin: false, is_ops_admin: false, can_ssh: false,
 });
 const newUserPasswordConfirm = ref("");
 
@@ -159,7 +159,7 @@ async function submitCreate() {
     msg.success(t("common.ok"));
     showCreate.value = false;
     newUser.value = {
-      username: "", email: "", display_name: "", password: "", is_admin: false, can_ssh: false,
+      username: "", email: "", display_name: "", password: "", is_admin: false, is_ops_admin: false, can_ssh: false,
     };
     newUserPasswordConfirm.value = "";
     await refresh();
@@ -389,6 +389,9 @@ onMounted(() => { void refresh(); });
         </n-form-item>
         <n-form-item :label="t('users.is_admin')">
           <n-switch v-model:value="newUser.is_admin" />
+        </n-form-item>
+        <n-form-item :label="t('users.is_ops_admin')">
+          <n-switch v-model:value="newUser.is_ops_admin" />
         </n-form-item>
         <n-form-item :label="t('users.can_ssh')">
           <n-space vertical :size="2" style="width:100%">
