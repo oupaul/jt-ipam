@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
+from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.firewall import OPNsenseFirewall
@@ -131,7 +131,7 @@ async def get_nat(
 
 
 @router.post("", response_model=NATRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_nat(
     payload: NATCreate,
     user: CurrentUser,
@@ -156,7 +156,7 @@ async def create_nat(
 
 
 @router.patch("/{nat_id}", response_model=NATRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_nat(
     nat_id: uuid.UUID,
     payload: NATUpdate,
@@ -185,7 +185,7 @@ async def update_nat(
     return NATRead.model_validate(obj)
 
 
-@router.delete("/{nat_id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/{nat_id}", status_code=204, dependencies=[Depends(require_ops_admin)])
 async def delete_nat(
     nat_id: uuid.UUID,
     user: CurrentUser,
@@ -208,7 +208,7 @@ async def delete_nat(
     await session.commit()
 
 
-@router.post("/bulk-delete", dependencies=[Depends(require_admin)])
+@router.post("/bulk-delete", dependencies=[Depends(require_ops_admin)])
 async def bulk_delete_nat(
     payload: _NATBulkDeletePayload,
     user: CurrentUser,

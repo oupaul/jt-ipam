@@ -106,6 +106,14 @@ def require_admin(user: CurrentUser) -> User:
     return user
 
 
+def require_ops_admin(user: CurrentUser) -> User:
+    """管理員（is_admin）或運維管理員（is_ops_admin）皆可通過。
+    用於大部分管理功能，但使用者管理、系統設定等最高管理員專屬功能仍用 require_admin。"""
+    if not (user.is_admin or user.is_ops_admin):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin required")
+    return user
+
+
 async def forbid_zero_visibility(
     user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -113,7 +121,7 @@ async def forbid_zero_visibility(
     """全域基礎設施類端點（NAT / 防火牆 / 進階 / 實體）讀取門檻：
     非管理員且對所有物件類型皆無可見範圍（零權限帳號）→ 403。
     有任一可見範圍（含唯讀檢視者的 wildcard）或管理員則放行。"""
-    if user.is_admin:
+    if user.is_admin or user.is_ops_admin:
         return
     from app.services.permission import visible_ids
     for ot in ("subnet", "device", "customer", "section", "rack", "location"):
@@ -131,7 +139,7 @@ async def require_global_read(
     這些不屬於 7 種可逐物件授權的類型，無法依物件範圍過濾。
     僅「管理員」或「具萬用(全部)讀取權限者（如唯讀檢視者）」可讀；
     只被指派特定物件（部門範圍）的帳號 → 403，不得窺見全域資料。"""
-    if user.is_admin:
+    if user.is_admin or user.is_ops_admin:
         return
     from app.services.permission import visible_ids
     for ot in ("subnet", "device", "customer", "section", "rack", "location"):

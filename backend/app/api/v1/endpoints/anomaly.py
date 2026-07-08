@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.services.anomaly import run_detection
@@ -15,7 +15,7 @@ from app.services.anomaly import run_detection
 router = APIRouter(prefix="/anomalies", tags=["anomalies"])
 
 
-@router.post("/scan", dependencies=[Depends(require_admin)])
+@router.post("/scan", dependencies=[Depends(require_ops_admin)])
 async def scan(
     user: CurrentUser,
     request: Request,

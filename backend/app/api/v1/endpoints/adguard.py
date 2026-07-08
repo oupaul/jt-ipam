@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.adguard import AdGuardInstance
@@ -19,7 +19,7 @@ from app.schemas.base import Paginated
 from app.services import adguard as svc
 from app.services.background_tasks import spawn_task
 
-router = APIRouter(prefix="/adguard", tags=["adguard"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/adguard", tags=["adguard"], dependencies=[Depends(require_ops_admin)])
 
 
 @router.get("/instances", response_model=Paginated[AdGuardRead])

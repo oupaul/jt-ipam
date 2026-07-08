@@ -21,7 +21,7 @@ from pydantic import Field, SecretStr, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.security import decrypt_secret, encrypt_secret
@@ -150,7 +150,7 @@ async def _stored_private_key(session: AsyncSession) -> str | None:
 
 
 @router.get("/config", response_model=MigrationConfigOut,
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_ops_admin)])
 async def get_config(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> MigrationConfigOut:
@@ -171,7 +171,7 @@ async def get_config(
 
 
 @router.put("/config", response_model=MigrationConfigOut,
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_ops_admin)])
 async def put_config(
     payload: MigrationConfig,
     user: CurrentUser,
@@ -234,7 +234,7 @@ def _compose_mysql_url(host: str, port: int, user: str | None,
 
 @router.get("/status",
             response_model=list[MappingStat],
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_ops_admin)])
 async def status(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> list[MappingStat]:
@@ -252,7 +252,7 @@ async def status(
 
 @router.post("/ssh-fingerprint",
              response_model=FingerprintResponse,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def ssh_fingerprint(
     payload: FingerprintRequest,
 ) -> FingerprintResponse:
@@ -345,7 +345,7 @@ async def _execute_migration(
 
 
 @router.post("/sync",
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def sync(
     payload: SyncRequest,
     user: CurrentUser,

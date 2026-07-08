@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.custom_field import CustomFieldDefinition
@@ -60,7 +60,7 @@ async def list_custom_fields(
 
 
 @router.post("", response_model=CustomFieldRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_custom_field(
     payload: CustomFieldCreate,
     user: CurrentUser,
@@ -91,7 +91,7 @@ async def create_custom_field(
 
 
 @router.patch("/{field_id}", response_model=CustomFieldRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_custom_field(
     field_id: uuid.UUID,
     payload: CustomFieldUpdate,
@@ -127,7 +127,7 @@ async def update_custom_field(
     return CustomFieldRead.model_validate(obj)
 
 
-@router.delete("/{field_id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/{field_id}", status_code=204, dependencies=[Depends(require_ops_admin)])
 async def delete_custom_field(
     field_id: uuid.UUID,
     user: CurrentUser,

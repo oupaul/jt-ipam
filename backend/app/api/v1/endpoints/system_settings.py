@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_admin, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.safe_http import UnsafeOutboundURL, safe_request
@@ -27,7 +27,7 @@ from app.services.hostname import (
 )
 from app.services.system_config import get_llm_config, set_llm_config
 
-router = APIRouter(prefix="/system", tags=["system"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/system", tags=["system"], dependencies=[Depends(require_ops_admin)])
 
 # 不需 admin 的系統讀取路由（例如 Locations 地圖預覽要讀全域 map_provider）。
 # 寫入（PUT）仍掛在上面的 admin 路由，只有 admin 能改。
@@ -271,7 +271,7 @@ async def get_map_provider(
     return MapProviderOut(provider=prov if prov in ("osm", "google") else "osm")
 
 
-@router.put("/map-provider", response_model=MapProviderOut)
+@router.put("/map-provider", response_model=MapProviderOut, dependencies=[Depends(require_admin)])
 async def put_map_provider(
     payload: MapProviderOut,
     user: CurrentUser,
@@ -321,7 +321,7 @@ async def get_google_maps_api_key_status(
     return GoogleMapsKeyStatusOut(has_key=has_key)
 
 
-@router.put("/google-maps-api-key", response_model=GoogleMapsKeyStatusOut)
+@router.put("/google-maps-api-key", response_model=GoogleMapsKeyStatusOut, dependencies=[Depends(require_admin)])
 async def put_google_maps_api_key(
     payload: GoogleMapsKeyIn,
     user: CurrentUser,
@@ -350,7 +350,7 @@ async def put_google_maps_api_key(
     return GoogleMapsKeyStatusOut(has_key=True)
 
 
-@router.delete("/google-maps-api-key", response_model=GoogleMapsKeyStatusOut)
+@router.delete("/google-maps-api-key", response_model=GoogleMapsKeyStatusOut, dependencies=[Depends(require_admin)])
 async def delete_google_maps_api_key(
     user: CurrentUser,
     request: Request,
@@ -391,7 +391,7 @@ async def get_ui_display(
     return UiDisplayOut(change_log_dim_days=await get_change_log_dim_days(session))
 
 
-@router.put("/ui-display", response_model=UiDisplayOut)
+@router.put("/ui-display", response_model=UiDisplayOut, dependencies=[Depends(require_admin)])
 async def put_ui_display(
     payload: UiDisplayOut,
     user: CurrentUser,
@@ -426,7 +426,7 @@ async def get_console_security(
     return ConsoleSecurityOut(rdp_clipboard_paste=await get_rdp_clipboard_paste(session))
 
 
-@router.put("/console-security", response_model=ConsoleSecurityOut)
+@router.put("/console-security", response_model=ConsoleSecurityOut, dependencies=[Depends(require_admin)])
 async def put_console_security(
     payload: ConsoleSecurityOut,
     user: CurrentUser,
@@ -1013,7 +1013,7 @@ def _gather_version_info() -> dict[str, Any]:
     }
 
 
-@router.get("/version")
+@router.get("/version", dependencies=[Depends(require_admin)])
 async def get_version_info() -> dict[str, Any]:
     """現行版本 + Python/後端套件/前端框架/本機環境（OS·kernel·nginx·node·PostgreSQL）版本。
 
@@ -1042,7 +1042,7 @@ def _ver_tuple(v: str | None) -> tuple[int, ...]:
     return tuple(int(x) for x in re.findall(r"\d+", v or ""))
 
 
-@router.get("/version/check-latest")
+@router.get("/version/check-latest", dependencies=[Depends(require_admin)])
 async def check_latest_version() -> dict[str, Any]:
     """查 GitHub 上已發佈的最新版並與現行版本比較。
 
@@ -1225,7 +1225,7 @@ def _channels_payload(cfg: dict[str, Any]) -> NotificationChannelsOut:
     )
 
 
-@router.get("/notification-channels", response_model=NotificationChannelsOut)
+@router.get("/notification-channels", response_model=NotificationChannelsOut, dependencies=[Depends(require_admin)])
 async def get_notification_channels_ep(
     _user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -1234,7 +1234,7 @@ async def get_notification_channels_ep(
     return _channels_payload(await get_notification_channels(session))
 
 
-@router.put("/notification-channels", response_model=NotificationChannelsOut)
+@router.put("/notification-channels", response_model=NotificationChannelsOut, dependencies=[Depends(require_admin)])
 async def put_notification_channels_ep(
     payload: NotificationChannelsIn,
     user: CurrentUser,
@@ -1259,7 +1259,7 @@ async def put_notification_channels_ep(
     return _channels_payload(cfg)
 
 
-@router.post("/notification-channels/test-email")
+@router.post("/notification-channels/test-email", dependencies=[Depends(require_admin)])
 async def test_notification_email(
     payload: TestEmailIn,
     _user: CurrentUser,
@@ -1291,7 +1291,7 @@ class TestChannelIn(StrictModel):
     channel: str
 
 
-@router.post("/notification-channels/test-channel")
+@router.post("/notification-channels/test-channel", dependencies=[Depends(require_admin)])
 async def test_notification_channel(
     payload: TestChannelIn,
     _user: CurrentUser,

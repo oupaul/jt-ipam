@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.ip_request import IPRequest, IPRequestEvent
@@ -328,7 +328,7 @@ def _policy_out(pol: dict) -> IPRequestPolicyModel:  # type: ignore[type-arg]
 
 
 @router.get("/policy/config", response_model=IPRequestPolicyModel,
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_ops_admin)])
 async def get_request_policy(
     user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -337,7 +337,7 @@ async def get_request_policy(
 
 
 @router.put("/policy/config", response_model=IPRequestPolicyModel,
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_ops_admin)])
 async def put_request_policy(
     payload: IPRequestPolicyModel,
     user: CurrentUser,

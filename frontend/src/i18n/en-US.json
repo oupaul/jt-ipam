@@ -745,6 +745,7 @@
     "auth_provider": "Auth",
     "is_active": "Active",
     "is_admin": "Admin",
+    "is_ops_admin": "Ops Admin",
     "can_ssh": "SSH access",
     "can_ssh_hint": "When granted, this user can open a terminal to any SSH-enabled IP they can view (no admin or write permission required).",
     "last_login": "Last login",

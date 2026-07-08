@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.pfsense import PfSenseFirewall, PfSenseSyncedAlias
@@ -20,7 +20,7 @@ from app.schemas.base import StrictModel
 from app.services import pfsense as svc
 
 router = APIRouter(
-    prefix="/pfsense", tags=["pfsense"], dependencies=[Depends(require_admin)],
+    prefix="/pfsense", tags=["pfsense"], dependencies=[Depends(require_ops_admin)],
 )
 
 

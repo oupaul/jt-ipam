@@ -215,56 +215,62 @@ const menuOptions = computed<MenuOption[]>(() => {
     { label: () => t("nav.tools"),       key: "tools",      icon: renderIcon(ToolsIcon) },
     { label: () => t("nav.tasks"),       key: "tasks",      icon: renderIcon(TasksIcon) },
   ];
-  if (me.value?.is_admin) {
+  if (me.value?.is_admin || me.value?.is_ops_admin) {
+    // superAdmin-only 項目：僅 is_admin 可見（使用者/群組/權限指派/系統設定/通知發送設定/版本/系統紀錄）
+    const superAdminKeys = new Set(["users", "groups", "permissions", "system_settings", "notification_channels", "version", "system_logs"]);
+    const allAdminItems = [
+      { label: () => t("nav.audit"),         key: "audit",          icon: renderIcon(AuditIcon) },
+      { label: () => t("nav.users"),         key: "users",          icon: renderIcon(UsersIcon) },
+      { label: () => t("nav.groups"),        key: "groups",         icon: renderIcon(GroupsIcon) },
+      { label: () => t("nav.permissions"),   key: "permissions",    icon: renderIcon(AdminIcon) },
+      { label: () => t("nav.custom_fields"), key: "custom_fields",  icon: renderIcon(CustomFieldsIcon) },
+      { label: () => t("nav.oui_admin"),     key: "oui_admin",      icon: renderIcon(DevicesIcon) },
+      { label: () => t("nav.hostname_precedence"), key: "hostname_precedence", icon: renderIcon(AddressesIcon) },
+      { label: () => t("nav.anomaly"),       key: "anomaly",        icon: renderIcon(AnomalyIcon) },
+      { label: () => t("nav.dns"),           key: "dns",            icon: renderIcon(DnsIcon) },
+      { label: () => t("nav.adguard"),       key: "adguard",        icon: renderIcon(DnsIcon) },
+      { label: () => t("nav.librenms"),      key: "librenms",       icon: renderIcon(LibreNMSIcon) },
+      { label: () => t("nav.firewall_admin"), key: "firewall_admin", icon: renderIcon(FirewallIcon) },
+      { label: () => t("nav.pfsense"),        key: "pfsense",        icon: renderIcon(FirewallIcon) },
+      { label: () => t("nav.virt_admin"),    key: "virt_admin",     icon: renderIcon(VirtualizationIcon) },
+      { label: () => t("nav.wazuh"),         key: "wazuh",          icon: renderIcon(WazuhIcon) },
+      { label: () => t("nav.graylog_dsv"),   key: "graylog_dsv",    icon: renderIcon(ExportIcon) },
+      { label: () => t("nav.scan_agents"),   key: "scan_agents",    icon: renderIcon(ScanAgentsIcon) },
+      { label: () => t("nav.certificates"),  key: "certificates",   icon: renderIcon(LockIcon) },
+      { label: () => t("nav.webhooks"),      key: "webhooks",       icon: renderIcon(WebhooksIcon) },
+      { label: () => t("nav.migration"),     key: "migration",      icon: renderIcon(MigrationIcon) },
+      { label: () => t("nav.import"),        key: "import",         icon: renderIcon(ImportIcon) },
+      { label: () => t("nav.plugins"),       key: "plugins",        icon: renderIcon(PluginsIcon) },
+      { label: () => "LLM / AI",             key: "llm_settings",   icon: renderIcon(SettingsIcon) },
+      { label: () => t("nav.system_settings"), key: "system_settings", icon: renderIcon(SettingsIcon) },
+      { label: () => t("nav.notification_channels"), key: "notification_channels", icon: renderIcon(SettingsIcon) },
+      { label: () => t("nav.ip_request_policy"), key: "ip_request_policy", icon: renderIcon(RequestsIcon) },
+      { label: () => t("nav.version"),       key: "version",        icon: renderIcon(AdminIcon) },
+      { label: () => t("nav.system_logs"),   key: "system_logs",    icon: renderIcon(AuditIcon) },
+      { label: () => t("nav.chat_history"),  key: "chat_history",   icon: renderIcon(ChatHistoryIcon) },
+    ];
+    const visibleItems = me.value?.is_admin
+      ? allAdminItems
+      : allAdminItems.filter(item => !superAdminKeys.has(item.key as string));
     base.push(
       { type: "divider", key: "d-admin" },
       {
         label: () => t("nav.admin_section"),
         key: "admin",
         icon: renderIcon(AdminIcon),
-        children: [
-          { label: () => t("nav.audit"),         key: "audit",          icon: renderIcon(AuditIcon) },
-          { label: () => t("nav.users"),         key: "users",          icon: renderIcon(UsersIcon) },
-          { label: () => t("nav.groups"),        key: "groups",         icon: renderIcon(GroupsIcon) },
-          { label: () => t("nav.permissions"),   key: "permissions",    icon: renderIcon(AdminIcon) },
-          { label: () => t("nav.custom_fields"), key: "custom_fields",  icon: renderIcon(CustomFieldsIcon) },
-          { label: () => t("nav.oui_admin"),     key: "oui_admin",      icon: renderIcon(DevicesIcon) },
-          { label: () => t("nav.hostname_precedence"), key: "hostname_precedence", icon: renderIcon(AddressesIcon) },
-          { label: () => t("nav.anomaly"),       key: "anomaly",        icon: renderIcon(AnomalyIcon) },
-          { label: () => t("nav.dns"),           key: "dns",            icon: renderIcon(DnsIcon) },
-          { label: () => t("nav.adguard"),       key: "adguard",        icon: renderIcon(DnsIcon) },
-          { label: () => t("nav.librenms"),      key: "librenms",       icon: renderIcon(LibreNMSIcon) },
-          { label: () => t("nav.firewall_admin"), key: "firewall_admin", icon: renderIcon(FirewallIcon) },
-          { label: () => t("nav.pfsense"),        key: "pfsense",        icon: renderIcon(FirewallIcon) },
-          { label: () => t("nav.virt_admin"),    key: "virt_admin",     icon: renderIcon(VirtualizationIcon) },
-          { label: () => t("nav.wazuh"),         key: "wazuh",          icon: renderIcon(WazuhIcon) },
-          { label: () => t("nav.graylog_dsv"),   key: "graylog_dsv",    icon: renderIcon(ExportIcon) },
-          { label: () => t("nav.scan_agents"),   key: "scan_agents",    icon: renderIcon(ScanAgentsIcon) },
-          { label: () => t("nav.certificates"),  key: "certificates",   icon: renderIcon(LockIcon) },
-          { label: () => t("nav.webhooks"),      key: "webhooks",       icon: renderIcon(WebhooksIcon) },
-          { label: () => t("nav.migration"),     key: "migration",      icon: renderIcon(MigrationIcon) },
-          { label: () => t("nav.import"),        key: "import",         icon: renderIcon(ImportIcon) },
-          { label: () => t("nav.plugins"),       key: "plugins",        icon: renderIcon(PluginsIcon) },
-          { label: () => "LLM / AI",             key: "llm_settings",   icon: renderIcon(SettingsIcon) },
-          { label: () => t("nav.system_settings"), key: "system_settings", icon: renderIcon(SettingsIcon) },
-          { label: () => t("nav.notification_channels"), key: "notification_channels", icon: renderIcon(SettingsIcon) },
-          { label: () => t("nav.ip_request_policy"), key: "ip_request_policy", icon: renderIcon(RequestsIcon) },
-          { label: () => t("nav.version"),       key: "version",        icon: renderIcon(AdminIcon) },
-          { label: () => t("nav.system_logs"),   key: "system_logs",    icon: renderIcon(AuditIcon) },
-          { label: () => t("nav.chat_history"),  key: "chat_history",   icon: renderIcon(ChatHistoryIcon) },
-        ],
+        children: visibleItems,
       },
     );
   }
   // 零權限非管理員：後端對 nat/firewall/dns/librenms/virt/實體 等已 403，
   // 其餘資料頁也只會是空的 → 選單只留儀表板/工具/作業，避免點了就出錯。
-  if (!me.value?.is_admin && me.value?.has_visibility === false) {
+  if (!me.value?.is_admin && !me.value?.is_ops_admin && me.value?.has_visibility === false) {
     const allowed = new Set(["dashboard", "tools"]);
     return base.filter((o) => allowed.has(o.key as string));
   }
   // 非管理員且無「全域讀取」（只被指派特定物件）→ 隱藏全域基礎設施選單，
   // 後端對這些端點也會 403（VLAN/VRF/NAT/防火牆/DNS/虛擬化/站對站 VPN…）。
-  if (!me.value?.is_admin && me.value?.has_global_read === false) {
+  if (!me.value?.is_admin && !me.value?.is_ops_admin && me.value?.has_global_read === false) {
     const hide = new Set(["vlans", "vrfs", "nat", "phase3"]);
     return base.filter((o) => !hide.has(o.key as string));
   }
@@ -523,7 +529,7 @@ function startDrag(e: MouseEvent) {
               <button type="button" class="topbar-ctl">
                 <n-icon :size="17" :component="AccountIcon" />
                 <span class="topbar-ctl__label">{{ accountLabel }}</span>
-                <n-tooltip v-if="me.is_admin" :delay="0">
+                <n-tooltip v-if="me.is_admin || me.is_ops_admin" :delay="0">
                   <template #trigger>
                     <n-icon :size="15" :component="AdminIcon" style="color: #18a058" />
                   </template>

@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_object_perm, require_type_perm
+from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_object_perm, require_type_perm
 from app.core.audit import append_audit
 from app.core.config import get_settings
 from app.core.db import get_session
@@ -627,7 +627,7 @@ async def _bulk(session: AsyncSession, model_cls: type[Any], object_type: str, u
     return {"deleted": deleted, "failed": len(errors), "errors": errors[:50]}
 
 
-@router.post("/locations/bulk-delete", dependencies=[Depends(require_admin)])
+@router.post("/locations/bulk-delete", dependencies=[Depends(require_ops_admin)])
 async def bulk_delete_locations(
     payload: _BulkDelete, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -638,7 +638,7 @@ async def bulk_delete_locations(
         getattr(request.state, "request_id", None))
 
 
-@router.post("/racks/bulk-delete", dependencies=[Depends(require_admin)])
+@router.post("/racks/bulk-delete", dependencies=[Depends(require_ops_admin)])
 async def bulk_delete_racks(
     payload: _BulkDelete, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],

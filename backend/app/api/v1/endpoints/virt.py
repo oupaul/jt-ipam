@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
+from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.virt import (
@@ -164,7 +164,7 @@ async def list_clusters(
 
 
 @router.post("/clusters", response_model=ClusterRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_cluster(
     payload: ClusterWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -190,7 +190,7 @@ async def create_cluster(
 
 
 @router.patch("/clusters/{cluster_id}", response_model=ClusterRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_cluster(
     cluster_id: uuid.UUID, payload: ClusterUpdate, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -277,7 +277,7 @@ async def list_vm_interfaces(
 
 
 @router.post("/proxmox", response_model=ProxmoxInstanceRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_proxmox(
     payload: ProxmoxInstanceCreate, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -326,7 +326,7 @@ async def create_proxmox(
 
 
 @router.get("/proxmox", response_model=Paginated[ProxmoxInstanceRead],
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_ops_admin)])
 async def list_proxmox(
     session: Annotated[AsyncSession, Depends(get_session)],
     page: int = Query(1, ge=1, le=10_000), page_size: int = Query(50, ge=1, le=500),
@@ -343,7 +343,7 @@ async def list_proxmox(
 
 
 @router.patch("/proxmox/{instance_id}", response_model=ProxmoxInstanceRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_proxmox(
     instance_id: uuid.UUID, payload: ProxmoxInstanceUpdate,
     user: CurrentUser, request: Request,
@@ -394,7 +394,7 @@ async def update_proxmox(
 
 
 @router.post("/proxmox/{instance_id}/test",
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def test_proxmox(
     instance_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -410,7 +410,7 @@ async def test_proxmox(
 
 
 @router.post("/proxmox/{instance_id}/sync",
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def sync_proxmox(
     instance_id: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -461,7 +461,7 @@ async def sync_proxmox(
 
 
 @router.delete("/proxmox/{instance_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_proxmox(
     instance_id: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],

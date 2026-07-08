@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import require_admin
+from app.api.v1.dependencies import require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.firewall import OPNsenseAliasMapping, OPNsenseFirewall
@@ -30,7 +30,7 @@ from app.services import opnsense_firewall as fw_service
 router = APIRouter(
     prefix="/firewalls/opnsense",
     tags=["firewall"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_ops_admin)],
 )
 
 

@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.rate_limit import limit_per_ip
@@ -254,7 +254,7 @@ async def chat_stream(
     )
 
 
-@router.post("/reindex", dependencies=[Depends(require_admin)])
+@router.post("/reindex", dependencies=[Depends(require_ops_admin)])
 async def reindex(
     user: CurrentUser,
     request: Request,
@@ -341,7 +341,7 @@ async def delete_my_conversation(
     await session.commit()
 
 
-@router.get("/chat/admin/conversations", dependencies=[Depends(require_admin)])
+@router.get("/chat/admin/conversations", dependencies=[Depends(require_ops_admin)])
 async def list_all_conversations(
     session: Annotated[AsyncSession, Depends(get_session)],
     limit: int = Query(500, ge=1, le=2000),
@@ -367,7 +367,7 @@ async def list_all_conversations(
     return {"items": items}
 
 
-@router.get("/chat/retention", dependencies=[Depends(require_admin)])
+@router.get("/chat/retention", dependencies=[Depends(require_ops_admin)])
 async def get_chat_retention(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, int]:
@@ -378,7 +378,7 @@ class RetentionRequest(StrictModel):
     retention_days: Annotated[int, Field(ge=0, le=3650)]
 
 
-@router.put("/chat/retention", dependencies=[Depends(require_admin)])
+@router.put("/chat/retention", dependencies=[Depends(require_ops_admin)])
 async def set_chat_retention(
     payload: RetentionRequest,
     user: CurrentUser,
@@ -400,7 +400,7 @@ async def set_chat_retention(
     return {"retention_days": days}
 
 
-@router.post("/chat/purge", dependencies=[Depends(require_admin)])
+@router.post("/chat/purge", dependencies=[Depends(require_ops_admin)])
 async def purge_chat_history(
     user: CurrentUser,
     request: Request,

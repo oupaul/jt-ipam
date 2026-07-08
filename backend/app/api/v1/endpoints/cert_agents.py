@@ -22,7 +22,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
+from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.security import decrypt_secret, encrypt_secret
@@ -230,7 +230,7 @@ async def download_agent() -> PlainTextResponse:
     return PlainTextResponse(_AGENT_SH.read_text(), media_type="text/x-shellscript")
 
 
-@router.get("/server-version", dependencies=[Depends(require_admin)])
+@router.get("/server-version", dependencies=[Depends(require_ops_admin)])
 async def server_agent_version_endpoint() -> dict[str, str | None]:
     """server 端目前派送代理程式的版本（管理頁顯示「最新代理版本」）。"""
     return {"version": _server_agent_version()}
@@ -291,7 +291,7 @@ async def agents_status(
 
 # ─────────────────── 管理面（admin）───────────────────
 
-@router.get("", response_model=Paginated[CertAgentRead], dependencies=[Depends(require_admin)])
+@router.get("", response_model=Paginated[CertAgentRead], dependencies=[Depends(require_ops_admin)])
 async def list_agents(
     session: Annotated[AsyncSession, Depends(get_session)],
     page: int = Query(1, ge=1, le=10_000),
@@ -307,7 +307,7 @@ async def list_agents(
 
 
 @router.post("", response_model=CertAgentCreated, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_agent(
     payload: CertAgentCreate,
     user: CurrentUser,
@@ -340,7 +340,7 @@ async def create_agent(
     return CertAgentCreated(**_to_read(obj).model_dump(), enroll_key=raw_key)
 
 
-@router.patch("/{agent_id}", response_model=CertAgentRead, dependencies=[Depends(require_admin)])
+@router.patch("/{agent_id}", response_model=CertAgentRead, dependencies=[Depends(require_ops_admin)])
 async def update_agent(
     agent_id: uuid.UUID,
     payload: CertAgentUpdate,
@@ -360,7 +360,7 @@ async def update_agent(
 
 
 @router.post("/{agent_id}/rotate-key", response_model=CertAgentCreated,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def rotate_key(
     agent_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -376,7 +376,7 @@ async def rotate_key(
     return CertAgentCreated(**_to_read(obj).model_dump(), enroll_key=raw_key)
 
 
-@router.get("/{agent_id}/key", dependencies=[Depends(require_admin)])
+@router.get("/{agent_id}/key", dependencies=[Depends(require_ops_admin)])
 async def get_agent_key(
     agent_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -392,7 +392,7 @@ async def get_agent_key(
     return {"enroll_key": key}
 
 
-@router.delete("/{agent_id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/{agent_id}", status_code=204, dependencies=[Depends(require_ops_admin)])
 async def delete_agent(
     agent_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],

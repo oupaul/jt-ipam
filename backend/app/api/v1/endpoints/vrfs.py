@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
+from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.vrf import VRF
@@ -52,7 +52,7 @@ async def get_vrf(
 
 
 @router.post("", response_model=VRFRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_vrf(
     payload: VRFCreate,
     user: CurrentUser,
@@ -80,7 +80,7 @@ async def create_vrf(
 
 
 @router.patch("/{vrf_id}", response_model=VRFRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_vrf(
     vrf_id: uuid.UUID,
     payload: VRFUpdate,
@@ -109,7 +109,7 @@ async def update_vrf(
     return VRFRead.model_validate(obj)
 
 
-@router.delete("/{vrf_id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/{vrf_id}", status_code=204, dependencies=[Depends(require_ops_admin)])
 async def delete_vrf(
     vrf_id: uuid.UUID,
     user: CurrentUser,
@@ -136,7 +136,7 @@ class _BulkDelete(StrictModel):
     ids: list[uuid.UUID]
 
 
-@router.post("/bulk-delete", dependencies=[Depends(require_admin)])
+@router.post("/bulk-delete", dependencies=[Depends(require_ops_admin)])
 async def bulk_delete_vrfs(
     payload: _BulkDelete, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],

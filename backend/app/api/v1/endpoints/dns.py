@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
+from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.security import encrypt_secret
@@ -69,7 +69,7 @@ async def _store_secret(
 
 @router.get("/servers",
             response_model=Paginated[DNSServerRead],
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_ops_admin)])
 async def list_servers(
     session: Annotated[AsyncSession, Depends(get_session)],
     page: int = Query(1, ge=1, le=10_000),
@@ -90,7 +90,7 @@ async def list_servers(
 
 @router.post("/servers",
              response_model=DNSServerRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_server(
     payload: DNSServerCreate,
     user: CurrentUser,
@@ -136,7 +136,7 @@ async def create_server(
 
 @router.patch("/servers/{server_id}",
               response_model=DNSServerRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_server(
     server_id: uuid.UUID,
     payload: DNSServerUpdate,
@@ -192,7 +192,7 @@ async def update_server(
 
 
 @router.delete("/servers/{server_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_server(
     server_id: uuid.UUID,
     user: CurrentUser,
@@ -217,7 +217,7 @@ async def delete_server(
     await session.commit()
 
 
-@router.post("/servers/{server_id}/test", dependencies=[Depends(require_admin)])
+@router.post("/servers/{server_id}/test", dependencies=[Depends(require_ops_admin)])
 async def test_server(
     server_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -243,7 +243,7 @@ async def test_server(
 
 
 @router.post("/servers/{server_id}/sync",
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def sync_server(
     server_id: uuid.UUID,
     user: CurrentUser,

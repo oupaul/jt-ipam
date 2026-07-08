@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
+from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.librenms import (
@@ -132,7 +132,7 @@ class FDBEntryRead(StrictModel):
 # ─────────────────── Instance CRUD ───────────────────
 @router.get("/instances",
             response_model=Paginated[LibreNMSInstanceRead],
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_ops_admin)])
 async def list_instances(
     session: Annotated[AsyncSession, Depends(get_session)],
     page: int = Query(1, ge=1, le=10_000),
@@ -153,7 +153,7 @@ async def list_instances(
 
 @router.post("/instances",
              response_model=LibreNMSInstanceRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_instance(
     payload: LibreNMSInstanceCreate,
     user: CurrentUser,
@@ -204,7 +204,7 @@ async def create_instance(
 
 @router.patch("/instances/{instance_id}",
               response_model=LibreNMSInstanceRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_instance(
     instance_id: uuid.UUID,
     payload: LibreNMSInstanceUpdate,
@@ -247,7 +247,7 @@ async def update_instance(
 
 
 @router.delete("/instances/{instance_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_instance(
     instance_id: uuid.UUID,
     user: CurrentUser,
@@ -273,7 +273,7 @@ async def delete_instance(
 
 
 @router.post("/instances/{instance_id}/test",
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def test_instance(
     instance_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -289,7 +289,7 @@ async def test_instance(
 
 
 @router.post("/instances/{instance_id}/sync",
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def trigger_sync(
     instance_id: uuid.UUID,
     user: CurrentUser,
@@ -348,7 +348,7 @@ async def trigger_sync(
 
 
 @router.post("/instances/{instance_id}/link-devices",
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def link_devices(
     instance_id: uuid.UUID,
     user: CurrentUser,

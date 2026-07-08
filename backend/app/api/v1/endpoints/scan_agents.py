@@ -15,7 +15,7 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core import scan_probes
 from app.core.audit import append_audit
 from app.core.db import get_session
@@ -168,7 +168,7 @@ async def _agent_from_key(session: AsyncSession, key: str | None) -> ScanAgent:
 
 
 @router.get("", response_model=Paginated[ScanAgentRead],
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_ops_admin)])
 async def list_agents(
     session: Annotated[AsyncSession, Depends(get_session)],
     page: int = Query(1, ge=1, le=10_000),
@@ -199,7 +199,7 @@ async def list_agents(
 
 
 @router.post("", response_model=ScanAgentCreated, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_agent(
     payload: ScanAgentCreate,
     user: CurrentUser,
@@ -239,7 +239,7 @@ async def create_agent(
 
 
 @router.post("/{agent_id}/rotate-key", response_model=ScanAgentCreated,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def rotate_key(
     agent_id: uuid.UUID,
     user: CurrentUser,
@@ -267,7 +267,7 @@ async def rotate_key(
 
 
 @router.post("/{agent_id}/scan-now", status_code=202,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def scan_now(
     agent_id: uuid.UUID,
     user: CurrentUser,
@@ -295,7 +295,7 @@ async def scan_now(
 
 
 @router.patch("/{agent_id}", response_model=ScanAgentRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_agent(
     agent_id: uuid.UUID,
     payload: ScanAgentUpdate,
@@ -340,7 +340,7 @@ class AgentSubnetsPatch(StrictModel):
 
 
 @router.get("/{agent_id}/subnets", response_model=AgentSubnetsOut,
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_ops_admin)])
 async def get_agent_subnets(
     agent_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -355,7 +355,7 @@ async def get_agent_subnets(
 
 
 @router.put("/{agent_id}/subnets", response_model=AgentSubnetsOut,
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_ops_admin)])
 async def set_agent_subnets(
     agent_id: uuid.UUID,
     payload: AgentSubnetsPatch,
@@ -621,7 +621,7 @@ async def agent_report(
 
 
 @router.delete("/{agent_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_agent(
     agent_id: uuid.UUID,
     user: CurrentUser,

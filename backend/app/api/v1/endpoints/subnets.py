@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_object_perm
+from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_object_perm
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.section import Section
@@ -43,7 +43,7 @@ from app.services.subnet import (
 router = APIRouter(prefix="/subnets", tags=["subnets"])
 
 
-@router.get("/overlaps/exists", dependencies=[Depends(require_admin)])
+@router.get("/overlaps/exists", dependencies=[Depends(require_ops_admin)])
 async def overlaps_exist(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, bool]:

@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.db import get_session
 from app.services.oui import refresh_oui_db, search_oui_vendors, vendor_for_mac
 from app.services.oui import stats as oui_stats
@@ -23,7 +23,7 @@ async def get_stats(
     return await oui_stats(session)
 
 
-@router.post("/refresh", dependencies=[Depends(require_admin)])
+@router.post("/refresh", dependencies=[Depends(require_ops_admin)])
 async def refresh(
     _user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],

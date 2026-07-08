@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.section import Section
@@ -37,7 +37,7 @@ async def _read_text(file: UploadFile) -> str:
     return raw.decode("utf-8-sig", errors="replace")
 
 
-@router.post("/ripe/preview", dependencies=[Depends(require_admin)])
+@router.post("/ripe/preview", dependencies=[Depends(require_ops_admin)])
 async def preview_ripe(
     file: Annotated[UploadFile, File()],
     _user: CurrentUser,
@@ -59,7 +59,7 @@ async def preview_ripe(
     }
 
 
-@router.post("/ripe/commit", dependencies=[Depends(require_admin)])
+@router.post("/ripe/commit", dependencies=[Depends(require_ops_admin)])
 async def commit_ripe(
     file: Annotated[UploadFile, File()],
     section_id: Annotated[uuid.UUID, Form()],

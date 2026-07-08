@@ -61,8 +61,8 @@ const routes: RouteRecordRaw[] = [
       { path: "notifications", name: "notifications", component: () => import("@/views/Notifications.vue") },
       // Admin
       { path: "audit", name: "audit", component: () => import("@/views/Audit.vue"), meta: { admin: true } },
-      { path: "users", name: "users", component: () => import("@/views/Users.vue"), meta: { admin: true } },
-      { path: "groups", name: "groups", component: () => import("@/views/Groups.vue"), meta: { admin: true } },
+      { path: "users", name: "users", component: () => import("@/views/Users.vue"), meta: { admin: true, superAdmin: true } },
+      { path: "groups", name: "groups", component: () => import("@/views/Groups.vue"), meta: { admin: true, superAdmin: true } },
       { path: "vlans", name: "vlans", component: () => import("@/views/VLANs.vue") },
       { path: "vrfs", name: "vrfs", component: () => import("@/views/VRFs.vue") },
       { path: "devices", name: "devices", component: () => import("@/views/Devices.vue") },
@@ -83,15 +83,15 @@ const routes: RouteRecordRaw[] = [
       { path: "customers", name: "customers", component: () => import("@/views/Customers.vue"), meta: { admin: true } },
       { path: "customers/:id", name: "customer-detail", component: () => import("@/views/CustomerDetail.vue"), meta: { admin: true } },
       { path: "llm", name: "llm_settings", component: () => import("@/views/LLMSettings.vue"), meta: { admin: true } },
-      { path: "system-settings", name: "system_settings", component: () => import("@/views/SystemSettings.vue"), meta: { admin: true } },
-      { path: "notification-channels", name: "notification_channels", component: () => import("@/views/NotificationChannels.vue"), meta: { admin: true } },
+      { path: "system-settings", name: "system_settings", component: () => import("@/views/SystemSettings.vue"), meta: { admin: true, superAdmin: true } },
+      { path: "notification-channels", name: "notification_channels", component: () => import("@/views/NotificationChannels.vue"), meta: { admin: true, superAdmin: true } },
       { path: "ip-request-policy", name: "ip_request_policy", component: () => import("@/views/IPRequestPolicy.vue"), meta: { admin: true } },
-      { path: "version", name: "version", component: () => import("@/views/VersionInfo.vue"), meta: { admin: true } },
-      { path: "system-logs", name: "system_logs", component: () => import("@/views/SystemLogs.vue"), meta: { admin: true } },
+      { path: "version", name: "version", component: () => import("@/views/VersionInfo.vue"), meta: { admin: true, superAdmin: true } },
+      { path: "system-logs", name: "system_logs", component: () => import("@/views/SystemLogs.vue"), meta: { admin: true, superAdmin: true } },
       { path: "graylog-dsv", name: "graylog_dsv", component: () => import("@/views/GraylogDsvSettings.vue"), meta: { admin: true } },
       { path: "chat-history", name: "chat_history", component: () => import("@/views/ChatHistoryAdmin.vue"), meta: { admin: true } },
       { path: "my-chat-history", name: "my_chat_history", component: () => import("@/views/MyChatHistory.vue") },
-      { path: "permissions", name: "permissions", component: () => import("@/views/Permissions.vue"), meta: { admin: true } },
+      { path: "permissions", name: "permissions", component: () => import("@/views/Permissions.vue"), meta: { admin: true, superAdmin: true } },
       { path: "scan-agents", name: "scan_agents", component: () => import("@/views/ScanAgents.vue"), meta: { admin: true } },
       { path: "certificates", name: "certificates", component: () => import("@/views/Certificates.vue"), meta: { admin: true } },
       { path: "webhooks", name: "webhooks", component: () => import("@/views/Webhooks.vue"), meta: { admin: true } },
@@ -174,8 +174,12 @@ router.beforeEach(async (to, _from) => {
     }
   }
 
-  // admin-only routes — non-admin 退回 dashboard(實際權限由 backend 401/403 把關)
-  if (to.meta.admin && !auth.me?.is_admin) {
+  // superAdmin-only routes — 僅 is_admin 可進（使用者/群組/系統設定/通知/版本/系統紀錄）
+  if (to.meta.superAdmin && !auth.me?.is_admin) {
+    return { name: "dashboard" };
+  }
+  // admin routes — is_admin 或 is_ops_admin 皆可進
+  if (to.meta.admin && !auth.me?.is_admin && !auth.me?.is_ops_admin) {
     return { name: "dashboard" };
   }
   return true;

@@ -745,6 +745,7 @@
     "auth_provider": "認證",
     "is_active": "啟用",
     "is_admin": "管理者",
+    "is_ops_admin": "運維管理員",
     "can_ssh": "連線管理權限",
     "can_ssh_hint": "授予後，此使用者可對其可檢視且已啟用 SSH 的 IP 開終端機（不需管理員或寫入權）。",
     "last_login": "最近登入",

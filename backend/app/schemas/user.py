@@ -22,6 +22,7 @@ class UserMe(StrictModel):
     auth_provider: str
     is_active: bool
     is_admin: bool
+    is_ops_admin: bool = False
     # 非管理員是否對任何物件類型有可見範圍；前端用來隱藏零權限看不到的選單
     has_visibility: bool = True
     # 是否具「全域讀取」（管理員或任一類型有萬用授權）；前端用來隱藏全域基礎設施選單

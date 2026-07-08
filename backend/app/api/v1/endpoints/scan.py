@@ -11,7 +11,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.subnet import Subnet
@@ -34,7 +34,7 @@ class ScanResult(StrictModel):
 @router.post(
     "/subnets/{subnet_id}/scan",
     response_model=ScanResult,
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_ops_admin)],
 )
 async def scan_subnet(
     subnet_id: uuid.UUID,

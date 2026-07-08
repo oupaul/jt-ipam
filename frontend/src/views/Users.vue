@@ -38,8 +38,8 @@ function goPerms(r: User) { router.push({ name: "permissions", query: { ptype: "
 
 const { visibleKeys: usrVis, setVisible: usrSet, reset: usrReset } = useColumnPrefs(
   "users",
-  ["username", "email", "display_name", "auth_provider", "is_active", "is_admin", "can_ssh", "last_login_at", "locked_until", "actions"],
-  ["username", "email", "display_name", "auth_provider", "is_active", "is_admin", "can_ssh", "last_login_at", "locked_until", "actions"],
+  ["username", "email", "display_name", "auth_provider", "is_active", "is_admin", "is_ops_admin", "can_ssh", "last_login_at", "locked_until", "actions"],
+  ["username", "email", "display_name", "auth_provider", "is_active", "is_admin", "is_ops_admin", "can_ssh", "last_login_at", "locked_until", "actions"],
 );
 const usrPicker = computed(() => [
   { key: "username", label: t("cols.username") },
@@ -48,6 +48,7 @@ const usrPicker = computed(() => [
   { key: "auth_provider", label: t("cols.auth_method") },
   { key: "is_active", label: t("cols.enabled") },
   { key: "is_admin", label: t("cols.admin") },
+  { key: "is_ops_admin", label: t("users.is_ops_admin") },
   { key: "can_ssh", label: t("users.can_ssh") },
   { key: "last_login_at", label: t("cols.last_login") },
   { key: "locked_until", label: t("cols.locked_until") },
@@ -207,6 +208,10 @@ async function toggleAdmin(u: User) {
   try { await updateUser(u.id, { is_admin: !u.is_admin }); await refresh(); }
   catch { msg.error(t("errors.server")); }
 }
+async function toggleOpsAdmin(u: User) {
+  try { await updateUser(u.id, { is_ops_admin: !u.is_ops_admin }); await refresh(); }
+  catch { msg.error(t("errors.server")); }
+}
 async function toggleSsh(u: User) {
   try { await updateUser(u.id, { can_ssh: !u.can_ssh }); await refresh(); }
   catch { msg.error(t("errors.server")); }
@@ -249,6 +254,14 @@ const allColumns = computed<DataTableColumns<User>>(() => autoSort([
     render: (r) => h(NSwitch, {
       value: r.is_admin,
       "onUpdate:value": () => toggleAdmin(r),
+      size: "small",
+    }),
+  },
+  {
+    title: t("users.is_ops_admin"), key: "is_ops_admin", width: 110,
+    render: (r) => h(NSwitch, {
+      value: r.is_ops_admin ?? false,
+      "onUpdate:value": () => toggleOpsAdmin(r),
       size: "small",
     }),
   },

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_object_perm, require_type_perm
+from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_object_perm, require_type_perm
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.device import Device
@@ -489,7 +489,7 @@ class _DeviceBulkDeletePayload(StrictModel):
     ids: list[uuid.UUID]
 
 
-@router.post("/bulk-delete", dependencies=[Depends(require_admin)])
+@router.post("/bulk-delete", dependencies=[Depends(require_ops_admin)])
 async def bulk_delete_devices(
     payload: _DeviceBulkDeletePayload,
     user: CurrentUser,
@@ -522,7 +522,7 @@ async def bulk_delete_devices(
     return {"deleted": deleted, "failed": len(errors), "errors": errors[:50]}
 
 
-@router.post("/import-csv", dependencies=[Depends(require_admin)])
+@router.post("/import-csv", dependencies=[Depends(require_ops_admin)])
 async def import_devices_csv(
     file: Annotated[UploadFile, File()],
     user: CurrentUser,

@@ -294,7 +294,7 @@ async def me(
     out.ai_enabled = (await get_llm_config(session)).enabled
     # has_visibility：任一類型有可見範圍即 True（零權限→False）
     # has_global_read：管理員或任一類型有「萬用」授權（visible_ids 回 None）→ True
-    if user.is_admin:
+    if user.is_admin or user.is_ops_admin:
         out.has_visibility = True
         out.has_global_read = True
         out.can_edit = True

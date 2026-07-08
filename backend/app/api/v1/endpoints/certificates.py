@@ -1,4 +1,4 @@
-"""憑證集中保管 + 版本上傳（管理面,全部 require_admin — 屬純管理/機敏資料）。
+"""憑證集中保管 + 版本上傳（管理面,全部 require_ops_admin — 屬純管理/機敏資料）。
 
 agent 拉取協定(check/bundle/report,key 認證)放 cert_agents.py。
 私鑰:上傳即 AES-GCM 加密存,API 一律不回傳明文。
@@ -25,7 +25,7 @@ from fastapi import (
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.security import decrypt_secret, encrypt_secret
@@ -58,7 +58,7 @@ from app.services.cert_service import (
 )
 
 router = APIRouter(prefix="/certificates", tags=["certificates"],
-                   dependencies=[Depends(require_admin)])
+                   dependencies=[Depends(require_ops_admin)])
 
 
 def _key_aad(certificate_id: uuid.UUID, fingerprint: str) -> bytes:

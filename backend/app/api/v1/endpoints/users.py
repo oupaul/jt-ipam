@@ -40,6 +40,7 @@ class UserRead(StrictModel):
     auth_provider: str
     is_active: bool
     is_admin: bool
+    is_ops_admin: bool = False
     can_ssh: bool = False
     last_login_at: datetime | None
     last_login_ip: str | None
@@ -72,6 +73,7 @@ class UserUpdate(StrictModel):
     display_name: str | None = None
     is_active: bool | None = None
     is_admin: bool | None = None
+    is_ops_admin: bool | None = None
     can_ssh: bool | None = None
     password: str | None = None
     unlock: bool = False    # 設 true → locked_until=None, failed_login_count=0

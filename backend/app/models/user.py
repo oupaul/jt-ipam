@@ -48,6 +48,9 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_ops_admin: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
     # 獨立的「連線管理權限」：除 admin / 對該 IP 有寫入權者外，另可單獨授予此能力，
     # 讓使用者對其可檢視且已啟用 SSH 的 IP 開終端機。
     can_ssh: Mapped[bool] = mapped_column(

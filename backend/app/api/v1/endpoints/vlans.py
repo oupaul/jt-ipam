@@ -13,7 +13,7 @@ from sqlalchemy import String, cast, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
+from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.librenms import LibreNMSDevice
@@ -61,7 +61,7 @@ async def list_domains(
 
 
 @router.post("/vlan-domains", response_model=VLANDomainRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_domain(
     payload: VLANDomainCreate,
     user: CurrentUser,
@@ -91,7 +91,7 @@ async def create_domain(
 
 
 @router.patch("/vlan-domains/{domain_id}", response_model=VLANDomainRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_domain(
     domain_id: uuid.UUID,
     payload: VLANDomainUpdate,
@@ -123,7 +123,7 @@ async def update_domain(
 
 
 @router.delete("/vlan-domains/{domain_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_domain(
     domain_id: uuid.UUID,
     user: CurrentUser,
@@ -311,7 +311,7 @@ async def list_vlan_devices(
 
 
 @router.post("/vlans", response_model=VLANRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_vlan(
     payload: VLANCreate,
     user: CurrentUser,
@@ -341,7 +341,7 @@ async def create_vlan(
 
 
 @router.patch("/vlans/{vlan_id}", response_model=VLANRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_vlan(
     vlan_id: uuid.UUID,
     payload: VLANUpdate,
@@ -373,7 +373,7 @@ async def update_vlan(
 
 
 @router.delete("/vlans/{vlan_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_vlan(
     vlan_id: uuid.UUID,
     user: CurrentUser,
@@ -432,7 +432,7 @@ async def _bulk_delete_helper(
     return {"deleted": deleted, "failed": len(errors), "errors": errors[:50]}
 
 
-@router.post("/vlans/bulk-delete", dependencies=[Depends(require_admin)])
+@router.post("/vlans/bulk-delete", dependencies=[Depends(require_ops_admin)])
 async def bulk_delete_vlans(
     payload: _BulkDeletePayload, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -446,7 +446,7 @@ async def bulk_delete_vlans(
     )
 
 
-@router.post("/vlan-domains/bulk-delete", dependencies=[Depends(require_admin)])
+@router.post("/vlan-domains/bulk-delete", dependencies=[Depends(require_ops_admin)])
 async def bulk_delete_vlan_domains(
     payload: _BulkDeletePayload, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],

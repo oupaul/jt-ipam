@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import (
     CurrentUser,
-    require_admin,
+    require_ops_admin,
     require_object_perm,
     require_type_perm,
 )
@@ -209,7 +209,7 @@ class _BulkDelete(StrictModel):
     ids: list[uuid.UUID]
 
 
-@router.post("/bulk-delete", dependencies=[Depends(require_admin)])
+@router.post("/bulk-delete", dependencies=[Depends(require_ops_admin)])
 async def bulk_delete_sections(
     payload: _BulkDelete, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],

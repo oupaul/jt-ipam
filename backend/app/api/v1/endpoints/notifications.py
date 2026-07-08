@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.safe_http import UnsafeOutboundURL, assert_url_safe
@@ -91,7 +91,7 @@ async def mark_all_read(
 
 # ─────────────────── Webhook 訂閱（admin only）───────────────────
 @router.get("/webhooks", response_model=Paginated[WebhookRead],
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_ops_admin)])
 async def list_webhooks(
     session: Annotated[AsyncSession, Depends(get_session)],
     page: int = Query(1, ge=1, le=10_000),
@@ -115,7 +115,7 @@ async def list_webhooks(
 
 
 @router.post("/webhooks", response_model=WebhookCreateResponse, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_webhook(
     payload: WebhookCreate,
     user: CurrentUser,
@@ -173,7 +173,7 @@ async def create_webhook(
 
 
 @router.delete("/webhooks/{webhook_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_webhook(
     webhook_id: uuid.UUID,
     user: CurrentUser,
@@ -219,7 +219,7 @@ class EmailStatus(StrictModel):
 
 
 @router.get("/notifications/email/status", response_model=EmailStatus,
-            dependencies=[Depends(require_admin)])
+            dependencies=[Depends(require_ops_admin)])
 async def email_status() -> EmailStatus:
     from app.core.config import get_settings
     s = get_settings()
@@ -232,7 +232,7 @@ async def email_status() -> EmailStatus:
 
 
 @router.post("/notifications/email/test", status_code=200,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def email_test(
     payload: EmailTestRequest,
     user: CurrentUser,

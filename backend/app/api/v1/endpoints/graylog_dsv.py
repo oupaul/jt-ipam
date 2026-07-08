@@ -19,7 +19,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.address import IPAddress
@@ -93,7 +93,7 @@ async def _fw_dsv_guard(
 # 公開（token 保護）— 不掛使用者驗證，給 Graylog 機器抓取
 public_router = APIRouter(prefix="/lookup", tags=["lookup"])
 # 管理區設定 — admin only
-admin_router = APIRouter(prefix="/system", tags=["system"], dependencies=[Depends(require_admin)])
+admin_router = APIRouter(prefix="/system", tags=["system"], dependencies=[Depends(require_ops_admin)])
 
 
 @public_router.get("/{name}")

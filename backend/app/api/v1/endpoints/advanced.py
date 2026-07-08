@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
+from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.advanced import (
@@ -197,7 +197,7 @@ async def list_tenant_groups(
 
 
 @router.post("/tenant-groups", response_model=TenantGroupRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_tenant_group(
     payload: TenantGroupWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -217,7 +217,7 @@ async def create_tenant_group(
 
 
 @router.delete("/tenant-groups/{tg_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_tenant_group(
     tg_id: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -249,7 +249,7 @@ async def list_tenants(
 
 
 @router.post("/tenants", response_model=TenantRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_tenant(
     payload: TenantWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -272,7 +272,7 @@ async def create_tenant(
 
 
 @router.delete("/tenants/{t_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_tenant(
     t_id: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -349,7 +349,7 @@ async def list_contacts(
 
 
 @router.post("/contacts", response_model=ContactRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_contact(
     payload: ContactWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -369,7 +369,7 @@ async def create_contact(
 
 
 @router.delete("/contacts/{c_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_contact(
     c_id: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -384,7 +384,7 @@ async def delete_contact(
 
 
 @router.post("/contact-assignments", response_model=ContactAssignmentRead,
-             status_code=201, dependencies=[Depends(require_admin)])
+             status_code=201, dependencies=[Depends(require_ops_admin)])
 async def assign_contact(
     payload: ContactAssignmentWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -458,7 +458,7 @@ async def list_asns(
 
 
 @router.post("/asns", response_model=ASNRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_asn(
     payload: ASNWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -478,7 +478,7 @@ async def create_asn(
 
 
 @router.delete("/asns/{a_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_asn(
     a_id: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -591,7 +591,7 @@ class CircuitTypeWrite(StrictModel):
 
 
 @router.post("/circuit-types", response_model=CircuitTypeRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_circuit_type(
     payload: CircuitTypeWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -611,7 +611,7 @@ async def create_circuit_type(
 
 
 @router.delete("/circuit-types/{ct_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_circuit_type(
     ct_id: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -676,7 +676,7 @@ class ContactGroupWrite(StrictModel):
 
 
 @router.post("/contact-groups", response_model=ContactGroupRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_contact_group(
     payload: ContactGroupWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -696,7 +696,7 @@ async def create_contact_group(
 
 
 @router.patch("/contact-groups/{g_id}", response_model=ContactGroupRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_contact_group(
     g_id: uuid.UUID, payload: ContactGroupWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -719,7 +719,7 @@ async def update_contact_group(
 
 
 @router.delete("/contact-groups/{g_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_contact_group(
     g_id: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -751,7 +751,7 @@ async def list_providers(
 
 
 @router.post("/providers", response_model=ProviderRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_provider(
     payload: ProviderWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -793,7 +793,7 @@ async def list_circuits(
 
 
 @router.post("/circuits", response_model=CircuitRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_circuit(
     payload: CircuitWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -871,7 +871,7 @@ async def list_ssids(
 
 
 @router.post("/wireless/ssids", response_model=WirelessSSIDRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_ssid(
     payload: WirelessSSIDWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -905,7 +905,7 @@ async def list_wlinks(
 
 
 @router.post("/wireless/links", response_model=WirelessLinkRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_wlink(
     payload: WirelessLinkWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -930,7 +930,7 @@ async def create_wlink(
 
 
 @router.patch("/tenant-groups/{tg_id}", response_model=TenantGroupRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_tenant_group(
     tg_id: uuid.UUID, payload: TenantGroupWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -941,7 +941,7 @@ async def update_tenant_group(
 
 
 @router.patch("/tenants/{t_id}", response_model=TenantRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_tenant(
     t_id: uuid.UUID, payload: TenantWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -952,7 +952,7 @@ async def update_tenant(
 
 
 @router.patch("/contacts/{c_id}", response_model=ContactRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_contact(
     c_id: uuid.UUID, payload: ContactWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -963,7 +963,7 @@ async def update_contact(
 
 
 @router.patch("/asns/{a_id}", response_model=ASNRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_asn(
     a_id: uuid.UUID, payload: ASNWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -974,7 +974,7 @@ async def update_asn(
 
 
 @router.patch("/providers/{p_id}", response_model=ProviderRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_provider(
     p_id: uuid.UUID, payload: ProviderWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -985,7 +985,7 @@ async def update_provider(
 
 
 @router.patch("/circuits/{c_id}", response_model=CircuitRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_circuit(
     c_id: uuid.UUID, payload: CircuitWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -996,7 +996,7 @@ async def update_circuit(
 
 
 @router.patch("/circuit-types/{ct_id}", response_model=CircuitTypeRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_circuit_type(
     ct_id: uuid.UUID, payload: CircuitTypeWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -1007,7 +1007,7 @@ async def update_circuit_type(
 
 
 @router.patch("/wireless/ssids/{s_id}", response_model=WirelessSSIDRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_ssid(
     s_id: uuid.UUID, payload: WirelessSSIDWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -1018,7 +1018,7 @@ async def update_ssid(
 
 
 @router.patch("/wireless/links/{l_id}", response_model=WirelessLinkRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_wlink(
     l_id: uuid.UUID, payload: WirelessLinkWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -1029,7 +1029,7 @@ async def update_wlink(
 
 
 # 補上原本缺的 DELETE（前端「進階」各資源都有刪除鈕，缺端點會回 405 Method Not Allowed）
-@router.delete("/providers/{p_id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/providers/{p_id}", status_code=204, dependencies=[Depends(require_ops_admin)])
 async def delete_provider(
     p_id: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -1038,7 +1038,7 @@ async def delete_provider(
                            object_type="provider", user=user, request=request)
 
 
-@router.delete("/circuits/{c_id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/circuits/{c_id}", status_code=204, dependencies=[Depends(require_ops_admin)])
 async def delete_circuit(
     c_id: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -1047,7 +1047,7 @@ async def delete_circuit(
                            object_type="circuit", user=user, request=request)
 
 
-@router.delete("/wireless/ssids/{s_id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/wireless/ssids/{s_id}", status_code=204, dependencies=[Depends(require_ops_admin)])
 async def delete_ssid(
     s_id: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -1056,7 +1056,7 @@ async def delete_ssid(
                            object_type="wireless_ssid", user=user, request=request)
 
 
-@router.delete("/wireless/links/{l_id}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/wireless/links/{l_id}", status_code=204, dependencies=[Depends(require_ops_admin)])
 async def delete_wlink(
     l_id: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],

@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
+from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.device import Device
@@ -162,7 +162,7 @@ async def list_cables(
 
 
 @router.post("/cables", response_model=CableRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_cable(
     payload: CableWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -179,7 +179,7 @@ async def create_cable(
 
 
 @router.patch("/cables/{cable_id}", response_model=CableRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_cable(
     cable_id: uuid.UUID, payload: CableWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -199,7 +199,7 @@ async def update_cable(
 
 
 @router.delete("/cables/{cable_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_cable(
     cable_id: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -219,7 +219,7 @@ async def delete_cable(
 
 
 @router.post("/cable-terminations", response_model=CableTerminationRead,
-             status_code=201, dependencies=[Depends(require_admin)])
+             status_code=201, dependencies=[Depends(require_ops_admin)])
 async def add_termination(
     payload: CableTerminationWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -346,7 +346,7 @@ async def list_device_ports(
 
 
 @router.post("/device-ports", response_model=DevicePortRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_device_port(
     payload: DevicePortWrite,
     user: CurrentUser,
@@ -366,7 +366,7 @@ async def create_device_port(
     return DevicePortRead.model_validate(obj)
 
 
-@router.post("/device-ports/import", dependencies=[Depends(require_admin)])
+@router.post("/device-ports/import", dependencies=[Depends(require_ops_admin)])
 async def import_device_ports(
     user: CurrentUser,
     request: Request,
@@ -440,7 +440,7 @@ async def import_device_ports(
 
 
 @router.patch("/device-ports/{port_id}", response_model=DevicePortRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_device_port(
     port_id: uuid.UUID,
     payload: DevicePortUpdate,
@@ -470,7 +470,7 @@ async def update_device_port(
 
 
 @router.delete("/device-ports/{port_id}", status_code=204,
-               dependencies=[Depends(require_admin)])
+               dependencies=[Depends(require_ops_admin)])
 async def delete_device_port(
     port_id: uuid.UUID,
     user: CurrentUser,
@@ -663,7 +663,7 @@ async def list_power_panels(
 
 
 @router.post("/power-panels", response_model=PowerPanelRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_power_panel(
     payload: PowerPanelWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -705,7 +705,7 @@ async def list_power_feeds(
 
 
 @router.post("/power-feeds", response_model=PowerFeedRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_power_feed(
     payload: PowerFeedWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -742,7 +742,7 @@ async def list_power_outlets(
 
 
 @router.post("/power-outlets", response_model=PowerOutletRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_power_outlet(
     payload: PowerOutletWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -784,37 +784,37 @@ async def _power_delete(session, model, obj_id, otype, user, request):  # type: 
     await session.commit()
 
 
-@router.patch("/power-panels/{pid}", response_model=PowerPanelRead, dependencies=[Depends(require_admin)])
+@router.patch("/power-panels/{pid}", response_model=PowerPanelRead, dependencies=[Depends(require_ops_admin)])
 async def update_power_panel(pid: uuid.UUID, payload: PowerPanelWrite, user: CurrentUser, request: Request,
                              session: Annotated[AsyncSession, Depends(get_session)]) -> PowerPanelRead:
     return PowerPanelRead.model_validate(await _power_update(session, PowerPanel, pid, payload, "power_panel", user, request))
 
 
-@router.delete("/power-panels/{pid}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/power-panels/{pid}", status_code=204, dependencies=[Depends(require_ops_admin)])
 async def delete_power_panel(pid: uuid.UUID, user: CurrentUser, request: Request,
                              session: Annotated[AsyncSession, Depends(get_session)]) -> None:
     await _power_delete(session, PowerPanel, pid, "power_panel", user, request)
 
 
-@router.patch("/power-feeds/{fid}", response_model=PowerFeedRead, dependencies=[Depends(require_admin)])
+@router.patch("/power-feeds/{fid}", response_model=PowerFeedRead, dependencies=[Depends(require_ops_admin)])
 async def update_power_feed(fid: uuid.UUID, payload: PowerFeedWrite, user: CurrentUser, request: Request,
                             session: Annotated[AsyncSession, Depends(get_session)]) -> PowerFeedRead:
     return PowerFeedRead.model_validate(await _power_update(session, PowerFeed, fid, payload, "power_feed", user, request))
 
 
-@router.delete("/power-feeds/{fid}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/power-feeds/{fid}", status_code=204, dependencies=[Depends(require_ops_admin)])
 async def delete_power_feed(fid: uuid.UUID, user: CurrentUser, request: Request,
                             session: Annotated[AsyncSession, Depends(get_session)]) -> None:
     await _power_delete(session, PowerFeed, fid, "power_feed", user, request)
 
 
-@router.patch("/power-outlets/{oid}", response_model=PowerOutletRead, dependencies=[Depends(require_admin)])
+@router.patch("/power-outlets/{oid}", response_model=PowerOutletRead, dependencies=[Depends(require_ops_admin)])
 async def update_power_outlet(oid: uuid.UUID, payload: PowerOutletWrite, user: CurrentUser, request: Request,
                               session: Annotated[AsyncSession, Depends(get_session)]) -> PowerOutletRead:
     return PowerOutletRead.model_validate(await _power_update(session, PowerOutlet, oid, payload, "power_outlet", user, request))
 
 
-@router.delete("/power-outlets/{oid}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/power-outlets/{oid}", status_code=204, dependencies=[Depends(require_ops_admin)])
 async def delete_power_outlet(oid: uuid.UUID, user: CurrentUser, request: Request,
                               session: Annotated[AsyncSession, Depends(get_session)]) -> None:
     await _power_delete(session, PowerOutlet, oid, "power_outlet", user, request)
@@ -869,7 +869,7 @@ async def list_device_power_ports(
 
 
 @router.post("/device-power-ports", response_model=DevicePowerPortRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_device_power_port(
     payload: DevicePowerPortWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -888,7 +888,7 @@ async def create_device_power_port(
 
 
 @router.patch("/device-power-ports/{pid}", response_model=DevicePowerPortRead,
-              dependencies=[Depends(require_admin)])
+              dependencies=[Depends(require_ops_admin)])
 async def update_device_power_port(
     pid: uuid.UUID, payload: DevicePowerPortPatch, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -910,7 +910,7 @@ async def update_device_power_port(
     return await _power_port_out(session, obj)
 
 
-@router.delete("/device-power-ports/{pid}", status_code=204, dependencies=[Depends(require_admin)])
+@router.delete("/device-power-ports/{pid}", status_code=204, dependencies=[Depends(require_ops_admin)])
 async def delete_device_power_port(
     pid: uuid.UUID, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -993,7 +993,7 @@ async def list_vpn(
 
 
 @router.post("/vpn-tunnels", response_model=VPNTunnelRead, status_code=201,
-             dependencies=[Depends(require_admin)])
+             dependencies=[Depends(require_ops_admin)])
 async def create_vpn(
     payload: VPNTunnelWrite, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
