@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.100] — 2026-07-09
+
+### Fixed
+- **Timestamps showed UTC instead of local time** — the Tasks table (queued / finished), the last-seen columns in Subnet detail and Device detail, and the Anomaly detail rendered timestamps by stripping the ISO `T` without converting timezone, so they showed UTC. They now use the shared local-time formatter (the viewer's browser timezone), consistent with the rest of the app.
+
+
 ## [0.5.99] — 2026-07-09
 
 ### Fixed
