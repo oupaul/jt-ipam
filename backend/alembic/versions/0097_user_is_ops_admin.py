@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0096_user_is_ops_admin"
-down_revision: str | None = "0095_bgtask_trigger"
+revision: str = "0097_user_is_ops_admin"
+down_revision: str | None = "0096_device_port_name_len"
 branch_labels: str | None = None
 depends_on: str | None = None
 

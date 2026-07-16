@@ -65,7 +65,6 @@ router = APIRouter(prefix="/addresses", tags=["rdp"])
 
 _TICKET_TTL = 60              # 秒；ticket 單次用、短壽
 _CONNECT_TIMEOUT = 20.0       # RDP（NLA）連線逾時
-_CLIENT_IDLE_TIMEOUT = 60.0   # WS 端 60s 無任何訊息（含 heartbeat）視為斷線
 _WHEEL_DELTA = 120            # 一格滾輪
 _WHEEL_NEGATIVE = 0x100       # PTRFLAGS.WHEEL_NEGATIVE 位（放進 steps 表向下）
 _MAX_DIM = 2560              # 解析度上限保護
@@ -186,8 +185,8 @@ async def list_connection_targets(
         for lr in (await session.execute(lstmt)).all():
             live_map[str(lr[0])] = (lr[1], lr[2], lr[3])
 
-    from app.services.oui import vendor_for_mac
     from app.services.os_precedence import effective_os
+    from app.services.oui import vendor_for_mac
     out: list[IPAddressRead] = []
     for ip, ssh_ok, rdp_ok, vnc_ok, bmc_ok in kept:
         r = IPAddressRead.model_validate(ip)
@@ -485,10 +484,9 @@ async def _bridge(websocket: WebSocket, conn: Any, send: Any, *, clip_enabled: b
         mods_down: set[str] = set()   # 目前按住的 Ctrl/Alt/Meta（決定字母鍵走 scancode 還是 unicode）
         with contextlib.suppress(WebSocketDisconnect, Exception):
             while True:
-                try:
-                    raw = await asyncio.wait_for(websocket.receive_text(), timeout=_CLIENT_IDLE_TIMEOUT)
-                except TimeoutError:
-                    break
+                # 不做應用層 idle-timeout（背景分頁 heartbeat 會被節流誤判斷線）；保活靠 WS
+                # 傳輸層 uvicorn ws-ping/pong，真正斷線走 WebSocketDisconnect。
+                raw = await websocket.receive_text()
                 msg = json.loads(raw)
                 t = msg.get("type")
                 if t == "m":

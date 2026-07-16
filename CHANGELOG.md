@@ -4,6 +4,88 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.103] — 2026-07-11
+
+### Changed
+- Internal lint/test cleanup: ruff import ordering, removed dead code / unused imports (eslint), and updated a unit test for the added ssh-rsa client signature. No functional change. Full local suite green — 441 backend tests, vue-tsc, ruff, eslint, migrations up to 0096.
+
+
+## [0.5.102] — 2026-07-10
+
+### Changed
+- **Dashboard capacity: split IPv4 / IPv6** — summing IPv6 address counts produced an astronomically large, unhelpful "total capacity" number. The KPI now shows **IPv4 usable** (a real, plannable number, comma-formatted) and, when any IPv6 subnet exists, a separate **IPv6** tile showing the subnet count (address space is vast, not summed). The utilization gauge is now IPv4-only (IPv6 never "runs out").
+
+
+## [0.5.101] — 2026-07-10
+
+### Changed
+- Dashboard: renamed the "Total capacity" KPI to **"Total IP capacity"** to make clear it's the total IP address capacity.
+
+
+## [0.5.100] — 2026-07-09
+
+### Fixed
+- **Timestamps showed UTC instead of local time** — the Tasks table (queued / finished), the last-seen columns in Subnet detail and Device detail, and the Anomaly detail rendered timestamps by stripping the ISO `T` without converting timezone, so they showed UTC. They now use the shared local-time formatter (the viewer's browser timezone), consistent with the rest of the app.
+
+
+## [0.5.99] — 2026-07-09
+
+### Fixed
+- **Some help texts rendered blank in the production build** — vue-i18n treats `@` (linked messages), `{`/`}` (interpolation) and `|` (plural) as special syntax, and several messages contained a literal `@` (`root@phpipam-host`, `account@IP`, `@BotFather`), `{...}` (JSON examples) or `|` (a shell pipe). In dev these only logged a warning, but the production build threw a compile error that blanked the surrounding render — most visibly the phpIPAM migration "Steps" guide, plus the SSH/RDP/VNC credential-name placeholder and the Telegram / generic-webhook notification hints. Those literals are now escaped so they render correctly.
+
+
+## [0.5.98] — 2026-07-09
+
+### Fixed
+- **phpIPAM migration / SSH tunnel — support old hosts + clearer auth errors** — the tunnel now also offers the `ssh-rsa` (SHA-1) client signature, so a valid RSA key on a very old phpIPAM sshd is accepted (asyncssh otherwise sends only rsa-sha2). The permission-denied message now lists exactly what to check (authorized_keys, PermitRootLogin, key perms, key/pubkey pairing).
+- **`device_ports.name` widened 64 → 255** — long real interface names (e.g. a Windows NDIS filter adapter description, 71 chars) overflowed VARCHAR(64) and aborted LibreNMS/Proxmox port sync with StringDataRightTruncation. Names are also truncated defensively at the sync sites (migration 0096).
+
+### Changed
+- Renamed a local variable in the migration view that shadowed the i18n `t`.
+
+
+## [0.5.97] — 2026-07-07
+
+### Fixed
+- **Completed the Tasks-table count audit across all sync types** — Wazuh syncs now count correctly (`new` → added, `fetched` → total; previously only `updated` was picked up), and the detail popover now renders readable summaries for DNS, pfSense, Wazuh and Proxmox syncs instead of a generic line. All task kinds (LibreNMS / OPNsense / pfSense / DNS / Wazuh / Proxmox / AdGuard / phpIPAM) now show real counts.
+- Minor: a space before the count in the Tasks "Active (0)" tab.
+
+
+## [0.5.96] — 2026-07-07
+
+### Fixed
+- **Tasks table showed "0" totals for DNS / pfSense / OPNsense syncs** — following the LibreNMS fix, the DNS sync summary (`pulled_zones/pulled_records/hostname_obs`), the pfSense heartbeat (`arp/rules/aliases/nat`) and the OPNsense heartbeat (`mappings`) used keys the count aggregation didn't recognise, so the Tasks table rendered 0 even though the syncs pulled data. These shapes are now mapped, plus a fallback (total = added + updated) so any sync with data shows a meaningful count. The syncs themselves were verified pulling data (DNS 7 zones / 119 records, pfSense 6 ARP / 8 rules, OPNsense 9 alias mappings).
+
+
+## [0.5.95] — 2026-07-07
+
+### Added
+- **`jt-ipam.sh upgrade --force`** — when the working tree has local changes to a tracked file (e.g. a hand-edited or partially-updated `scripts/jt-ipam.sh`), the upgrade previously aborted with "Your local changes would be overwritten by merge". It now detects this and either prompts (interactive) or, with `--force`, discards the local changes to tracked files and continues. Untracked files and config outside the repo are never touched.
+
+### Fixed
+- **Scheduled Proxmox sync showed a raw cluster UUID** in the Tasks table target column; it now shows the cluster name (falling back to the node URL).
+- **Cryptic UCS DNS error on empty credentials** — a UCS DNS server saved with an empty username/password produced UCS's confusing "basic auth credentials are malformed" 400; jt-ipam now returns an actionable message telling you to re-enter the UCS credentials.
+
+
+## [0.5.94] — 2026-07-07
+
+### Fixed
+- **Tasks table showed "added 0 / updated 0 / total 0" for LibreNMS syncs** — the LibreNMS sync summary is nested (`{devices:{...}, arp:{...}, fdb:{...}, vlans:{...}}`), but the Tasks table's count aggregation (and detail popover) only read flat top-level numbers, so it displayed all zeros even when devices / ARP / FDB were actually synced. It now recurses into the nested groups so the counts reflect the real work — making it clear the integration is connected and working.
+
+
+## [0.5.93] — 2026-07-06
+
+### Fixed
+- **LibreNMS ARP sync hit a dead per-device route** — jt-ipam called `/api/v0/devices/{id}/ip/arp/all` for every device, which no longer exists in current LibreNMS, returning 404 for every device on every 5-minute sync. ARP-based liveness therefore synced nothing, and the burst of 404s tripped web-scan/recon IDS rules (e.g. Wazuh) on the LibreNMS host, flagging jt-ipam's IP as a scanner. Switched to the single global `/api/v0/resources/ip/arp/all` endpoint (one request instead of N) with in-batch de-duplication of (ip, mac, device) rows. ARP liveness now syncs correctly and the false IDS alerts stop.
+
+
+## [0.5.92] — 2026-07-03
+
+### Fixed
+- **Remote consoles no longer drop on idle / when the tab is backgrounded** — SSH/RDP/VNC consoles closed after ~60s of inactivity because liveness relied on a JS-timer heartbeat, which browsers throttle in background tabs. They now stay connected as long as the WebSocket is alive (kept alive by the transport-layer ping/pong, which works even in background tabs); the session ends only on a real disconnect or when you disconnect.
+- **Reconnect reuses saved credentials** — after connecting with "remember credentials" then disconnecting, Reconnect in the same tab re-prompted for username/password (only a full page reload picked up the saved credential). The console now records the just-saved credential locally so Reconnect reuses it. Applies to SSH/RDP/VNC/PVE consoles.
+
+
 ## [0.5.91] — 2026-07-03
 
 ### Security

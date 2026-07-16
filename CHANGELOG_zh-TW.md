@@ -4,6 +4,88 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.103] — 2026-07-11
+
+### 變更
+- 內部 lint／測試清理:ruff import 排序、移除無用程式碼／匯入（eslint），並更新一個單元測試（新增的 ssh-rsa 用戶端簽章）。無功能變動。本機完整測試全綠 —— 後端 441 測試、vue-tsc、ruff、eslint、migration 至 0096。
+
+
+## [0.5.102] — 2026-07-10
+
+### 變更
+- **儀表板容量:拆開 IPv4／IPv6** —— 加總 IPv6 位址數會得到天文級、沒意義的「總容量」。KPI 現在顯示 **IPv4 可用**（真實、可規劃的數字,加千分位）,並在有 IPv6 子網路時另出一張 **IPv6** 卡顯示網段數（位址空間極大、不加總）。用量比也只對 IPv4 算（IPv6 永遠用不完）。
+
+
+## [0.5.101] — 2026-07-10
+
+### 變更
+- 儀表板:「總容量」KPI 改名為 **「IP 總容量」**,明確它是 IP 位址的總容量。
+
+
+## [0.5.100] — 2026-07-09
+
+### 修正
+- **時間顯示成 UTC 而非本地時間** —— 作業表格（排入／完成時間）、子網路詳情與裝置詳情的最後上線欄、以及異常偵測明細,原本只把 ISO 的 `T` 去掉、沒轉時區,所以顯示 UTC。改用全站共用的本地時間格式（跟隨觀看者瀏覽器時區）,與其他頁面一致。
+
+
+## [0.5.99] — 2026-07-09
+
+### 修正
+- **部分說明文字在正式版顯示空白** —— vue-i18n 把 `@`（連結訊息）、`{`/`}`（內插）、`|`（複數）當特殊語法,而有幾段訊息含字面的 `@`（`root@phpipam-host`、`帳號@IP`、`@BotFather`）、`{...}`（JSON 範例）或 `|`（shell pipe）。開發模式只是警告,但正式 build 會丟編譯錯誤、把周邊畫面一起弄空白 —— 最明顯是 phpIPAM 遷移的「操作流程」教學,還有 SSH/RDP/VNC 憑證名稱提示、Telegram／通用 Webhook 通知說明。已把這些字面字元轉義,恢復正常顯示。
+
+
+## [0.5.98] — 2026-07-09
+
+### 修正
+- **phpIPAM 遷移／SSH 通道 —— 相容老舊主機 + 更清楚的認證錯誤** —— 通道現在也提供 `ssh-rsa`（SHA-1）用戶端簽章,讓對端非常舊的 sshd 也接受合法的 RSA 金鑰（否則 asyncssh 只送 rsa-sha2）。「認證被拒」訊息改為明列要檢查項目（authorized_keys、PermitRootLogin、金鑰權限、私鑰與公鑰是否成對）。
+- **`device_ports.name` 由 64 放寬到 255** —— 真實長介面名稱（例:Windows NDIS 過濾介面描述 71 字）會撐爆 VARCHAR(64),讓 LibreNMS/Proxmox 連接埠同步 StringDataRightTruncation 中斷。同步端也加防禦性截斷（migration 0096）。
+
+### 變更
+- 遷移頁一個遮蔽 i18n `t` 的區域變數改名。
+
+
+## [0.5.97] — 2026-07-07
+
+### 修正
+- **作業表格計數審查補完所有同步類型** —— Wazuh 同步現在計數正確（`new` → 新增、`fetched` → 總數;原本只抓到 `updated`），明細彈窗也為 DNS／pfSense／Wazuh／Proxmox 同步顯示可讀摘要,不再是籠統一行。所有作業類型（LibreNMS／OPNsense／pfSense／DNS／Wazuh／Proxmox／AdGuard／phpIPAM）現在都顯示實際數字。
+- 小修:作業頁「進行中 (0)」分頁的計數前補一個半形空格。
+
+
+## [0.5.96] — 2026-07-07
+
+### 修正
+- **作業表格對 DNS／pfSense／OPNsense 同步顯示「0」** —— 接續 LibreNMS 那個修正:DNS 同步的 summary（`pulled_zones/pulled_records/hostname_obs`）、pfSense 心跳（`arp/rules/aliases/nat`）、OPNsense 心跳（`mappings`）用的 key 計數彙總不認得,所以即使有撈到資料仍顯示 0。現在都對應到了,並加上退路（總數 = 新增 + 更新），讓任何有資料的同步都顯示有意義的數字。同步本身已驗證確實有撈資料（DNS 7 zones／119 records、pfSense 6 ARP／8 rules、OPNsense 9 筆別名對應）。
+
+
+## [0.5.95] — 2026-07-07
+
+### 新增
+- **`jt-ipam.sh upgrade --force`** —— 當工作目錄對已追蹤檔案有本機修改（例如被手動改過或前次升級只更新一半的 `scripts/jt-ipam.sh`）時,升級原本會直接中止（"Your local changes would be overwritten by merge"）。現在會偵測到,並在互動模式詢問、或以 `--force` 放棄這些本機修改後繼續。不會動到未追蹤檔案與 repo 外的設定。
+
+### 修正
+- **排程 Proxmox 同步在作業表格顯示叢集 UUID** —— 目標欄原本印出原始 cluster_id UUID,改為顯示叢集名稱（無則退回節點 URL）。
+- **UCS DNS 帳密為空時的含糊錯誤** —— UCS DNS 伺服器若存成空帳號/密碼,原本會回 UCS 那句難懂的「basic auth credentials are malformed」400;jt-ipam 現在改回可行動訊息,提示你重新輸入 UCS 帳號密碼。
+
+
+## [0.5.94] — 2026-07-07
+
+### 修正
+- **作業表格對 LibreNMS 同步顯示「新增 0／更新 0／總數 0」** —— LibreNMS 同步的 summary 是巢狀結構（`{devices:{...}, arp:{...}, fdb:{...}, vlans:{...}}`），但作業表格的計數彙總（與明細彈窗）只讀最上層的純數字，因此即使裝置／ARP／FDB 都有同步，仍顯示全 0。改成會遞迴進巢狀分組，新增／更新／總數正確反映實際同步量 —— 也讓「整合其實有連上、有在運作」一目了然。
+
+
+## [0.5.93] — 2026-07-06
+
+### 修正
+- **LibreNMS ARP 同步打到已不存在的逐裝置路由** —— jt-ipam 對每台裝置呼叫 `/api/v0/devices/{id}/ip/arp/all`,此路由在新版 LibreNMS 已不存在,每輪 5 分鐘同步對「每一台」裝置都回 404。結果 ARP 存活證據一筆都同步不到,而且這串 404 會讓 LibreNMS 主機上的 IDS（如 Wazuh）把 jt-ipam 的 IP 判為掃描來源（web-scan／recon 告警）。改用單一全域端點 `/api/v0/resources/ip/arp/all`（一次請求取代 N 次）+ 同一輪 (ip, mac, device) 去重。ARP 存活現在正確同步,誤報告警也停止。
+
+
+## [0.5.92] — 2026-07-03
+
+### 修正
+- **遠端主控台不再因閒置／分頁切背景而斷線** —— SSH／RDP／VNC 主控台原本閒置約 60 秒就斷,因為存活判定靠 JS 計時器 heartbeat,而瀏覽器會在背景分頁節流計時器。改為只要 WebSocket 還活著就保持連線（由傳輸層 ping/pong 維持,背景分頁也有效）;只有真正斷線或使用者主動中斷才結束。
+- **重新連線沿用已存帳密** —— 勾「保存帳密」連線後中斷,在同一分頁按「重新連線」原本又要求輸入帳密（只有整頁重新整理才撿得到已存憑證）。主控台現在把剛存的憑證記到本地,重新連線直接沿用。SSH／RDP／VNC／PVE 皆適用。
+
+
 ## [0.5.91] — 2026-07-03
 
 ### 安全
