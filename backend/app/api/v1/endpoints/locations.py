@@ -12,7 +12,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_object_perm, require_type_perm
+from app.api.v1.dependencies import (
+    CurrentUser,
+    require_object_perm,
+    require_ops_admin,
+    require_type_perm,
+)
 from app.core.audit import append_audit
 from app.core.config import get_settings
 from app.core.db import get_session
@@ -64,6 +69,7 @@ async def geocode_address(
     否則回落 Nominatim (OpenStreetMap)，中文地址自動補 Taiwan。
     """
     import urllib.parse
+
     from app.core.safe_http import UnsafeOutboundURL, safe_request
     from app.models.system_setting import SystemSetting
 
@@ -233,7 +239,12 @@ async def list_locations(
     )
 
 
-@router.get("/locations/{location_id}", response_model=LocationRead)
+@router.get(
+    "/locations/{location_id}",
+    response_model=LocationRead,
+    # A01 / IDOR：地點屬可逐物件授權的型別，詳情不能只憑「已登入」就給
+    dependencies=[Depends(require_object_perm("location", "read", path_param="location_id"))],
+)
 async def get_location(
     location_id: uuid.UUID,
     _user: CurrentUser,
@@ -372,7 +383,11 @@ async def upload_floorplan(
     return LocationRead.model_validate(obj)
 
 
-@router.get("/locations/{location_id}/floorplan")
+@router.get(
+    "/locations/{location_id}/floorplan",
+    # A01 / IDOR：平面圖是該地點的內容，只要知道 location_id 就能下載是不行的
+    dependencies=[Depends(require_object_perm("location", "read", path_param="location_id"))],
+)
 async def get_floorplan(
     location_id: uuid.UUID,
     _user: CurrentUser,

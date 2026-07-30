@@ -4,6 +4,141 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.117] — 2026-07-30
+
+### Fixed
+- **"Test connection" on FortiGate could appear frozen for ~100 seconds.** The diagnostics ran its 10 endpoint probes sequentially, so against an unreachable appliance — a mistyped IP or a firewall dropping packets, which is exactly what you hit the first time you configure one — each probe waited out its own 10-second timeout and they accumulated. The probes are independent GETs, so they now run concurrently: measured 11.9s instead of ~100s, with every endpoint still reporting its own result. Found by actually clicking the button in a browser rather than by reading the code.
+- **A permission error reported itself as a connection failure.** Opening a global-infrastructure page (e.g. VLAN) as an account without global read produced the toast "連線失敗，請稍後再試" — the backend had correctly returned `403` and leaked no data, but the message told the user the system was broken rather than that they lacked permission. `403` is now localized centrally in the API client, and the 48 `catch` blocks that unconditionally reported a connection failure now prefer the backend's message (via a new `apiErrMsg()` helper), so permission and validation errors stop being mislabelled.
+- **VLAN page did not grey out its write buttons** for read-only accounts, unlike the equivalent VRF / NAT / Physical pages — a user with no write permission could open the create form and only fail on submit. Wired `can_edit` into both create buttons, both edit buttons and both delete confirmations.
+
+### Notes
+- The `can_edit` gating rejected in 0.5.116 was rejected for *admin-only* pages, where it is genuinely dead code (anyone who can open them is an admin, and `can_edit` is unconditionally true for admins). VLAN is reachable with only global read, so there the gating does matter — this corrects that earlier judgement.
+- No install/upgrade changes and no migration.
+
+## [0.5.116] — 2026-07-30
+
+### Security
+- **API token `scopes` are now actually enforced.** The column existed and could be set, but **nothing in the codebase ever read it** — a token created with `scopes: ["read"]` could still delete subnets, because tokens simply inherited their owner's full RBAC permissions. A read-only token now gets `403` on `POST`/`PATCH`/`PUT`/`DELETE`, enforced at all three places that accept a `jt_` token: the REST API, the phpIPAM compatibility layer, and MCP (which reuses its existing read-only mode, since JSON-RPC is always `POST`).
+  - `scopes: []` still means unrestricted, so **existing tokens keep working**.
+  - Creating a token with any other scope value (`write`, `subnets:read`, …) is now rejected with `422` rather than silently accepted and ignored.
+  - Exception: `DELETE /api/phpipam/<app>/user/` (revoking your own token) stays allowed for read-only tokens — that reduces privilege rather than changing data, and blocking it would break the classic login → query → logout flow.
+  - `object_filters` is still **not** enforced. To restrict a token to specific objects, create a low-privilege user, grant it those objects via RBAC, and create the token as that user. The field is now documented as reserved in both the API schema and the UI.
+
+### Security
+- **RBAC audit across recently-added features — six real gaps closed.** Every claim below was verified against the code before changing anything.
+  - **GraphQL was a parallel API surface that RBAC had never caught up with.** It is not a FastAPI route, so it does not appear in dependency-tree scans and was nearly missed entirely. Three resolvers had no authorization at all: `devices` (any authenticated account could enumerate every device), `vlans` (bypassed the `require_global_read` that guards `GET /api/v1/vlans`), and `trace_ip` (ARP/FDB lookup — resolve any IP to its switch and port). All three now apply the same checks as their REST counterparts, via a `_assert_global_read()` helper that mirrors `require_global_read` exactly.
+  - **IDOR on locations**: `GET /locations/{id}` and `GET /locations/{id}/floorplan` only required *authentication*, so any signed-in account could read any location and download any machine-room floor plan by id. Both now require `require_object_perm("location", "read")`. A systematic scan of every per-object detail endpoint confirmed these two were the only gaps.
+  - **`total` leaked global counts** on `GET /sections` and `GET /subnets`: rows were filtered *after* pagination while the count query had no visibility condition, so a restricted account learned how many sections/subnets exist system-wide — and pagination was broken (pages returned fewer than `page_size` rows, sometimes none). Both now apply the visible-id filter to the query *before* paginating, so `total` is the visible count.
+  - **Firewall read-only views were inconsistent**: pfSense's rules/aliases were admin-only while the frontend「防火牆 (pfSense)」view page sits under Advanced (not Admin), so a non-admin with global read saw the menu entry and hit 403. FortiGate had the same defect from a different angle — its view page needs `GET /fortigate` to enumerate firewalls, and that endpoint was on the admin router. Both are now split consistently: stored read data and the instance list are `require_global_read`; writes and the live device fetch (`GET /pfsense/{id}/nat`) stay `require_admin`. Verified first that neither read schema exposes a token (`has_key` is only a boolean flag), with a test pinning that.
+- Ten regression tests added, each reverse-verified: removing the corresponding fix turns its test red. That step caught a flaw in the tests themselves — the `total` tests originally used a zero-permission account, which short-circuits before the count query runs and so could not detect the leak at all; they now use *partial* visibility (three objects, one granted).
+
+### Notes
+- Three audit findings were investigated and **rejected** as incorrect: `/customers/{id}/summary` does not leak (a read grant on a customer legitimately inherits down to its sections/subnets/IPs/devices — pinned by a test on the inheritance table); `/vlans` and `/vrfs` are `require_global_read`, not `require_admin`; and the sidebar already hides VLAN/VRF/NAT for accounts without global read.
+- Adding `can_edit` gating to the integration admin pages was also rejected: those routes are `meta: { admin: true }` and `can_edit` is unconditionally true for admins, so it would be dead code.
+
+### Added
+- **API token management UI** (user menu → API tokens). Previously tokens could only be created by calling the API with a JWT — there was no page for it at all, which made handing an API token to a customer awkward. Lists your own tokens with status, scope, expiry and last use; creates them with a read-only or unrestricted choice; shows the plaintext exactly once with a copy button and a ready-to-paste `curl` example; revokes with confirmation.
+- **API manual on GitHub Pages** (`docs/api.html`, bilingual, linked from the site nav): token auth and scopes, conventions and pagination, error and status-code reference, how the permission model shapes results, the core resources (sections / subnets / addresses / devices) with parameter tables and `curl` examples, an index of all ~500 routes by area, the phpIPAM-compatible API, Graylog DSV lookups, MCP, agent protocols, rate limits, CORS, and how to obtain the OpenAPI spec.
+
+### Fixed
+- **`DHCP_SOURCE_TYPES` had gone stale**: FortiGate already wrote `source_type="fortigate"` into `dhcp_pool_ranges`, but the constant still listed only opnsense / pfsense / windows_dhcp. Nothing read the constant, so nothing was broken at runtime — but it was the only written record of which sources that table carries, and it had silently drifted. Added `fortigate`, plus a test that scans the service layer for `source_type=` literals and fails if any is undeclared (or declared but unused), so it cannot drift again.
+- The FortiGate delete test **reimplemented** the endpoint's cleanup SQL instead of exercising it, so it would have passed even if the endpoint had forgotten to clean the shared `dhcp_pool_ranges` / `nat_translations` rows. Extracted that cleanup into `cleanup_shared_rows()` and pointed the test at the real function.
+- Terminology: replaced the remaining "前綴" with "首碼" (Taiwan usage) across the Chinese changelog and code comments, keeping the entries that describe the terminology change itself.
+
+## [0.5.115] — 2026-07-29
+
+### Added
+- **FortiGate integration (Beta)** — a standalone integration alongside OPNsense and pfSense, each keeping its own settings and sync. Reads over the FortiOS REST API (**GET only — nothing on the firewall is ever modified**) and supports **multiple VDOMs** (listed explicitly or auto-discovered; a non-VDOM appliance falls back to `root`):
+  - **DHCP leases** and **ARP** mark existing addresses (`in_dhcp_lease`, MAC, hostname) and never create addresses, matching the other firewall integrations
+  - **DHCP address ranges** land in the shared multi-source range table as `fortigate`
+  - **IPsec site-to-site tunnels** go to the existing VPN tunnel table; **SSL-VPN sessions** stamp the assigned tunnel IP
+  - **NAT** (VIP → DNAT / port forward, IP pool → SNAT) joins the existing NAT page with a FortiGate source filter
+  - **Policies** and **address objects / groups** are mirrored into their own tables with a read-only per-VDOM viewer
+  - **Test connection** runs a per-endpoint diagnosis (which endpoints are readable and how many rows), so field differences between FortiOS versions are easy to spot
+- Registered `fortigate` as a hostname and MAC precedence source so it participates in the existing precedence settings.
+
+### Notes
+- Authentication uses the `Authorization: Bearer` header. The `?access_token=` URL form is deliberately not used — it is covered by PSIRT FG-IR-24-268 and is disabled by default from FortiOS 7.4.5 / 7.6.1. API tokens are also unavailable in FIPS-CC mode, which the error message now calls out.
+- Built without access to a live appliance: endpoint paths and field names follow the official documentation and every field is parsed tolerantly, so a differing FortiOS version degrades to "that item returns nothing" instead of breaking the rest of the sync. Hence **Beta** — use the connection diagnosis against a real appliance to confirm.
+- No install or upgrade changes are needed (no new dependency, service or package). The backend must be able to reach the FortiGate management interface; appliances on private networks require `OUTBOUND_ALLOW_PRIVATE`.
+
+
+## [0.5.114] — 2026-07-29
+
+### Fixed
+- zh-TW menu: the Windows DHCP entry now carries the same "整合 " (integration) prefix as every other integration in that group.
+
+
+## [0.5.113] — 2026-07-29
+
+### Added
+- **pfSense now syncs DHCP address ranges, not just leases** — a separate per-firewall toggle (pfSense keeps its own DHCP settings). Reads the per-interface DHCP config plus any extra address pools over the pfSense REST API. Until now only OPNsense produced ranges, so pfSense-only sites never saw the "in DHCP range" hint on an address.
+- **Windows DHCP Server integration (Beta)** — a standalone integration with its own settings page, syncing scopes (address ranges) and leases read-only over WinRM + PowerShell (`Get-DhcpServerv4Scope` / `Get-DhcpServerv4Lease`; only `Get-*` cmdlets run, nothing on the DHCP server is modified). Leases mark existing addresses (`in_dhcp_lease`, MAC and client-registered hostname) and never create addresses, matching the OPNsense/pfSense behaviour. `windows_dhcp` is registered as a hostname and MAC source so it takes part in the existing precedence settings. Runs on the regular sync timer; no new service or system package is needed (`pywinrm` was already a dependency).
+
+### Changed
+- DHCP address ranges from all three sources now live in one derived table keyed by source, instead of a table hard-wired to OPNsense. **Each integration keeps its own settings and sync and only ever clears its own rows** — this is shared storage, not a unified "DHCP server" abstraction. New source-neutral endpoint `GET /api/v1/dhcp-ranges` (global-read); the old OPNsense-specific path still works and returns OPNsense rows.
+
+### Notes
+- The pfSense endpoints were confirmed against a live device (the list endpoint is the plural `/api/v2/services/dhcp_servers`; the singular form requires an id). Field names follow the official package documentation and are parsed tolerantly, so a differing pfSense version degrades to "no ranges" instead of breaking the rest of the sync.
+- Windows DHCP needs the backend to reach WinRM (5986/HTTPS by default). Servers on private networks additionally require `OUTBOUND_ALLOW_PRIVATE`, same as the existing Windows DNS integration.
+
+
+## [0.5.112] — 2026-07-29
+
+### Security
+- **Frontend dependency advisories cleared (13 of 15 Dependabot alerts)** — `axios` 1.16.0 → **1.18.1** (fixes nine advisories: proxy inheritance after interceptor config cloning, several prototype-pollution gadgets, `maxBodyLength` bypasses, `formDataToJSON` recursion DoS, `NO_PROXY` bypass); `postcss` → **8.5.24** (source-map path traversal); `js-yaml` → **5.2.2** (merge-key quadratic CPU); `brace-expansion` pinned to a patched release per major line (1.1.17 / 2.1.3 / 5.0.8). `axios` is the only one of these that ships in the browser bundle.
+- Two `brace-expansion` alerts remain and are **accepted**: the advisory lists 5.0.8 as the sole fixed version, so the 1.x / 2.x lines can never satisfy it, and forcing 5.x breaks `minimatch@3` (`expand is not a function`, which takes ESLint down). Both paths are dev-only (`eslint`, `@vue/test-utils`) and the package is not present in the production bundle.
+
+
+## [0.5.111] — 2026-07-26
+
+### Fixed
+- **Proxmox VMs without the guest agent never got a hostname** — when PVE cannot report a VM's IP (no qemu-guest-agent, not an LXC, no cloud-init `ipconfig`), the sync skipped the whole IPAM linking step, so the PVE VM name was never recorded as a hostname observation and `primary_ip_id` stayed empty (which also broke IP→VM resolution for the PVE console). The sync now falls back to matching the VM's NIC MAC against IPs jt-ipam already knows (learned from the scan agent / ARP). It only matches existing addresses — it never creates one — and an ambiguous MAC (the same MAC on several IPs, e.g. overlapping subnets) is skipped rather than guessed.
+- **A statically-configured IP inside a DHCP pool was tagged "DHCP"** — the tag was shown both for a real lease and for merely falling inside a pool range. Those are now distinct: a real lease still shows an orange **DHCP** tag, while an address that is only inside the range shows a neutral **In DHCP range** tag, with a tooltip suggesting an exclusion or reservation to avoid future conflicts.
+
+
+## [0.5.110] — 2026-07-24
+
+### Changed
+- **Virtualization → Clusters: a cluster can now be deleted even when it still has synced VMs or a linked Proxmox connection** (revising the 0.5.109 behavior that blocked this) — for when you stop using Proxmox. Deleting a cluster cascades away its synced VMs, VM interfaces and Proxmox connections, and also cleans up the connection's encrypted token and scheduled-sync heartbeat. Your IP addresses and devices are not affected (VMs only reference them). The confirmation dialog spells out what will be removed. Covered by unit + browser (Playwright) tests.
+
+
+## [0.5.109] — 2026-07-24
+
+### Fixed
+- **Virtualization → Clusters: manually-added clusters could not be deleted** — there was no delete endpoint or button. Added `DELETE /virt/clusters/{id}` (admin) and a delete action in the UI. To avoid wiping synced data (the VM / Proxmox foreign keys cascade), deletion is blocked with a clear message if the cluster still has VMs or a linked Proxmox connection; only empty clusters can be removed.
+
+
+## [0.5.108] — 2026-07-22
+
+### Fixed
+- zh-TW: use full-width punctuation in the scan-agent install-help strings (commas / semicolon / parentheses), per the project's Chinese punctuation convention.
+
+
+## [0.5.107] — 2026-07-22
+
+### Fixed
+- **Two-factor (TOTP) status now shown on the Security page** — after enabling TOTP the page never reflected it as enabled: `/me` did not expose the state and both buttons were always shown. `/me` now returns `totp_enabled`, and the Security tab shows the current status (Enabled / Not enabled) with only the relevant Enable/Disable button, refreshed via `/me` after enrolling or disabling. Adds a browser e2e test for the full enable → reload → disable cycle.
+
+
+## [0.5.106] — 2026-07-20
+
+### Fixed
+- **Dashboard IPv6 / IPv4-capacity KPI tiles rendered raw i18n keys** — the IPv6 subnet tile (and the renamed IPv4-capacity tile) referenced keys missing from the locale files, so they showed the key path instead of text. Added the missing labels in both locales.
+
+
+## [0.5.105] — 2026-07-17
+
+### Added
+- **Device types: Patch Panel, PDU and UPS** (issue #21). LibreNMS sync now captures the native device type and maps `power` → UPS/PDU (with a vendor-keyword split) and `wireless` → AP; patch panels are passive and stay manual-only. Device-type labels are localized across the UI (list, edit dialog, rack legend, dashboard). Migration 0097.
+
+
+## [0.5.104] — 2026-07-16
+
+### Added
+- **System Export / Import (cross-instance migration)** — a new admin page and CLI (`app.cli.system_transfer`) to move a whole jt-ipam to another instance via a passphrase-protected (scrypt + AES-256-GCM), versioned bundle. UUIDs are preserved so foreign keys and per-record secret AAD stay valid; secrets are decrypted on export and re-encrypted under the target instance's key. Supports merge and replace with a dry-run preview, and is backward compatible with older export files.
+
+
 ## [0.5.103] — 2026-07-11
 
 ### Changed

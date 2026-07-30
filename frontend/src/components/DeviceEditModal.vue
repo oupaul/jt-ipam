@@ -16,6 +16,7 @@ import { getRackDiagram, type RackDiagram } from "@/api/racks";
 import { listAddresses } from "@/api/addresses";
 import { EditIcon, PlusIcon, SaveIcon, CancelIcon, RacksIcon } from "@/icons";
 import { useCustomers } from "@/composables/useCustomers";
+import { apiErrMsg } from "@/api/client";
 
 const props = defineProps<{ show: boolean; device: Device | null }>();
 const emit = defineEmits<{ (e: "update:show", v: boolean): void; (e: "saved"): void }>();
@@ -40,8 +41,9 @@ const form = ref<{
   rack_side: "full", customer_id: null, primary_ip_id: null,
 });
 
-const typeOpts = ["server", "switch", "router", "firewall", "ap", "storage", "ipmi", "other"]
-  .map((v) => ({ label: v, value: v }));
+const typeOpts = ["server", "switch", "router", "firewall", "ap", "storage", "ipmi",
+  "patch_panel", "pdu", "ups", "other"]
+  .map((v) => ({ label: t(`devices.type_${v}`), value: v }));
 const rackFaceOpts = computed(() => [
   { label: t("devices.rack_face_front"), value: "front" },
   { label: t("devices.rack_face_rear"), value: "rear" },
@@ -149,7 +151,7 @@ async function openUPicker() {
   uPickerLoading.value = true;
   showUPicker.value = true;
   try { uPickerDiagram.value = await getRackDiagram(form.value.rack_id); }
-  catch { msg.error(t("errors.network")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
   finally { uPickerLoading.value = false; }
 }
 function pickU(u: number) {

@@ -35,7 +35,7 @@ import {
   // Phase 3 / Admin
   Phase3Icon, VirtualizationIcon, PhysicalIcon, PowerIcon, VpnIcon,
   AdminIcon, AuditIcon, UsersIcon, GroupsIcon, CustomFieldsIcon, CustomersIcon, AnomalyIcon, ChatHistoryIcon,
-  DnsIcon, LibreNMSIcon, FirewallIcon, WazuhIcon, ScanAgentsIcon, WebhooksIcon, LockIcon,
+  DnsIcon, LibreNMSIcon, FirewallIcon, DhcpServerIcon, WazuhIcon, ScanAgentsIcon, WebhooksIcon, LockIcon, KeyIcon,
   MigrationIcon, ImportIcon, PluginsIcon, ExportIcon, TerminalIcon,
   // topbar / user menu
   LogoutIcon, AccountIcon, LanguageIcon, ThemeDarkIcon, ThemeLightIcon,
@@ -206,6 +206,7 @@ const menuOptions = computed<MenuOption[]>(() => {
         { label: () => t("nav.virtualization"), key: "virt",     icon: renderIcon(VirtualizationIcon) },
         { label: () => t("nav.firewall"),       key: "firewall",    icon: renderIcon(FirewallIcon) },
         { label: () => t("nav.pfsense_fw"),     key: "pfsense_fw",  icon: renderIcon(FirewallIcon) },
+        { label: () => t("nav.fortigate_fw"),   key: "fortigate_fw", icon: renderIcon(FirewallIcon) },
         { label: () => t("nav.nat"),            key: "nat",         icon: renderIcon(NatIcon) },
         { label: () => t("nav.cabling"),        key: "cabling",     icon: renderIcon(PhysicalIcon) },
         { label: () => t("nav.power"),          key: "power",       icon: renderIcon(PowerIcon) },
@@ -217,7 +218,9 @@ const menuOptions = computed<MenuOption[]>(() => {
   ];
   if (me.value?.is_admin || me.value?.is_ops_admin) {
     // superAdmin-only 項目：僅 is_admin 可見（使用者/群組/權限指派/系統設定/通知發送設定/版本/系統紀錄）
-    const superAdminKeys = new Set(["users", "groups", "permissions", "system_settings", "notification_channels", "version", "system_logs"]);
+    // fortigate/windows_dhcp/system_transfer 後端仍是 require_admin（尚未比照 pfSense/OPNsense
+    // 開放給 ops_admin），選單能見度要跟後端一致，否則 ops_admin 點了就 403。
+    const superAdminKeys = new Set(["users", "groups", "permissions", "system_settings", "notification_channels", "version", "system_logs", "fortigate", "windows_dhcp", "system_transfer"]);
     const allAdminItems = [
       { label: () => t("nav.audit"),         key: "audit",          icon: renderIcon(AuditIcon) },
       { label: () => t("nav.users"),         key: "users",          icon: renderIcon(UsersIcon) },
@@ -232,6 +235,8 @@ const menuOptions = computed<MenuOption[]>(() => {
       { label: () => t("nav.librenms"),      key: "librenms",       icon: renderIcon(LibreNMSIcon) },
       { label: () => t("nav.firewall_admin"), key: "firewall_admin", icon: renderIcon(FirewallIcon) },
       { label: () => t("nav.pfsense"),        key: "pfsense",        icon: renderIcon(FirewallIcon) },
+      { label: () => t("nav.fortigate"),      key: "fortigate",      icon: renderIcon(FirewallIcon) },
+      { label: () => t("nav.windows_dhcp"),  key: "windows_dhcp",   icon: renderIcon(DhcpServerIcon) },
       { label: () => t("nav.virt_admin"),    key: "virt_admin",     icon: renderIcon(VirtualizationIcon) },
       { label: () => t("nav.wazuh"),         key: "wazuh",          icon: renderIcon(WazuhIcon) },
       { label: () => t("nav.graylog_dsv"),   key: "graylog_dsv",    icon: renderIcon(ExportIcon) },
@@ -239,6 +244,7 @@ const menuOptions = computed<MenuOption[]>(() => {
       { label: () => t("nav.certificates"),  key: "certificates",   icon: renderIcon(LockIcon) },
       { label: () => t("nav.webhooks"),      key: "webhooks",       icon: renderIcon(WebhooksIcon) },
       { label: () => t("nav.migration"),     key: "migration",      icon: renderIcon(MigrationIcon) },
+      { label: () => t("nav.system_transfer"), key: "system_transfer", icon: renderIcon(ExportIcon) },
       { label: () => t("nav.import"),        key: "import",         icon: renderIcon(ImportIcon) },
       { label: () => t("nav.plugins"),       key: "plugins",        icon: renderIcon(PluginsIcon) },
       { label: () => "LLM / AI",             key: "llm_settings",   icon: renderIcon(SettingsIcon) },
@@ -324,6 +330,8 @@ const userMenuOptions = computed(() => [
   { label: t("topbar.user_menu.profile"),     key: "profile",     icon: renderIcon(UserOutline, 16) },
   { label: t("topbar.user_menu.preferences"), key: "preferences", icon: renderIcon(SettingsIcon, 16) },
   { label: t("topbar.user_menu.my_chat_history"), key: "my_chat_history", icon: renderIcon(ChatHistoryIcon, 16) },
+  // API 權杖：自助功能，每個帳號管自己的（權杖繼承該帳號權限）
+  { label: t("nav.api_tokens"),                key: "api_tokens",  icon: renderIcon(KeyIcon, 16) },
   // 變更密碼：僅本機帳號（外部 IdP / LDAP 由來源端管理）
   ...(me.value?.auth_provider === "local"
     ? [{ label: t("account.change_password"), key: "change_password", icon: renderIcon(LockIcon, 16) }]
@@ -354,6 +362,8 @@ async function handleUserMenu(key: string) {
     router.push({ name: "settings" });
   } else if (key === "my_chat_history") {
     router.push({ name: "my_chat_history" });
+  } else if (key === "api_tokens") {
+    router.push({ name: "api_tokens" });
   } else if (key === "change_password") {
     pwModalShow.value = true;
   }
