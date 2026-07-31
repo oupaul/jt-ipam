@@ -4,6 +4,41 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.120] — 2026-07-31
+
+### Fixed
+- **The audit log's Target column showed a truncated UUID for every integration.** A customer testing FortiGate spotted rows reading `66456d2e…` instead of the instance name — with several instances of the same type, the log could not tell you which one had synced. `_LABEL_REGISTRY` only covered 14 object types; every integration instance, agent, certificate and API token fell through to the raw id. Added 26 more (all verified to resolve against their model and column), and integration rows now link to their settings page instead of rendering as plain text. A test pins that every registry entry resolves and that no integration type is missing, since adding an integration without registering it silently regresses to UUIDs.
+
+## [0.5.119] — 2026-07-30
+
+### Added
+- **LibreNMS LLDP / CDP neighbour sync.** LibreNMS discovers link-layer neighbours via its `xdp` module; jt-ipam now mirrors them into `librenms_links`. Unlike the existing FDB/ARP inference — which learns adjacency from observed traffic and uses "the port with the fewest MACs is the access port" as a heuristic — LLDP/CDP is *declared by the far end*, so switch-to-switch trunks come out correctly. That is precisely where the FDB heuristic is weakest, because a trunk port carries many MACs. Neighbours whose far end is not itself monitored are kept too: they only carry the LLDP-advertised hostname/platform strings, which is exactly the signal for "this port goes to an unmanaged device". Per-instance toggle (`sync_links`, on by default), read endpoint `GET /api/v1/librenms/links` at global read, and migration 0102 (renumbered from upstream's 0101 to chain after this fork's local 0101_user_is_ops_admin).
+  - **An empty source is not an error.** Verified against a live LibreNMS: when nothing has been discovered, `GET /api/v0/resources/links` returns `404` with `{"message": "Links do not exist"}`. That is a valid state, not a failure, and is treated as zero rows — otherwise one environment without LLDP enabled would break the whole LibreNMS sync round.
+
+### Notes
+- **Endpoint paths were confirmed against a live instance; the field parsing was not.** The production LibreNMS (82 devices) has an empty `links` table, so there was no real payload to validate against — every field is therefore read tolerantly and a rename between LibreNMS versions degrades to a blank column rather than a failed sync. Field names follow the LibreNMS `links` schema. `/api/v0/resources/links/all` does not exist; it is parsed as `links/{id}` and returns `400`.
+- No install/upgrade changes.
+
+## [0.5.118] — 2026-07-30
+
+### Security
+- **Disabling TOTP now requires re-authentication (A07).** `POST /auth/totp/disable` previously accepted any valid session, so anyone holding an access token — via XSS, a stolen token, an unlocked screen, or an unrestricted API token — could turn off an account's 2FA in one request and leave it password-only. It was audited, but auditing detects rather than prevents. Local accounts must now supply their current password; externally-authenticated accounts (LDAP/OIDC/SAML, which have no local password hash) must supply a current 6-digit code. Change-password in the same file already required the current password, which is what made this look like an oversight rather than a decision.
+- **The last active admin can no longer be demoted or deactivated.** `DELETE /users/{id}` already refused to remove the last admin, but `PATCH` could achieve the same outcome with `is_admin: false` or `is_active: false`, permanently locking everyone out of the admin area (audit, users, integrations, system settings) with recovery only via shell access to the server. `PATCH` now returns `409` to match.
+- **Webhook notifications now pass through the SSRF guard.** `notify_channels._post` deliberately bypassed `safe_request`, reasoning that targets are admin-configured and equivalent to SMTP. But on a non-2xx response it puts the first 200 bytes of the body into an error message that surfaces in the settings page and `last_error` — an admin-only primitive for reading a slice of any internal URL, such as cloud metadata. It now calls `assert_url_safe()` (the same check the other twenty services use) while keeping `follow_redirects=False`.
+
+### Fixed
+- **`GET /addresses` leaked a global count in `total`.** The same defect fixed in 0.5.116 for sections and subnets was still present on the largest table: the count query carried the subnet/section/archived filters but never the visibility condition, which was applied only to rows after pagination. A restricted account saw a total far larger than what it could see, and pagination was broken.
+- **Two MCP tools mishandled overlapping subnets.** `switch_port_for_ip` queried `IPAddress.ip == ip` with no scope and no `limit(1)` before `scalar_one_or_none()`, so in an overlapping-subnet deployment — several customers sharing `192.168.1.0/24`, the product's core scenario — it raised `MultipleResultsFound` and the tool failed outright. Both it and `get_ip_detail` also checked visibility *after* picking an arbitrary row, so picking a row in an invisible subnet reported "IP not found" even when the caller could see the same IP in another subnet. Both now scope the query first and then take one row.
+- **The Permissions page could not grant rack or location permissions.** It requested `/api/v1/locations/racks` and `/api/v1/locations/locations`; the real paths are `/api/v1/racks` and `/api/v1/locations`, so both were swallowed by `/locations/{location_id}`, failed UUID parsing and returned `400` — leaving those two object lists permanently empty.
+- **Nine i18n keys were never translated** and rendered as raw keys: the task trigger column and its two values, four BMC serial-console troubleshooting entries, and the two MAC columns on the connections page. Also removed two orphan keys that existed only in en-US.
+
+### Changed
+- **The Advanced menu now hides integration views that have nothing behind them.** Firewall (OPNsense / pfSense / FortiGate), Virtualization, DNS records and Certificate distribution only appear once that integration has at least one instance configured; otherwise the page could only ever say "not configured yet". Backed by a new `GET /system/integration-presence` that returns booleans only and is gated at global read, so non-admins with global read still get a correct menu.
+
+### Notes
+- No install/upgrade changes and no migration.
+- Two of these were found by rendering every route in both locales in a real browser, and two more by scanning for the specific defect patterns that earlier releases had already been bitten by. Neither `vue-tsc`, ESLint nor the production build catches this class.
+
 ## [0.5.117] — 2026-07-30
 
 ### Fixed

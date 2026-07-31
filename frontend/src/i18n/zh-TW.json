@@ -737,6 +737,8 @@
     "filter_os": "OS",
     "col_ip": "IP",
     "col_hostname": "主機名稱",
+    "col_mac": "MAC",
+    "col_mac_vendor": "MAC 廠商",
     "col_unit": "單位",
     "col_device": "裝置",
     "col_os": "OS",
@@ -1212,6 +1214,9 @@
     "tab_active": "進行中",
     "tab_history": "歷史",
     "col_kind": "類型",
+    "col_trigger": "觸發方式",
+    "trigger_scheduled": "排程",
+    "trigger_manual": "手動",
     "col_target": "目標",
     "col_progress": "進度",
     "col_queued": "排入時間",
@@ -1537,7 +1542,9 @@
     "error_token_too_short": "API token 至少 8 字元",
     "url_ph": "https://librenms.example.com (不含結尾 /)",
     "verify_tls": "驗證 TLS 憑證",
-    "verify_tls_hint": "LibreNMS 用自簽憑證、或用 IP 連線導致主機名稱不符時，關閉此項即可連線（等同不驗證憑證）。"
+    "verify_tls_hint": "LibreNMS 用自簽憑證、或用 IP 連線導致主機名稱不符時，關閉此項即可連線（等同不驗證憑證）。",
+    "sync_links": "LLDP / CDP 鄰居",
+    "sync_links_hint": "撈 LibreNMS 探到的鄰居連線（links）。這是對端自己宣告的，交換器之間的 trunk 也畫得出來 —— 那正是 FDB 推導最不準的地方。需要對方有開 LLDP／CDP，且 LibreNMS 的 xdp discovery 有跑到；來源沒資料時不算錯誤。"
   },
   "firewall": {
     "scope_title": "關聯範圍 (NAT 對應)",
@@ -1998,7 +2005,11 @@
       "confirm_enable": "確認啟用",
       "totp_enabled_msg": "TOTP 已啟用",
       "totp_disabled_msg": "TOTP 已停用",
-      "totp_invalid": "驗證碼錯誤，請重試"
+      "totp_invalid": "驗證碼錯誤，請重試",
+      "disable_reauth_required": "請先輸入驗證資料",
+      "disable_pw_ph": "輸入目前密碼以確認身分",
+      "disable_code_ph": "輸入驗證器上目前的 6 位數",
+      "disable_code_label": "驗證碼"
     },
     "prefs": {
       "tab": "偏好設定",
@@ -2692,6 +2703,10 @@
     "guide_ts": "疑難排解（實測常見坑）",
     "guide_ts_blank": "連上但一片空白 / 按 Enter 沒反應",
     "guide_ts_blank_d": "SOL 對應的埠未必是 SPCR 宣告的那個。連著 SOL 對每個埠送一段測試字，看哪個出現才是真的：",
+    "guide_ts_login": "連上了但沒有登入提示",
+    "guide_ts_login_d": "核心主控台沒有輸出到序列埠，或該埠沒有啟用 serial-getty。先確認核心主控台掛在哪個埠：",
+    "guide_ts_bootemoji": "開機訊息夾雜看不懂的符號",
+    "guide_ts_bootemoji_d": "systemd 的狀態圖示在序列終端機顯示不出來。用核心開機參數關掉：",
     "guide_ts_baud": "有畫面但亂碼",
     "guide_ts_baud_d": "序列 baud 沒對齊 SOL。先查 SOL 的 Bit Rate，再把 serial-getty 設成同一個 baud：",
     "guide_ts_term": "方框字／顏色亂（例如 glances）",
