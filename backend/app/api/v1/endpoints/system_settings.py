@@ -1344,12 +1344,14 @@ async def integration_presence(
     from app.models.fortigate import FortiGateFirewall
     from app.models.pfsense import PfSenseFirewall
     from app.models.virt import ProxmoxInstance
+    from app.models.zyxel import ZyxelFirewall
 
     out: dict[str, bool] = {}
     for key, model in (
         ("opnsense", OPNsenseFirewall),
         ("pfsense", PfSenseFirewall),
         ("fortigate", FortiGateFirewall),
+        ("zyxel", ZyxelFirewall),
         ("dns", DNSServer),
         ("cert_agents", CertAgent),
         ("proxmox", ProxmoxInstance),

@@ -58,6 +58,7 @@ from app.api.v1.endpoints import (
     vrfs,
     wazuh,
     windows_dhcp,
+    zyxel,
 )
 from app.api.v1.endpoints import (
     audit_admin as audit_admin_ep,
@@ -129,6 +130,8 @@ api_v1_router.include_router(pfsense.router)
 api_v1_router.include_router(pfsense.view_router)
 api_v1_router.include_router(fortigate.router)
 api_v1_router.include_router(fortigate.view_router)
+api_v1_router.include_router(zyxel.router)
+api_v1_router.include_router(zyxel.view_router)
 api_v1_router.include_router(wazuh.router)
 api_v1_router.include_router(windows_dhcp.router)
 api_v1_router.include_router(audit.router)

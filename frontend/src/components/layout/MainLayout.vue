@@ -177,7 +177,7 @@ watch([inSubnetContext, currentSubnetId, navSubnets], () => {
 // 「進階」裡的整合唯讀檢視頁，若該整合完全沒設定，頁面只會顯示「尚未設定 X」，
 // 等於空選項 → 依後端回報的設定狀態隱藏。初值全 true：載入完成前不要讓選單閃一下才消失。
 const intgPresence = ref<Record<string, boolean>>({
-  opnsense: true, pfsense: true, fortigate: true, dns: true, cert_agents: true, proxmox: true,
+  opnsense: true, pfsense: true, fortigate: true, zyxel: true, dns: true, cert_agents: true, proxmox: true,
 });
 async function loadIntegrationPresence() {
   try {
@@ -228,6 +228,8 @@ const menuOptions = computed<MenuOption[]>(() => {
           ? [{ label: () => t("nav.pfsense_fw"), key: "pfsense_fw", icon: renderIcon(FirewallIcon) }] : []),
         ...(intgPresence.value.fortigate
           ? [{ label: () => t("nav.fortigate_fw"), key: "fortigate_fw", icon: renderIcon(FirewallIcon) }] : []),
+        ...(intgPresence.value.zyxel
+          ? [{ label: () => t("nav.zyxel_fw"), key: "zyxel_fw", icon: renderIcon(FirewallIcon) }] : []),
         { label: () => t("nav.nat"),            key: "nat",         icon: renderIcon(NatIcon) },
         { label: () => t("nav.cabling"),        key: "cabling",     icon: renderIcon(PhysicalIcon) },
         { label: () => t("nav.power"),          key: "power",       icon: renderIcon(PowerIcon) },
@@ -239,9 +241,9 @@ const menuOptions = computed<MenuOption[]>(() => {
   ];
   if (me.value?.is_admin || me.value?.is_ops_admin) {
     // superAdmin-only 項目：僅 is_admin 可見（使用者/群組/權限指派/系統設定/通知發送設定/版本/系統紀錄）
-    // fortigate/windows_dhcp/system_transfer 後端仍是 require_admin（尚未比照 pfSense/OPNsense
+    // fortigate/windows_dhcp/zyxel/system_transfer 後端仍是 require_admin（尚未比照 pfSense/OPNsense
     // 開放給 ops_admin），選單能見度要跟後端一致，否則 ops_admin 點了就 403。
-    const superAdminKeys = new Set(["users", "groups", "permissions", "system_settings", "notification_channels", "version", "system_logs", "fortigate", "windows_dhcp", "system_transfer"]);
+    const superAdminKeys = new Set(["users", "groups", "permissions", "system_settings", "notification_channels", "version", "system_logs", "fortigate", "zyxel", "windows_dhcp", "system_transfer"]);
     const allAdminItems = [
       { label: () => t("nav.audit"),         key: "audit",          icon: renderIcon(AuditIcon) },
       { label: () => t("nav.users"),         key: "users",          icon: renderIcon(UsersIcon) },
@@ -257,6 +259,7 @@ const menuOptions = computed<MenuOption[]>(() => {
       { label: () => t("nav.firewall_admin"), key: "firewall_admin", icon: renderIcon(FirewallIcon) },
       { label: () => t("nav.pfsense"),        key: "pfsense",        icon: renderIcon(FirewallIcon) },
       { label: () => t("nav.fortigate"),      key: "fortigate",      icon: renderIcon(FirewallIcon) },
+      { label: () => t("nav.zyxel"),          key: "zyxel",          icon: renderIcon(FirewallIcon) },
       { label: () => t("nav.windows_dhcp"),  key: "windows_dhcp",   icon: renderIcon(DhcpServerIcon) },
       { label: () => t("nav.virt_admin"),    key: "virt_admin",     icon: renderIcon(VirtualizationIcon) },
       { label: () => t("nav.wazuh"),         key: "wazuh",          icon: renderIcon(WazuhIcon) },

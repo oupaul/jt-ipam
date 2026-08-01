@@ -282,9 +282,11 @@
     "graylog_dsv": "Graylog integration",
     "pfsense": "pfSense",
     "fortigate": "FortiGate",
+    "zyxel": "Zyxel",
     "windows_dhcp": "Windows DHCP",
     "pfsense_fw": "Firewall (pfSense)",
     "fortigate_fw": "Firewall (FortiGate)",
+    "zyxel_fw": "Firewall (Zyxel)",
     "api_tokens": "API tokens"
   },
   "topbar": {
@@ -2825,6 +2827,20 @@
     "col_service": "Service",
     "col_value": "Value / members",
     "kind_group": "Address group"
+  },
+  "zyxel": {
+    "title": "Zyxel",
+    "view_title": "Firewall (Zyxel)",
+    "intro": "Read-only sync from a Zyxel firewall over SSH CLI (standalone ZLD models; only runs show-type commands, never changes anything on the firewall). This is experimental: standalone Zyxel has no REST API, command syntax comes from the official CLI reference with no real device to verify against, and actual output may differ by firmware version — use \"Test connection\" to check the raw output before enabling automatic sync.",
+    "host": "Host",
+    "port": "SSH port",
+    "username": "Username",
+    "password": "Password",
+    "password_keep": "Password (leave blank to keep unchanged)",
+    "password_hint": "Needs an admin account that can log into the CLI with read access.",
+    "dhcp_hint": "DHCP lease parsing hasn't been verified against a real device yet — check the format with \"Test connection\" before enabling.",
+    "pick_firewall": "Select Zyxel firewall",
+    "none_configured": "No Zyxel firewall configured yet — add one under \"Admin → Integrate Zyxel\"."
   },
   "api_tokens": {
     "title": "API tokens",

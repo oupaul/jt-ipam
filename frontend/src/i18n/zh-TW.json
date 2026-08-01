@@ -282,9 +282,11 @@
     "graylog_dsv": "整合 Graylog",
     "pfsense": "整合 pfSense",
     "fortigate": "整合 FortiGate",
+    "zyxel": "整合 Zyxel",
     "windows_dhcp": "整合 Windows DHCP",
     "pfsense_fw": "防火牆 (pfSense)",
     "fortigate_fw": "防火牆 (FortiGate)",
+    "zyxel_fw": "防火牆 (Zyxel)",
     "api_tokens": "API 權杖"
   },
   "topbar": {
@@ -2825,6 +2827,20 @@
     "col_service": "服務",
     "col_value": "值／成員",
     "kind_group": "位址群組"
+  },
+  "zyxel": {
+    "title": "Zyxel",
+    "view_title": "防火牆 (Zyxel)",
+    "intro": "透過 SSH CLI 唯讀同步 Zyxel 防火牆（standalone ZLD 機種，只下 show 類指令，不會更動防火牆上的任何設定）。這是實驗性功能：Zyxel standalone 沒有 REST API，指令格式取自官方文件、無實機驗證，實際輸出格式可能因韌體版本而有落差，建議先用「測試連線」核對原始輸出再開啟自動同步。",
+    "host": "主機",
+    "port": "SSH 連接埠",
+    "username": "帳號",
+    "password": "密碼",
+    "password_keep": "密碼（留空表示不更改）",
+    "password_hint": "需要一個能登入 CLI 且有唯讀查詢權限的管理帳號。",
+    "dhcp_hint": "DHCP 租約的解析方式尚未對真機驗證，建議先用「測試連線」確認格式後再開啟。",
+    "pick_firewall": "選擇 Zyxel 防火牆",
+    "none_configured": "尚未設定 Zyxel —— 請到「管理 → 整合 Zyxel」新增。"
   },
   "api_tokens": {
     "title": "API 權杖",

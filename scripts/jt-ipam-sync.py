@@ -34,6 +34,7 @@ async def _run() -> int:
     from app.models.adguard import AdGuardInstance
     from app.models.fortigate import FortiGateFirewall
     from app.models.windows_dhcp import WindowsDhcpServer
+    from app.models.zyxel import ZyxelFirewall
     from app.models.dns import DNSServer
     from app.models.firewall import OPNsenseFirewall
     from app.models.librenms import LibreNMSInstance
@@ -43,6 +44,7 @@ async def _run() -> int:
     from app.services import adguard as adguard_svc
     from app.services import fortigate as fortigate_svc
     from app.services import windows_dhcp as windows_dhcp_svc
+    from app.services import zyxel as zyxel_svc
     from app.services import librenms as librenms_svc
     from app.services import opnsense_firewall as fw_svc
     from app.services import pfsense as pfsense_svc
@@ -232,6 +234,33 @@ async def _run() -> int:
                 log.error("fortigate %s sync failed: %s", name, exc)
                 failed += 1
                 await _hb(session, kind="fortigate.sync", target_type="fortigate_firewall",
+                          target_id=inst.id, target_label=name, ok=False, error=str(exc))
+
+        # ── Zyxel（Beta，實驗性；standalone ZLD，SSH CLI 唯讀）──
+        zys = (
+            await session.execute(
+                select(ZyxelFirewall).where(ZyxelFirewall.enabled.is_(True))
+            )
+        ).scalars().all()
+        for inst in zys:
+            interval = timedelta(seconds=inst.sync_interval_seconds)
+            if inst.last_sync_at and inst.last_sync_at + interval > now:
+                continue
+            name = inst.name
+            try:
+                summary = await zyxel_svc.sync_instance(session, inst)
+                await session.commit()
+                log.info("zyxel %s: %s", name, summary)
+                await _hb(session, kind="zyxel.sync", target_type="zyxel_firewall",
+                          target_id=inst.id, target_label=name, ok=True,
+                          summary=summary if isinstance(summary, dict) else None)
+            except Exception as exc:  # noqa: BLE001
+                await session.rollback()
+                inst.last_error = str(exc)
+                await session.commit()
+                log.error("zyxel %s sync failed: %s", name, exc)
+                failed += 1
+                await _hb(session, kind="zyxel.sync", target_type="zyxel_firewall",
                           target_id=inst.id, target_label=name, ok=False, error=str(exc))
 
         # ── Windows DHCP Server（Beta；WinRM 唯讀拉 scope/租約）──
