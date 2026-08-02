@@ -184,7 +184,14 @@ def _parse_kv_blocks(text: str, header_re: re.Pattern[str]) -> list[dict[str, st
 
 
 def _parse_address_objects(text: str) -> list[dict[str, str]]:
-    """`show address-object` 的表格輸出：Object name / Type / Address / Ref."""
+    """`show address-object` 的表格輸出：Object name / Type / Address / Note / Ref.
+
+    真機核對過（見 2026-08 對話紀錄）：表頭其實有 Note 這一欄（原先漏看，只當
+    Object name / Type / Address / Ref. 四欄），Note 可能含空白、內容不定，
+    但 Address 本身（HOST 的 IP、RANGE、SUBNET 的 CIDR、INTERFACE 名稱、FQDN）
+    一定是不含空白的單一 token，所以只取第三欄當 value，其餘（含 Note、結尾
+    Ref. 計數）一律略過，不因為 Note 有沒有內容而跑位。
+    """
     out: list[dict[str, str]] = []
     for line in text.splitlines():
         parts = line.split()
@@ -192,13 +199,8 @@ def _parse_address_objects(text: str) -> list[dict[str, str]]:
             continue
         if parts[0].lower() in ("object", "name"):   # 表頭
             continue
-        name = parts[0]
-        obj_type = parts[1]
-        rest = parts[2:]
-        if rest and rest[-1].isdigit():
-            rest = rest[:-1]   # 去掉最後的 Ref. 計數
-        value = " ".join(rest) or None
-        out.append({"name": name, "type": obj_type, "value": value or ""})
+        name, obj_type, value = parts[0], parts[1], parts[2]
+        out.append({"name": name, "type": obj_type, "value": value})
     return out
 
 
