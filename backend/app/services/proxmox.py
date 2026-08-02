@@ -611,8 +611,11 @@ async def sync_instance(
                         base_url=base, timeout=6.0,
                     )).get("data") or {}
                     agent_ips = _agent_ipv4_by_mac(agent)
-                except ProxmoxError:
-                    pass  # agent 沒裝 / VM 沒開 / 無回應逾時 → 略過（best-effort，不拖垮整批同步）
+                except ProxmoxError as exc:
+                    # 不拖垮整批同步（agent 沒裝/沒開/逾時是常態），但一定要留痕跡——
+                    # 之前整個吞掉的話，「明明裝了 agent 卻沒有 IP」這種狀況完全無從查起
+                    # （最常見成因：API token 缺 VM.Monitor 權限，Proxmox 會回 403）。
+                    summary.errors.append(f"{node_name}/qemu/{vmid} agent: {exc}")
 
             # cloud-init ipconfigN → 對應 netN 的靜態 IP（qemu 無 agent 時的後援）
             ipcfg: dict[str, str] = {}
