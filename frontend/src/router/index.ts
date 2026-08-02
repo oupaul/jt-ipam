@@ -81,9 +81,11 @@ const routes: RouteRecordRaw[] = [
       { path: "windows-dhcp", name: "windows_dhcp", component: () => import("@/views/WindowsDhcpAdmin.vue"), meta: { admin: true } },
       { path: "fortigate", name: "fortigate", component: () => import("@/views/FortiGateAdmin.vue"), meta: { admin: true } },
       { path: "zyxel", name: "zyxel", component: () => import("@/views/ZyxelAdmin.vue"), meta: { admin: true } },
+      { path: "paloalto", name: "paloalto", component: () => import("@/views/PaloAltoAdmin.vue"), meta: { admin: true } },
       { path: "pfsense-fw", name: "pfsense_fw", component: () => import("@/views/PfSenseFirewallView.vue") },
       { path: "fortigate-fw", name: "fortigate_fw", component: () => import("@/views/FortiGateFirewallView.vue") },
       { path: "zyxel-fw", name: "zyxel_fw", component: () => import("@/views/ZyxelFirewallView.vue") },
+      { path: "paloalto-fw", name: "paloalto_fw", component: () => import("@/views/PaloAltoFirewallView.vue") },
       { path: "wazuh", name: "wazuh", component: () => import("@/views/WazuhAdmin.vue"), meta: { admin: true } },
       { path: "plugins", name: "plugins", component: () => import("@/views/PluginsAdmin.vue"), meta: { admin: true } },
       // Phase 3

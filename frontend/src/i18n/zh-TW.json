@@ -283,10 +283,12 @@
     "pfsense": "整合 pfSense",
     "fortigate": "整合 FortiGate",
     "zyxel": "整合 Zyxel",
+    "paloalto": "整合 Palo Alto",
     "windows_dhcp": "整合 Windows DHCP",
     "pfsense_fw": "防火牆 (pfSense)",
     "fortigate_fw": "防火牆 (FortiGate)",
     "zyxel_fw": "防火牆 (Zyxel)",
+    "paloalto_fw": "防火牆 (Palo Alto)",
     "api_tokens": "API 權杖"
   },
   "topbar": {
@@ -2841,6 +2843,17 @@
     "dhcp_hint": "DHCP 租約的解析方式尚未對真機驗證，建議先用「測試連線」確認格式後再開啟。",
     "pick_firewall": "選擇 Zyxel 防火牆",
     "none_configured": "尚未設定 Zyxel —— 請到「管理 → 整合 Zyxel」新增。"
+  },
+  "paloalto": {
+    "title": "Palo Alto",
+    "view_title": "防火牆 (Palo Alto)",
+    "intro": "透過 PAN-OS 官方 REST API（設定物件）+ XML op API（ARP）唯讀同步 Palo Alto 防火牆，只執行 GET／show 類操作，不會更動防火牆上任何設定。這是實驗性功能：位址物件／政策／NAT 是照官方 REST API 文件範例寫的、ARP 有查到真實範例輸出核對過，但都沒有實機驗證，建議先用「測試連線」核對再開啟自動同步。",
+    "username": "帳號",
+    "password": "密碼",
+    "password_keep": "密碼（留空表示不更改）",
+    "password_hint": "需要一個能呼叫 API（type=keygen）換發金鑰的管理帳號；每次同步都會重新換發，不會把金鑰存起來。",
+    "pick_firewall": "選擇 Palo Alto 防火牆",
+    "none_configured": "尚未設定 Palo Alto —— 請到「管理 → 整合 Palo Alto」新增。"
   },
   "api_tokens": {
     "title": "API 權杖",

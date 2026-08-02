@@ -283,10 +283,12 @@
     "pfsense": "pfSense",
     "fortigate": "FortiGate",
     "zyxel": "Zyxel",
+    "paloalto": "Palo Alto",
     "windows_dhcp": "Windows DHCP",
     "pfsense_fw": "Firewall (pfSense)",
     "fortigate_fw": "Firewall (FortiGate)",
     "zyxel_fw": "Firewall (Zyxel)",
+    "paloalto_fw": "Firewall (Palo Alto)",
     "api_tokens": "API tokens"
   },
   "topbar": {
@@ -2841,6 +2843,17 @@
     "dhcp_hint": "DHCP lease parsing hasn't been verified against a real device yet — check the format with \"Test connection\" before enabling.",
     "pick_firewall": "Select Zyxel firewall",
     "none_configured": "No Zyxel firewall configured yet — add one under \"Admin → Integrate Zyxel\"."
+  },
+  "paloalto": {
+    "title": "Palo Alto",
+    "view_title": "Firewall (Palo Alto)",
+    "intro": "Read-only sync from a Palo Alto (PAN-OS) firewall over the official REST API (config objects) plus the XML op API (ARP) — only runs GET/show operations, never changes anything on the firewall. This is experimental: address objects/policies/NAT follow the official REST API doc examples, ARP was checked against a real sample response, but none of it has been verified on real hardware — use \"Test connection\" before enabling automatic sync.",
+    "username": "Username",
+    "password": "Password",
+    "password_keep": "Password (leave blank to keep unchanged)",
+    "password_hint": "Needs an admin account that can call the API (type=keygen) to obtain a key; a fresh key is requested on every sync and never stored.",
+    "pick_firewall": "Select Palo Alto firewall",
+    "none_configured": "No Palo Alto firewall configured yet — add one under \"Admin → Integrate Palo Alto\"."
   },
   "api_tokens": {
     "title": "API tokens",

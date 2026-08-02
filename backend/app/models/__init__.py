@@ -48,6 +48,7 @@ from app.models.migration_mapping import PhpIPAMMigrationMapping
 from app.models.nat import NATTranslation
 from app.models.notification import Notification, WebhookSubscription
 from app.models.oui import OUIVendor
+from app.models.paloalto import PaloAltoAddressObject, PaloAltoFirewall, PaloAltoPolicy
 from app.models.permission import Permission
 from app.models.pfsense import PfSenseFirewall, PfSenseSyncedAlias
 from app.models.physical import (

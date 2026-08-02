@@ -1342,6 +1342,7 @@ async def integration_presence(
     from app.models.dns import DNSServer
     from app.models.firewall import OPNsenseFirewall
     from app.models.fortigate import FortiGateFirewall
+    from app.models.paloalto import PaloAltoFirewall
     from app.models.pfsense import PfSenseFirewall
     from app.models.virt import ProxmoxInstance
     from app.models.zyxel import ZyxelFirewall
@@ -1352,6 +1353,7 @@ async def integration_presence(
         ("pfsense", PfSenseFirewall),
         ("fortigate", FortiGateFirewall),
         ("zyxel", ZyxelFirewall),
+        ("paloalto", PaloAltoFirewall),
         ("dns", DNSServer),
         ("cert_agents", CertAgent),
         ("proxmox", ProxmoxInstance),

@@ -34,6 +34,7 @@ from app.api.v1.endpoints import (
     notifications,
     novnc_console,
     oui,
+    paloalto,
     pfsense,
     physical,
     plugins,
@@ -132,6 +133,8 @@ api_v1_router.include_router(fortigate.router)
 api_v1_router.include_router(fortigate.view_router)
 api_v1_router.include_router(zyxel.router)
 api_v1_router.include_router(zyxel.view_router)
+api_v1_router.include_router(paloalto.router)
+api_v1_router.include_router(paloalto.view_router)
 api_v1_router.include_router(wazuh.router)
 api_v1_router.include_router(windows_dhcp.router)
 api_v1_router.include_router(audit.router)
