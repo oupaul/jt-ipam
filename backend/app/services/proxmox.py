@@ -280,12 +280,18 @@ _NODE_IFACE_TYPES = ("eth", "bridge", "bond", "vlan", "ovs")   # 實體NIC / bri
 
 async def _sync_node_ports(
     session: AsyncSession, node_name: str, node_ip: str | None, host_ifaces: list[dict[str, Any]],
-    scope_ids: set[Any] | None = None,
+    scope_ids: set[Any] | None = None, summary: SyncSummary | None = None,
 ) -> int:
     """把 PVE node 的網路介面（bridge / 實體NIC / bond / vlan）建成該節點裝置的連接埠。
 
     先用節點管理 IP 找到對應 jt-ipam Device（IPAddress.device_id → primary_ip → 名稱），
     再為每個介面建 device_ports（已存在的同名埠跳過）。
+
+    找不到對應 Device 時只是略過（node 尚未在 jt-ipam 建成裝置是常態，不算錯誤），
+    但一定要留痕跡到 summary.errors，不然「為什麼這台沒有連接埠」永遠查不出來。
+    同名裝置有多筆（例如 LibreNMS 跟手動各建一筆同名/大小寫不同的裝置）時用 `.first()`
+    而不是 `.scalar_one_or_none()`——後者遇到多筆會丟 MultipleResultsFound，
+    不是 ProxmoxError，call site 接不住，會直接中斷整輪同步。
     """
     from sqlalchemy import func
 
@@ -305,14 +311,24 @@ async def _sync_node_ports(
             if dev_id is None:
                 d = (await session.execute(
                     select(Device).where(Device.primary_ip_id == ipa.id)
-                )).scalar_one_or_none()
+                )).scalars().first()
                 dev_id = d.id if d else None
     if dev_id is None:
-        d = (await session.execute(
+        matches = list((await session.execute(
             select(Device).where(func.lower(Device.name) == node_name.lower())
-        )).scalar_one_or_none()
-        dev_id = d.id if d else None
+        )).scalars().all())
+        if len(matches) > 1 and summary is not None:
+            summary.errors.append(
+                f"{node_name}: {len(matches)} devices share this name (case-insensitive) — "
+                "ports linked to the first one; rename the duplicates to fix this."
+            )
+        dev_id = matches[0].id if matches else None
     if dev_id is None:
+        if summary is not None:
+            summary.errors.append(
+                f"{node_name}: no matching jt-ipam device (by management IP or by name) — "
+                "ports not synced. Create/rename a device to match this node's name or IP."
+            )
         return 0
 
     existing = {p.name: p for p in (await session.execute(
@@ -520,7 +536,7 @@ async def sync_instance(
                 if addr and await _link_ip_to_ipam(session, addr, hw, node_name):
                     summary.ipam_linked += 1
             # 把節點網路介面（bridge / 實體NIC / bond / vlan）建成該節點裝置的連接埠
-            await _sync_node_ports(session, node_name, nip, host_ifaces, scope_ids)
+            await _sync_node_ports(session, node_name, nip, host_ifaces, scope_ids, summary)
         except ProxmoxError:
             pass
         # VMs (qemu)
