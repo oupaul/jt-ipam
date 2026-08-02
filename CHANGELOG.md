@@ -4,10 +4,129 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.132] — 2026-08-02
+
+### Added
+- **Certificate distribution for WinRM, Remote Desktop and LDAPS.** WinRM matters here because jt-ipam is itself a WinRM client — the Windows DNS and DHCP integrations talk over 5986 — so a proper certificate on those hosts is what lets TLS verification be turned on at the jt-ipam end instead of left off. Both were verified on a real Windows host, each confirmed from outside with `openssl s_client` rather than by trusting the agent's own log.
+  - Remote Desktop keeps its thumbprint in WMI rather than http.sys, so that profile writes there and then confirms over TLS. A failed probe does not by itself trigger a rollback: the setting is read back first, because Remote Desktop simply being switched off is not the same as the change having failed.
+  - LDAPS reads from the service store `NTDS\My`, not `LocalMachine\My` — a certificate placed in the usual store does nothing for it. The `store` profile now takes a target store, and after writing to an NTDS store it asks the domain controller to reload via the rootDSE `renewServerCertificate` operation, since otherwise it keeps serving the old certificate until it rotates on its own. **This path is not verified on real hardware** (it needs a domain controller); IIS, WinRM and Remote Desktop are.
+  - When WinRM refuses a certificate the agent now says why — the certificate's CN/SAN must include the host's own name and carry the Server Authentication EKU. The raw `WSManFault` gives no hint of that.
+
+- **UDP port probing**, reported in three states rather than two. UDP has no handshake, so silence proves nothing — the port may be open but not replying, filtered, or the packet may have been lost. Calling that "open" would be quietly wrong, so it is its own state and the operator judges. "Closed" means an ICMP port unreachable came back, which a connected UDP socket surfaces without needing raw sockets. Ports 53 and 123 get a real DNS query and NTP client packet, so a protocol reply — decoded to `DNS NOERROR`, `NTP stratum 3` and so on — is what makes them definitively open.
+
+### Fixed
+- **`upgrade` never installed OS packages, so existing deployments got new features without the binaries they need.** The ping and traceroute tools added in 0.5.131 were only pulled in on a fresh install. Both paths now run the same check, which installs only what is missing and never fails the run.
+- Version information (admin) now lists optional dependencies and whether they are present, so a missing package is visible there rather than surfacing as a tool that silently does nothing.
+- Output from external commands is trimmed before it reaches a report field: a localized `WSManFault` plus a PowerShell error record ran to several hundred characters and buried the actual message.
+
+## [0.5.131] — 2026-08-02
+
+### Added
+- **TWNIC import now works** — it had been a "planned" placeholder. Both registries are now queried live over RDAP: RIPE directly, TWNIC via APNIC, which redirects Taiwanese networks to TWNIC's own database (APNIC is authoritative for Taiwan; TWNIC is its national registry). The preview shows the registration — netname, country, address range, allocation type, contacts, remarks and the URL the data came from — before anything is written.
+  - RDAP cannot find a network from a handle: APNIC returns 404 for entity lookups and RIPE's response carries no networks. The Handle field promised something the protocol cannot deliver, so it is gone; searching by handle or organisation is now done by pasting whois output, which the existing parser handles.
+  - **The RIPE tab was broken too**: the page posted JSON while the endpoint expected a file upload, so it answered 422. Neither field had ever been connected to anything.
+- **Connectivity diagnostics in Tools → IP addresses**: ping (many targets at once, with a concurrency setting), traceroute and a TCP port check. Targets accept IPs, hostnames or a CIDR that expands to its hosts.
+  - Nothing goes through a shell — commands are executed with an argument list, and targets are validated as addresses or hostnames as a second line of defence. Target count, concurrency, per-target timeout and an overall deadline are all capped, and each run is rate-limited per user and written to the audit log, so the server cannot be turned into a scanner.
+  - Traceroute prefers `tracepath`: it needs no privileges and reports path MTU, which `traceroute` does not. Hops that do not answer are listed rather than omitted — hiding them makes a path look like it goes 1→3→5 with nothing in between. If it runs out of time the hops found so far are returned rather than discarded.
+  - The TCP check is often more useful than ping: a host that drops ICMP still answers on the port you actually care about.
+
+### Fixed
+- **The IP conflict list showed no MAC addresses at all.** The renderer decided an array was location data if its entries had a `last_seen_at` field — which the MAC entries also have — so it drew "device / port" columns for objects that have neither, leaving a table of dashes and omitting the one thing the report exists to show.
+- **Conflicts are now readable.** Each MAC carries its OUI vendor, and addresses with the locally-administered bit set are labelled as such. On a real deployment 64 of 133 conflicting MACs are locally administered — virtual machines, containers and phone MAC randomisation — so an IP showing a real MAC alongside a randomised one is usually one device that changed address, not two fighting over an IP. Every anomaly category now also explains what it means and why entries appear. (The vendor lookup was itself wrong at first: `vendor_map()` is keyed by the normalised 6-digit prefix, not the full MAC, so every vendor came back empty — silently, with no error.)
+- `detect_ip_conflicts` returned the raw `IPv4Address` and MAC objects asyncpg produces for INET/MACADDR columns instead of strings (known pitfall #10).
+
+## [0.5.130] — 2026-08-01
+
+### Changed
+- **Windows certificate distribution is now documented as Windows Server 2019 and later.** Server 2016 is dropped as a supported target. The PKCS#12 handed to the agent stays PBESv1-SHA1-3DES, but for a different reason than before: it is the form every version of the Windows CryptoAPI accepts, and the encryption here guards nothing an attacker can reach — the blob is generated per request, encrypted with a random password that only ever lives in memory, and imported and discarded without ever touching the disk. Trading a known-working path for a stronger algorithm that protects nothing was not worth it. (Verified on a real host: both PBESv1 and PBESv2 import fine on current builds, so this is a compatibility floor, not a limitation.)
+
+### Fixed
+- **Every dashboard card now has an icon in its header, and the icon, title and count tag line up.** Only the availability card had an icon, which made it look bolted on rather than part of the page. The alignment was off because the header was laid out with a spacing component that wraps each child separately, so an 18px icon, a line of text and a 22px tag each sat on their own baseline. Card headers now go through one small shared component with a single flex rule, so alignment is decided in one place rather than per card — measured at 0.01px across all ten.
+
+## [0.5.129] — 2026-08-01
+
+### Fixed
+- **The Windows scheduled task was missing the properties that make the Linux timer reliable.** The bash agent runs as a `Type=oneshot` unit driven by a systemd timer with `RandomizedDelaySec=600` and `Persistent=true`; the Windows task had neither, so every host would poll on the same second and a run missed because the machine was off was simply lost. It now sets `-RandomDelay 10m` and `-StartWhenAvailable` to match.
+  - Two more come from Task Scheduler defaults that have no systemd equivalent and are wrong here: it **refuses to start a task on battery power and stops one that switches to battery**, which would silently skip renewals on a laptop or on a VM that reports a battery. Both are now disabled. `ExecutionTimeLimit` is also capped at an hour — the default is three days, long enough for one hung run to block every later one.
+  - For the record, since it comes up: the agent is a scheduled task rather than a Windows service **because that is what the Linux one is** — a one-shot process run on a timer, not a resident daemon. A service would mean writing a sleep loop for no benefit.
+
+## [0.5.128] — 2026-08-01
+
+### Fixed
+Found by running the new Windows agent against a real Windows 11 + IIS host, not by review. Two of them reported success while doing nothing at all.
+
+- **A second deployment of the same certificate was silently skipped and reported as done.** Deployment state was keyed on certificate + profile only, so a host serving one certificate on two bindings — two SNI sites on 443, say — only ever updated the first. The second was treated as "already up to date" forever: never renewed, while reporting ok. State is now also keyed on what makes the deployment distinct (the binding for `iis`, the output paths for `files`). **The same flaw was in the shipped bash agent** for manual-mode deployments writing one certificate to several paths, and is fixed there too (agent 0.4.174). State written by an older agent is still honoured, but only for deployments that have no distinct target.
+- **On a host with several IIS sites, the SNI bindings were never given a certificate — and it reported success.** Deciding "is the right certificate already bound?" was done by opening a TLS connection, but an SNI binding with nothing registered is still answered by the catch-all non-SNI binding on the same port. When that fallback happened to serve the certificate being deployed, the agent concluded it was already bound, reported ok and recorded the deployment as done, while `netsh http show sslcert` showed no registration at all for that hostname. The question is now put to http.sys about that specific binding instead, matching the 40-hex-digit thumbprint value rather than netsh's localized labels.
+- **The Windows installer could never register its scheduled task.** `schtasks /TR` takes the whole command as one argument and its quoting mangles any path containing a space — which the default install path under `C:\Program Files` always does. Switched to `Register-ScheduledTask`, which passes the argument string through verbatim. The task principal is set by SID rather than the name "SYSTEM", which is localized.
+- A failed IIS deployment with no previously bound certificate left behind an http.sys registration on a port no site answers on; it is now removed, so a failure leaves nothing behind.
+- A missing or incomplete config printed a PowerShell stack trace that buried the actual message. It now prints one readable line and exits 2.
+
+## [0.5.127] — 2026-08-01
+
+### Added
+- **Certificate distribution to Windows / IIS**, via a new PowerShell agent (`agent/jt_ipam_cert_agent.ps1`) alongside the existing bash one. Windows PowerShell 5.1 — built into Windows Server 2016 and later — is all it needs: no modules, no Python, no OpenSSL.
+  - IIS does not read certificates from files; it binds one held in the Windows certificate store, by thumbprint. So rather than "write files, test config, reload", the agent **imports the certificate, repoints the HTTPS binding, then opens a real TLS connection to check which certificate is actually being served** — and puts the previous one back if it is not the expected one. Verifying by observation rather than by a command's exit code also means it does not depend on parsing `netsh` output, which is localized.
+  - The PKCS#12 handed to Windows is deliberately encrypted with **PBESv1-SHA1-3DES**. The library default (PBESv2/AES-256-CBC) cannot be imported by the CryptoAPI on Server 2016/2012R2, and it fails with a misleading "the password is incorrect". The agent generates a random password per run and keeps it in memory, so the private key is never written to disk on the way in.
+  - Three deployment profiles: `iis` (import + rebind), `store` (import only, for Exchange / RD Gateway / your own software that takes a thumbprint) and `files` (write PEM/PFX to paths you choose, then run a command). Private-key files get an ACL of SYSTEM + Administrators only, set by well-known SID rather than by group name — the name is localized on non-English Windows.
+  - `jt-ipam-cert-agent-installer.ps1` registers a daily Task Scheduler job running as SYSTEM, and supports `-Uninstall`. The agent self-updates against the server the same way the bash one does.
+  - The certificate agent page now has a Linux / Windows switch that changes the install commands, the supported-OS list, the deployment profiles and the config generator. The "latest agent version" indicator shows both agents, since they version independently.
+
+### Changed
+- `GET /cert-agents/bundle/raw?part=pkcs12` accepts an `X-Pfx-Password` header, which also selects the Windows-compatible PKCS#12 encryption. Without the header the behaviour is unchanged (unencrypted), so the existing jetty profile is unaffected.
+
+## [0.5.126] — 2026-08-01
+
+### Fixed
+- **Dashboard availability watchlist showed a raw UUID instead of the IP once you typed in the picker.** Searching replaced the whole option list with the matches, so the option backing an already-selected IP disappeared — and with no option to resolve, the select fell back to rendering its raw value. Selected entries now keep their label via a local cache and are always merged into the option list. An IP that has become inaccessible shows an explicit note rather than a UUID.
+
+## [0.5.125] — 2026-07-31
+
+### Added
+- **Availability watchlist on the dashboard** — a full-width block where you pick the IPs you care about (up to 30) and see all of their 90-day bars stacked and aligned, each with its uptime percentage. Rows link through to the IP. The selection is stored per account in the existing generic `user_preferences.pinned` map, so it follows you across browsers and needs no schema change.
+  - Backed by a new `POST /api/v1/addresses/uptime/batch`, which does two queries regardless of how many IPs are requested — calling the per-IP endpoint thirty times would have been sixty round trips. It returns one series *per IP* (unlike the device endpoint, which merges an entire device into one), preserves the order you arranged them in, and **silently drops IPs you cannot see** rather than erroring, so the block does not break when permissions change.
+  - The same honesty rules as the detail-page bar: an IP with no liveness source is entirely grey and its percentage shows "—" rather than 0% or 100%.
+
+## [0.5.124] — 2026-07-31
+
+### Fixed
+- **PVE console failed for accounts with two-factor authentication enabled** (GitHub issue #23, reported by @kelp45705753-bit). Proxmox answers `/access/ticket` for a TFA-enabled account with **HTTP 200** and a *challenge* ticket — `{"ticket": "PVE:!tfa!…", "NeedTFA": 1}` — not an error. That was taken as a normal ticket, so the failure only surfaced later when opening the websocket, with a message that gave no hint of the real cause. Login now detects the challenge and exchanges it for a real ticket using `tfa-challenge` plus `password=totp:<code>`; if no code was supplied it returns a distinct `tfa_required` so the console asks for the 6-digit code instead of dropping into an opaque error. A wrong or expired code is reported as such rather than being passed on to the websocket. Accounts without TFA still make a single request.
+
+### Changed
+- Terminology: replaced "詳情" with "詳細資料" and "膠囊" with plainer wording across comments and the Chinese changelog (Taiwan usage).
+
+### Notes
+- The TFA exchange follows the documented Proxmox flow but **could not be tested against a live TFA-enabled PVE account**; the unit tests cover the challenge, the successful exchange, a wrong code and the untouched non-TFA path.
+
+## [0.5.123] — 2026-07-31
+
+### Fixed
+- **A never-interrupted IP was drawn as "not monitored".** The bar was reconstructed purely from `effective_status` transitions, but an IP that has been up ever since it was added produces *no transitions at all* — so it came out entirely grey even while the page above it showed "online, last seen 30 seconds ago". "No transitions" is not "no monitoring". The reconstruction now also reads the IP's current status and `last_seen_*`: with a liveness source and no transitions in the window, the current state is backfilled from when the IP was added (earlier than that stays unknown). Two real production IPs went from 90 grey days to 67 green days at 100%.
+- **A month of continuous downtime looked like a month of separate blips.** Every day with any downtime was amber, so an IP offline since early July rendered as 29 identical amber marks. Days are now split: amber means the day had both up and down time (a real outage window), red means it was down all day. The same production IP now reads as 29 red days and 2 amber, which is what actually happened.
+
+### Changed
+- Bars are square rather than pill-shaped, and the cursor is a pointer over them since each one has a tooltip.
+
+## [0.5.122] — 2026-07-31
+
+### Added
+- **Availability bar on the IP detail and device detail pages** — a 90-day status-page style strip, green for up, amber for a day with an outage, grey for no data. Device bars merge every IP on that device: a day is marked as an outage if *any* of its IPs went down, so a single failed interface still surfaces.
+  - There is no per-IP time series in the schema, so daily state is *reconstructed* from the `effective_status` transitions already recorded in `ip_change_log`: a state holds until the next transition, and anything before the first transition is unknown.
+  - **Days without data are grey, never green.** An IP with no liveness source (scan agent or LibreNMS) shows an entirely grey bar, which is the honest signal — it means "not monitored", not "was fine". A tooltip says so.
+  - **The uptime percentage counts only days that have data.** An IP monitored for three days, all up, reads 100% rather than being diluted by 87 grey days or scored as if grey were downtime. The denominator is shown next to the figure so the number cannot be read out of context.
+  - Grey uses the Naive UI theme variable rather than a fixed colour, so it stays subtle in dark mode; green and amber are fixed because they are status semantics that read correctly in both themes.
+
+## [0.5.121] — 2026-07-31
+
+### Fixed
+- **FortiGate VPN sync could not distinguish "nothing connected" from "endpoint unreadable".** Both produced `ssl_sessions: 0`, because a failing endpoint was swallowed with `except FortiGateError: continue`. A customer's real sync reported exactly that, and there was no way to tell from the audit summary whether the SSL-VPN parsing worked at all. The summary now carries `ssl_unavailable` / `ipsec_unavailable` when every VDOM's endpoint failed, so a genuine zero and a silent failure look different — which matters most for an integration developed without a live device.
+
+### Notes
+- **FortiGate is now validated against a real appliance** for VDOM discovery, ARP (454), DHCP leases (339), DHCP ranges (3), address objects (632), firewall policies (211), NAT (14) and IPsec tunnels (4), thanks to a customer enabling every sync toggle. SSL-VPN sessions reported 0; with the change above, a future run will say whether that means "nobody connected" or "endpoint unreadable".
+
 ## [0.5.120] — 2026-07-31
 
 ### Fixed
-- **The audit log's Target column showed a truncated UUID for every integration.** A customer testing FortiGate spotted rows reading `66456d2e…` instead of the instance name — with several instances of the same type, the log could not tell you which one had synced. `_LABEL_REGISTRY` only covered 14 object types; every integration instance, agent, certificate and API token fell through to the raw id. Added 26 more (all verified to resolve against their model and column), and integration rows now link to their settings page instead of rendering as plain text. A test pins that every registry entry resolves and that no integration type is missing, since adding an integration without registering it silently regresses to UUIDs.
+- **The audit log's Target column showed a truncated UUID for every integration.** A customer testing FortiGate spotted rows reading `a1b2c3d4…` instead of the instance name — with several instances of the same type, the log could not tell you which one had synced. `_LABEL_REGISTRY` only covered 14 object types; every integration instance, agent, certificate and API token fell through to the raw id. Added 26 more (all verified to resolve against their model and column), and integration rows now link to their settings page instead of rendering as plain text. A test pins that every registry entry resolves and that no integration type is missing, since adding an integration without registering it silently regresses to UUIDs.
 
 ## [0.5.119] — 2026-07-30
 
@@ -1403,7 +1522,7 @@ based on [Keep a Changelog](https://keepachangelog.com/); versions track
   that source and the Graylog setup guide below re-renders for it (correct lookup URL, Lookup Table
   names, key/value columns and a matching pipeline rule — IP→hostname keeps the LAN cidr_match guard,
   firewall rule/alias sources use a plain rid/alias lookup), with a fade/slide transition when switching.
-  The page also drops its fixed max-width and uses the full width. Term: "詳情" → "詳細資料".
+  The page also drops its fixed max-width and uses the full width. Term: "詳細資料" → "詳細資料".
 
 ## [0.4.192] — 2026-06-18
 

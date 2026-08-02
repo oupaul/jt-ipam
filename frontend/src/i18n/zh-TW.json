@@ -121,7 +121,9 @@
     "run_title": "在主機上執行",
     "run_dry": "先試跑（不會動到任何檔）：",
     "run_real": "確認沒問題後正式跑一次：",
-    "scope_hint": "這裡只列出此代理範圍內的憑證；要派送其它憑證，請先在憑證頁把它加入此代理的範圍。"
+    "scope_hint": "這裡只列出此代理範圍內的憑證；要派送其它憑證，請先在憑證頁把它加入此代理的範圍。",
+    "binding": "IIS 繫結",
+    "binding_hint": "格式為「位址:埠」。填 IP（如 0.0.0.0:443）為非 SNI 繫結；填主機名稱（如 www.example.com:443）為 SNI 繫結。此繫結要先在 IIS 建好。"
   },
   "certFiles": {
     "title": "憑證資訊 / 檔案",
@@ -452,7 +454,7 @@
     "last_report": "最後回報",
     "source_ip": "來源 IP",
     "os": "OS",
-    "last_alive": "最後存活",
+    "last_alive": "最後上線",
     "last_login": "最後登入",
     "hostname": "主機名稱",
     "owner": "擁有者",
@@ -1210,7 +1212,7 @@
     "tip_stale": "超過 {grace} 分鐘、但 {staleMax} 分鐘內仍曾出現過 —— 可能剛漏掃或網路抖動，尚未判定為離線",
     "tip_offline": "超過 {staleMax} 分鐘無任何偵測記錄；或已登記且有啟用掃描卻從未偵測到",
     "tip_reserved": "狀態手動標記為「保留」",
-    "tip_unknown": "無從判定存活：此 IP 刻意略過 Ping 偵測，或所屬子網路未啟用掃描",
+    "tip_unknown": "無從判定是否上線：此 IP 刻意略過 Ping 偵測，或所屬子網路未啟用掃描",
     "tip_free": "此 IP 尚未登記（未配發）"
   },
   "tasks": {
@@ -1518,7 +1520,7 @@
     "error_username_required": "帳號必填（此 DNS 類型以帳密認證）"
   },
   "scope_overlap": {
-    "warning": "偵測到有重疊網段（同一個 IP 存在於多個子網路）。此整合未設定「限定子網路範圍」，同步時可能把存活狀態／DHCP／MAC 標到錯誤單位的同 IP。建議在下方指定關聯子網路範圍。"
+    "warning": "偵測到有重疊網段（同一個 IP 存在於多個子網路）。此整合未設定「限定子網路範圍」，同步時可能把上線狀態／DHCP／MAC 標到錯誤單位的同 IP。建議在下方指定關聯子網路範圍。"
   },
   "librenms_admin": {
     "title": "LibreNMS 整合",
@@ -1615,7 +1617,7 @@
     "view_ip": "檢視 IP",
     "col_os": "作業系統",
     "col_version": "版本",
-    "col_last_alive": "最後存活",
+    "col_last_alive": "最後上線",
     "col_user": "帳號",
     "col_last_sync": "最後同步",
     "col_last_error": "最後錯誤",
@@ -1704,7 +1706,12 @@
     "ghost_ips": "失聯 IP",
     "unauthorized": "未授權 IP",
     "raw_report": "完整報告",
-    "none_found": "未發現異常"
+    "none_found": "未發現異常",
+    "mac_local": "本地管理/隨機",
+    "explain_ip_conflicts": "同一個 IP 在最近 1 小時的 ARP 記錄中對應到兩個以上的 MAC。標成「本地管理/隨機」的位址沒有廠商登記 —— 虛擬機、容器、以及手機的 MAC 隱私隨機化都會產生這種位址；同一個 IP 同時出現「真實 MAC ＋ 隨機 MAC」，通常是同一台裝置換了位址（重新連線、遷移、網卡接手），不是兩台機器在搶同一個 IP。真正需要處理的，是兩個 MAC 都查得到廠商、且分屬不同裝置的情況。",
+    "explain_mac_drifts": "同一個 MAC 在最近 1 小時內出現在兩個以上的交換器埠。正常情況是裝置換了位置或無線漫遊；若同一時間出現在多個埠，可能是網路迴圈或 MAC 被偽造。",
+    "explain_ghost_ips": "IPAM 中登記為已配發，但長時間沒有任何存活跡象（掃描代理與 LibreNMS 都沒看到）的 IP。多半是已退役卻沒回收的登記，可用來清理位址空間。",
+    "explain_unauthorized_ips": "在網路上實際偵測到、但 IPAM 裡沒有登記的 IP。可能是未經申請就自行設定的裝置，也可能只是還沒補登記。"
   },
   "webhooks": {
     "events_label": "事件 (* = 全部)",
@@ -1968,19 +1975,33 @@
   },
   "import": {
     "title": "RIPE / TWNIC 匯入",
-    "ripe_help": "從 RIPE WHOIS 拉指定 handle 或 CIDR 的 inetnum 資料；preview 會顯示要匯入什麼，commit 才實際寫入。",
-    "twnic_help": "TWNIC 匯入 (規劃中)。",
-    "handle": "Handle (NIC handle)",
-    "target_section": "目標 section",
-    "target_section_placeholder": "選擇要寫入的 section",
-    "section_required": "請先選 section",
+    "ripe_help": "向 RIPE 資料庫（歐洲、中東、中亞的網段註冊管理機構）查詢網段登記資料，確認後建立為子網路。",
+    "twnic_help": "向 TWNIC 查詢台灣的網段登記資料。台灣網段的權威來源是 APNIC，TWNIC 是其下的國家級註冊管理機構（NIR），查詢會自動導向 TWNIC 的資料庫。",
+    "target_section": "目標區段",
+    "target_section_placeholder": "選擇要寫入的區段",
+    "section_required": "請先選擇區段",
     "preview": "預覽",
     "commit": "匯入",
-    "either_or_hint": "Handle 與 CIDR 擇一填即可。",
-    "handle_hint": "例：AS1234-RIPE、ORG-XX1-RIPE。",
-    "cidr_hint": "例：192.0.2.0/24 或 2001:db8::/32。",
-    "error_need_one": "請至少填 Handle 或 CIDR 其中一個",
-    "error_pick_one": "Handle 與 CIDR 只能擇一"
+    "mode_lookup": "線上查詢",
+    "mode_paste": "貼上 whois 文字",
+    "query": "IP 或 CIDR",
+    "query_hint": "輸入網段內任一個 IP（如 163.28.0.0）或直接輸入 CIDR（如 1.34.0.0/16），系統會查出該位址所屬的登記網段。",
+    "whois_text": "whois 輸出內容",
+    "whois_hint": "線上查詢只支援用 IP／CIDR 找網段。若要用 handle、公司名稱等條件查，請自行執行 whois 後把輸出整段貼上，這裡會解析出其中的網段。",
+    "section_hint": "只有匯入時需要；預覽不會寫入任何資料。",
+    "registry_info": "登記資料",
+    "netname": "網段名稱",
+    "country": "國別",
+    "range": "位址範圍",
+    "alloc_type": "配發類型",
+    "contacts": "聯絡人",
+    "remarks": "備註",
+    "source": "資料來源",
+    "description": "說明",
+    "will_create": "即將建立的子網路（{n}）",
+    "no_result": "查無可匯入的網段",
+    "result": "已建立 {ins} 筆、略過 {skip} 筆（共 {total} 筆）",
+    "skip_hint": "略過的是與現有子網路重疊者 —— 重複執行不會產生重複資料。"
   },
   "settings": {
     "title": "個人設定",
@@ -2388,7 +2409,12 @@
     "host_os": "作業系統",
     "host_kernel": "核心版本",
     "package": "套件",
-    "installed": "版本"
+    "installed": "版本",
+    "section_optional": "選用相依",
+    "section_optional_hint": "缺少不影響服務運作，但會讓對應功能無法使用",
+    "optional_present": "已安裝",
+    "optional_absent": "未安裝",
+    "optional_missing": "缺少 {pkgs}：對應功能會標示為不可用。安裝後即可使用（重新執行 jt-ipam.sh upgrade 也會自動補上）。"
   },
   "dns_records": {
     "title": "DNS 記錄",
@@ -2634,7 +2660,9 @@
     "no_store_hint": "帳號與密碼僅用於本次連線（不儲存於伺服器）；需對此 VM/CT 有 Console 權限才連得上。",
     "use_saved_hint": "使用已儲存的 PVE 帳密：密碼以加密方式保管於伺服器，僅連線當下於後端解密取用，不會回傳前端。",
     "state_closed": "已關閉",
-    "lxc_enter_hint": "沒看到提示字元？按一下 Enter"
+    "lxc_enter_hint": "沒看到提示字元？按一下 Enter",
+    "tfa_code": "兩階段驗證碼",
+    "tfa_code_ph": "輸入驗證器上的 6 位數"
   },
   "account": {
     "change_password": "變更密碼",
@@ -2885,5 +2913,90 @@
     "created_warn": "請立刻複製並妥善保存 —— 關閉這個視窗後就再也看不到明文了。",
     "created_usage": "用法（放在 Authorization 標頭）：",
     "created_done": "我已保存好"
+  },
+  "uptime": {
+    "title": "可用性",
+    "today": "今天",
+    "days_ago": "{n} 天前",
+    "uptime": "可用",
+    "st_up": "正常",
+    "st_down": "整天離線",
+    "st_unknown": "無資料",
+    "no_source": "未監測",
+    "no_data": "尚無資料",
+    "basis": "（依 {n} 天有資料期間計算）",
+    "no_source_hint": "這個 IP 沒有上線偵測來源（掃描代理或 LibreNMS），所以沒有歷史可畫。灰色代表無資料，不代表正常。",
+    "st_partial": "曾中斷",
+    "dash_title": "可用性追蹤",
+    "dash_edit": "編輯追蹤清單",
+    "dash_empty": "尚未選擇要追蹤的 IP",
+    "dash_pick": "選擇 IP",
+    "dash_ph": "搜尋 IP 或主機名稱",
+    "dash_hint": "最多可選 {n} 個 IP。灰色代表該日無資料（該 IP 沒有上線偵測來源），不代表正常。",
+    "dash_over": "超過上限 {n} 個，請移除一些",
+    "dash_ip_gone": "（已無法存取的 IP）"
+  },
+  "certOs": {
+    "linux": "Linux",
+    "windows": "Windows / IIS",
+    "win_note": "Windows 代理走 PowerShell 5.1（Windows Server 2019 以上內建），不需安裝額外模組。IIS 綁的是憑證存放區裡的憑證而不是檔案，所以代理是「匯入存放區 → 換上繫結 → 連線驗證 → 失敗自動還原」。HTTPS 繫結本身要先在 IIS 建好，代理只換憑證、不改站台設定。"
+  },
+  "certHelpWin": {
+    "intro": "在每台要自動換憑證的 Windows 主機上裝一個代理。代理會定時向 jt-ipam 檢查有沒有新版憑證，有的話下載、匯入憑證存放區、把 IIS 的 HTTPS 繫結換成新憑證，接著實際連上去確認送出的是新憑證，不對就自動還原。",
+    "step2": "建立代理後，打開該代理（新增完的視窗，或清單的「檢視」鈕）會顯示它專屬的一段安裝指令——已帶好 key，在目標主機以**系統管理員身分**開啟 PowerShell 貼上執行即可。",
+    "step3": "貼好設定後，在該主機先用 -DryRun 試跑確認；沒問題之後排程就會自動派送（進階：也可手動編輯設定檔的 DEPLOY_1_*）。",
+    "uninstall_label": "移除派送代理（系統管理員身分的 PowerShell）：",
+    "uninstall_note": "會移除排程工作、代理程式、設定檔與狀態；**已匯入憑證存放區的憑證不會被刪除**（它們正在被繫結使用）。",
+    "service_note": "安裝後的排程：Windows 工作排程器的「jt-ipam-cert-agent」工作（預設每日、以 SYSTEM 執行）。看記錄：C:\\ProgramData\\jt-ipam-cert-agent\\last-run.log。立即手動跑一次：schtasks /Run /TN jt-ipam-cert-agent。",
+    "requirements": "需求：Windows Server 2019 以上內建的 PowerShell 5.1（不需安裝額外模組、不需 Python 或 OpenSSL）；要以系統管理員執行（匯入 LocalMachine\\My 與變更 http.sys 的 SSL 繫結都需要）。IIS 的 HTTPS 繫結要先建好，代理只換憑證、不改站台設定。"
+  },
+  "certGenWin": {
+    "intro": "選憑證與派送方式即可產生設定檔內容；產生後複製，貼到該主機的 C:\\ProgramData\\jt-ipam-cert-agent\\config。",
+    "paste_hint": "把這段貼到該主機的 C:\\ProgramData\\jt-ipam-cert-agent\\config。",
+    "services": "派送方式（可多選）"
+  },
+  "netdiag": {
+    "section": "連線診斷",
+    "section_note": "以下工具會從 jt-ipam 伺服器實際送出封包，結果反映的是「伺服器到目標」的連通性，不一定等同你自己電腦到目標的狀況。單次目標數與併發皆有上限，並會寫入稽核記錄。",
+    "ping": "Ping",
+    "trace": "路徑追蹤",
+    "tcp": "TCP 埠連通性",
+    "run": "執行",
+    "unavailable": "伺服器未安裝",
+    "targets_ph": "一行一個，或用逗號分隔；也可直接給網段，例如 192.168.1.0/28",
+    "targets_hint": "支援 IP、主機名稱與 CIDR（網段會展開成各個主機），單次最多 {n} 個目標。",
+    "count": "次數",
+    "timeout": "逾時（秒）",
+    "concurrency": "併發數",
+    "max_hops": "最大躍點",
+    "ports": "埠",
+    "target": "目標",
+    "state": "狀態",
+    "up": "有回應",
+    "down": "無回應",
+    "loss": "遺失率",
+    "rtt_avg": "平均延遲",
+    "rtt": "延遲",
+    "note": "備註",
+    "hop_host": "節點",
+    "no_reply": "無回應",
+    "port": "埠",
+    "open": "開啟",
+    "closed": "不通",
+    "latency": "連線耗時",
+    "need_target": "請先輸入目標",
+    "need_port": "請至少輸入一個有效的埠號",
+    "ping_summary": "有回應 {up} / {total}",
+    "trace_tool": "使用工具：{tool}",
+    "path_mtu": "路徑 MTU {n}",
+    "trace_hint": "優先使用 tracepath（不需特權，並會回報路徑 MTU，可用來診斷 MTU 黑洞）。沒有回應的躍點也會列出，不會略過。",
+    "tcp_hint": "對於擋 ICMP 的主機，這比 ping 可靠 —— 測的是實際要用的那個服務埠。",
+    "truncated": "逾時，以下為已探到的部分",
+    "udp": "UDP 埠探測",
+    "probe": "探測封包",
+    "udp_open": "確定開啟",
+    "udp_closed": "確定關閉",
+    "udp_no_reply": "無法判定",
+    "udp_note": "UDP 沒有交握，「沒有回應」無法判定 —— 可能是開著但不回應、被防火牆丟棄，或封包遺失，所以獨立成一種狀態而不是當成開啟。「確定關閉」是收到 ICMP port unreachable。對 53（DNS）與 123（NTP）會送出真實的協定封包，收到協定回應才算確定開啟。"
   }
 }
