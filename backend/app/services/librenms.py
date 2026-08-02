@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy import true as sa_true
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -265,10 +265,13 @@ async def link_librenms_device(
         or f"librenms-{ldev.legacy_device_id}"
     ).strip()
 
-    # 2. 同名 jt-ipam Device
+    # 2. 同名 jt-ipam Device（不分大小寫——LibreNMS 回報的 hostname 常是小寫，
+    # 手動建的裝置常是大寫，完全比對會對不起來、憑空多建一筆重複裝置。
+    # 比照 Proxmox 整合的 _sync_node_ports 用同一套規則，並用 .first() 而不是
+    # .scalar_one_or_none()：既有資料已經有大小寫不同的重複裝置時不要整個炸掉。）
     dev = (await session.execute(
-        select(Device).where(Device.name == name)
-    )).scalar_one_or_none()
+        select(Device).where(func.lower(Device.name) == name.lower())
+    )).scalars().first()
     created = False
     if dev is None:
         if not create:
