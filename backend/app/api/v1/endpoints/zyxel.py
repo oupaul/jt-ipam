@@ -14,7 +14,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
+from app.api.v1.dependencies import CurrentUser, require_global_read, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.zyxel import ZyxelAddressObject, ZyxelFirewall, ZyxelPolicy
@@ -23,7 +23,7 @@ from app.schemas.zyxel import ZyxelCreate, ZyxelRead, ZyxelUpdate
 from app.services import zyxel as svc
 from app.services.background_tasks import spawn_task
 
-router = APIRouter(prefix="/zyxel", tags=["zyxel"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/zyxel", tags=["zyxel"], dependencies=[Depends(require_ops_admin)])
 # 政策 / 位址物件屬「全域基礎設施資料」→ 唯讀檢視給具全域讀取權者（比照 FortiGate）
 view_router = APIRouter(prefix="/zyxel", tags=["zyxel"], dependencies=[Depends(require_global_read)])
 

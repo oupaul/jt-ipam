@@ -13,7 +13,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.windows_dhcp import WindowsDhcpServer
@@ -27,7 +27,7 @@ from app.services import windows_dhcp as svc
 from app.services.background_tasks import spawn_task
 
 router = APIRouter(prefix="/windows-dhcp", tags=["windows-dhcp"],
-                   dependencies=[Depends(require_admin)])
+                   dependencies=[Depends(require_ops_admin)])
 
 
 async def _get_or_404(session: AsyncSession, sid: uuid.UUID) -> WindowsDhcpServer:

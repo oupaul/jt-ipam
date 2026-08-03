@@ -244,9 +244,9 @@ const menuOptions = computed<MenuOption[]>(() => {
   ];
   if (me.value?.is_admin || me.value?.is_ops_admin) {
     // superAdmin-only 項目：僅 is_admin 可見（使用者/群組/權限指派/系統設定/通知發送設定/版本/系統紀錄）
-    // fortigate/windows_dhcp/zyxel/paloalto/system_transfer 後端仍是 require_admin（尚未比照
-    // pfSense/OPNsense 開放給 ops_admin），選單能見度要跟後端一致，否則 ops_admin 點了就 403。
-    const superAdminKeys = new Set(["users", "groups", "permissions", "system_settings", "notification_channels", "version", "system_logs", "fortigate", "zyxel", "paloalto", "windows_dhcp", "system_transfer"]);
+    // fortigate/windows_dhcp/zyxel/paloalto 已比照 pfSense/OPNsense 開放給 ops_admin（require_ops_admin）；
+    // system_transfer 仍是 require_admin，選單能見度要跟後端一致，否則 ops_admin 點了就 403。
+    const superAdminKeys = new Set(["users", "groups", "permissions", "system_settings", "notification_channels", "version", "system_logs", "system_transfer"]);
     const allAdminItems = [
       { label: () => t("nav.audit"),         key: "audit",          icon: renderIcon(AuditIcon) },
       { label: () => t("nav.users"),         key: "users",          icon: renderIcon(UsersIcon) },

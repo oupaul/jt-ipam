@@ -14,7 +14,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
+from app.api.v1.dependencies import CurrentUser, require_global_read, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.fortigate import (
@@ -28,7 +28,7 @@ from app.services import fortigate as svc
 from app.services.background_tasks import spawn_task
 
 router = APIRouter(prefix="/fortigate", tags=["fortigate"],
-                   dependencies=[Depends(require_admin)])
+                   dependencies=[Depends(require_ops_admin)])
 # 政策 / 位址物件屬「全域基礎設施資料」→ 唯讀檢視給具全域讀取權者
 view_router = APIRouter(prefix="/fortigate", tags=["fortigate"],
                         dependencies=[Depends(require_global_read)])

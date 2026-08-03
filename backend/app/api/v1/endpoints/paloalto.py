@@ -13,7 +13,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
+from app.api.v1.dependencies import CurrentUser, require_global_read, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.paloalto import PaloAltoAddressObject, PaloAltoFirewall, PaloAltoPolicy
@@ -22,7 +22,7 @@ from app.schemas.paloalto import PaloAltoCreate, PaloAltoRead, PaloAltoUpdate
 from app.services import paloalto as svc
 from app.services.background_tasks import spawn_task
 
-router = APIRouter(prefix="/paloalto", tags=["paloalto"], dependencies=[Depends(require_admin)])
+router = APIRouter(prefix="/paloalto", tags=["paloalto"], dependencies=[Depends(require_ops_admin)])
 view_router = APIRouter(prefix="/paloalto", tags=["paloalto"],
                         dependencies=[Depends(require_global_read)])
 
