@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 from app.services import netdiag as nd
 
@@ -136,3 +138,81 @@ def test_udp_states_are_three_not_two():
     """
     r = nd.UdpResult(target="192.0.2.1", port=161)
     assert r.state == "no_reply"
+
+
+def test_hostname_matching_follows_san_then_cn_with_wildcards():
+    assert nd._hostname_matches("a.example.com", "CN=x", ["a.example.com"])
+    assert nd._hostname_matches("a.example.com", "CN=x", ["*.example.com"])
+    assert not nd._hostname_matches("a.b.example.com", "CN=x", ["*.example.com"])  # 只吃一層
+    assert not nd._hostname_matches("other.com", "CN=x", ["a.example.com"])
+    # 沒有 SAN 才退回 CN —— 有 SAN 就不該再看 CN
+    assert nd._hostname_matches("host.example", "host.example", [])
+    assert not nd._hostname_matches("host.example", "host.example", ["other.example"])
+
+
+def test_ping_failure_message_does_not_claim_the_target_is_down():
+    """權限不足時不能只說「沒有回應」—— 那會被讀成「目標不通」。"""
+    src = (pathlib.Path(nd.__file__)).read_text()
+    assert "這不代表目標不可達" in src
+    assert "ping_group_range" in src
+
+
+# ── uvloop 沒有 sock_sendto / sock_recv ──────────────────────────────────────
+# 實測：在「非特權 ICMP socket 開得起來」的機器上，ping 端點直接 500（uvloop 對
+# loop.sock_sendto 丟 NotImplementedError）。諷刺的是**開不起來**的機器反而正常，
+# 因為它會退回外部 ping —— 所以這個錯只在把 ping_group_range 放寬之後才會冒出來，
+# 也就是照著我們自己給的排除說明做之後。
+
+async def test_sock_sendto_falls_back_when_loop_lacks_it():
+    import socket as _socket
+
+    from app.services.netdiag import _sock_sendto
+
+    class _FakeLoop:
+        async def sock_sendto(self, *a, **kw):
+            raise NotImplementedError            # uvloop 就是這樣
+
+        async def run_in_executor(self, _ex, fn, *args):
+            return fn(*args)
+
+    sent: list[tuple] = []
+
+    class _FakeSock:
+        def sendto(self, data, addr):
+            sent.append((data, addr))
+            return len(data)
+
+    await _sock_sendto(_FakeLoop(), _FakeSock(), b"payload", ("127.0.0.1", 0))
+    assert sent == [(b"payload", ("127.0.0.1", 0))]
+    assert _socket  # 只是確保 import 沒被 lint 掉
+
+
+async def test_sock_recv_falls_back_when_loop_lacks_it():
+    from app.services.netdiag import _sock_recv
+
+    class _FakeLoop:
+        def __init__(self):
+            self.readers: dict[int, object] = {}
+
+        async def sock_recv(self, *a, **kw):
+            raise NotImplementedError
+
+        def create_future(self):
+            import asyncio as _a
+            return _a.get_running_loop().create_future()
+
+        def add_reader(self, fd, cb):
+            self.readers[fd] = cb
+            cb()                                  # 立刻可讀
+
+        def remove_reader(self, fd):
+            self.readers.pop(fd, None)
+
+    class _FakeSock:
+        def fileno(self):
+            return 999
+
+        def recv(self, n):
+            return b"reply"[:n]
+
+    assert await _sock_recv(_FakeLoop(), _FakeSock(), 16) == b"reply"

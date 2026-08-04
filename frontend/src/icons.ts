@@ -76,6 +76,7 @@ import {
   Database,
   Send,
   Antenna,
+  BrainResearch,
   Flash,
   // Status
   CheckCircle,
@@ -113,6 +114,8 @@ export const UpgradeIcon = ArrowUpCircle;
 export const InfoIcon = InfoCircle;
 export const EyeIcon = Eye;
 export const EyeOffIcon = EyeClosed;
+// 「忽略」：判斷為誤報而收起來，不是刪除 —— 用閉眼比用叉叉貼切
+export const DismissIcon = EyeClosed;
 
 // ── 狀態 ──
 export const OkIcon = CheckCircle;
@@ -149,6 +152,8 @@ export const LocationsIcon = MapPin;
 export const PinIcon = Pin;
 export const RequestsIcon = MultiplePages;
 export const TopologyIcon = GraphUp;
+// 連線診斷（ping / traceroute / port…）：實際送封包的那一類工具
+export const NetDiagIcon = Antenna;
 export const FitIcon = ScaleFrameEnlarge;
 export const SendIcon = SendDiagonal;
 export const ToolsIcon = Hammer;
@@ -165,6 +170,9 @@ export const ThemeLightIcon = SunLight;
 export const GroupsIcon = Group;
 export const CustomFieldsIcon = Page;
 export const AnomalyIcon = ShieldAlert;
+// AI 巡檢：跟異常偵測分開的圖示 —— 一個是量到的事實、一個是模型的推測，
+// 選單上並排時要一眼分得出來
+export const AiAuditIcon = BrainResearch;
 export const DnsIcon = Globe;
 export const LibreNMSIcon = Cloud;
 export const FirewallIcon = Shield;

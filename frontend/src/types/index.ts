@@ -56,6 +56,8 @@ export interface Subnet {
   vrf_id: string | null;
   is_pool: boolean;
   is_full: boolean;
+  ai_audit_enabled: boolean;
+  anomaly_enabled: boolean;
   scan_enabled: boolean;
   scan_method: string[];
   scan_agent_id: string | null;

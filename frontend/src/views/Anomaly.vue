@@ -4,10 +4,13 @@ import { fmtDateTime } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
 import {
   NCard, NSpace, NIcon, NButton, NAlert, NStatistic, NGrid, NGi, NDataTable, NEmpty,
-  NTabs, NTabPane, useMessage, type DataTableColumns,
+  NTabs, NTabPane, NModal, NSelect, useMessage, type DataTableColumns,
 } from "naive-ui";
 import { runAnomalyScan, type AnomalyReport } from "@/api/phase3";
-import { AnomalyIcon, TestIcon, InfoIcon } from "@/icons";
+import { AnomalyIcon, TestIcon, InfoIcon, SettingsIcon } from "@/icons";
+import { listSubnets, setAnomalyScope } from "@/api/subnets";
+import { apiErrMsg } from "@/api/client";
+import type { Subnet } from "@/types";
 import { useTablePagination } from "@/composables/useTablePagination";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import ColumnPicker from "@/components/ColumnPicker.vue";
@@ -18,19 +21,59 @@ const pg = useTablePagination();
 const loading = ref(false);
 const report = ref<AnomalyReport | null>(null);
 const lastRunAt = ref<string | null>(null);
+
+// 偵測範圍（寫的是 subnets.anomaly_enabled，跟子網路編輯頁同一個欄位）
+const scopeShow = ref(false);
+const scopeSaving = ref(false);
+const scopeIds = ref<string[]>([]);
+const subnets = ref<Subnet[]>([]);
+const subnetsLoading = ref(false);
+const subnetOptions = computed(() => subnets.value.map((s) => ({
+  label: s.description ? `${s.cidr} — ${s.description}` : s.cidr,
+  value: s.id,
+})));
+
+async function loadSubnets() {
+  subnetsLoading.value = true;
+  try {
+    const r = await listSubnets({ pageSize: 500 });
+    subnets.value = r.items;
+    scopeIds.value = r.items.filter((s) => s.anomaly_enabled).map((s) => s.id);
+  } catch { /* 沒權限就留空，不擋整頁 */ } finally { subnetsLoading.value = false; }
+}
+
+function openScope() {
+  scopeShow.value = true;
+  void loadSubnets();
+}
+
+async function saveScope() {
+  scopeSaving.value = true;
+  try {
+    await setAnomalyScope(scopeIds.value);
+    msg.success(t("common.saved"));
+    scopeShow.value = false;
+  } catch (e) { msg.error(apiErrMsg(e)); await loadSubnets(); }
+  finally { scopeSaving.value = false; }
+}
 const activeTab = ref("ip_conflicts");
 
-type CatKey = "ip_conflicts" | "mac_drifts" | "ghost_ips" | "unauthorized_ips";
+type CatKey = "ip_conflicts" | "mac_drifts" | "ghost_ips" | "unauthorized_ips" | "rogue_dhcp";
 const CATEGORIES: { key: CatKey; label: () => string }[] = [
   { key: "ip_conflicts", label: () => t("anomaly.ip_conflicts") },
   { key: "mac_drifts", label: () => t("anomaly.mac_drifts") },
   { key: "ghost_ips", label: () => t("anomaly.ghost_ips") },
   { key: "unauthorized_ips", label: () => t("anomaly.unauthorized") },
+  { key: "rogue_dhcp", label: () => t("anomaly.rogue_dhcp") },
 ];
+
+const rogueTitle = computed(() =>
+  t("anomaly.rogue_dhcp") + `（${report.value?.rogue_dhcp?.length ?? 0}）`);
 
 const anyFindings = computed(() => {
   const r = report.value;
-  return !!r && (r.ip_conflicts.length + r.mac_drifts.length + r.ghost_ips.length + r.unauthorized_ips.length) > 0;
+  return !!r && (r.ip_conflicts.length + r.mac_drifts.length + r.ghost_ips.length
+    + r.unauthorized_ips.length + (r.rogue_dhcp?.length ?? 0)) > 0;
 });
 function catRows(key: CatKey): Record<string, any>[] {
   return (report.value?.[key] as Record<string, any>[]) ?? [];
@@ -42,6 +85,8 @@ const COLLBL: Record<string, string> = {
   port: "埠", device_id: "裝置", last_seen_at: "最後出現", locations: "出現位置",
   last_seen_scanner: "最後出現（掃描）", last_seen_librenms: "最後出現（LibreNMS）",
   ip_address_id: "IP 物件 ID", reason: "原因", subnet: "子網路", state: "狀態",
+  server_ip: "DHCP 伺服器 IP", subnet_cidr: "子網路", vendor: "廠商",
+  offered_ip: "發出的 IP", router: "指定的閘道", first_seen_at: "首次發現",
 };
 // 各類別的欄位（順序）＋預設隱藏（ip_address_id 是內部 UUID，預設不顯示，可在「欄位」勾選）
 const CAT_KEYS: Record<CatKey, string[]> = {
@@ -49,6 +94,8 @@ const CAT_KEYS: Record<CatKey, string[]> = {
   mac_drifts: ["mac", "ips", "locations"],
   ghost_ips: ["ip", "hostname", "last_seen_scanner", "last_seen_librenms", "ip_address_id"],
   unauthorized_ips: ["ip"],
+  rogue_dhcp: ["server_ip", "subnet_cidr", "mac", "vendor", "offered_ip", "router",
+               "first_seen_at", "last_seen_at"],
 };
 const CAT_HIDDEN: Partial<Record<CatKey, string[]>> = { ghost_ips: ["ip_address_id"] };
 
@@ -167,7 +214,30 @@ async function run() {
       <span v-if="lastRunAt" style="opacity: 0.7; font-size: 13px">
         {{ t("anomaly.last_run") }}: {{ lastRunAt }}
       </span>
+      <n-button size="small" quaternary @click="openScope">
+        <template #icon><n-icon><SettingsIcon /></n-icon></template>
+        {{ t("anomaly.scope_btn") }}
+      </n-button>
     </n-space>
+
+    <!-- 偵測範圍：訪客／實驗網段本來就會一堆異常，留著只會把真正該處理的埋掉 -->
+    <n-modal v-model:show="scopeShow" preset="card" style="max-width: 620px"
+             :title="t('anomaly.scope_title')">
+      <n-alert type="info" :bordered="false" style="margin-bottom:12px">
+        {{ t("anomaly.scope_hint") }}
+      </n-alert>
+      <n-select v-model:value="scopeIds" multiple filterable clearable
+                :options="subnetOptions" :loading="subnetsLoading"
+                :placeholder="t('anomaly.scope_none')" />
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="scopeShow = false">{{ t("common.cancel") }}</n-button>
+          <n-button type="primary" :loading="scopeSaving" @click="saveScope">
+            {{ t("common.save") }}
+          </n-button>
+        </n-space>
+      </template>
+    </n-modal>
 
     <n-alert v-if="!report" type="info">
       <template #icon><n-icon><InfoIcon /></n-icon></template>
@@ -175,6 +245,19 @@ async function run() {
     </n-alert>
 
     <template v-if="report">
+      <!-- 非法 DHCP 一出現幾乎必定有事：它會把錯的位址跟閘道發給整個網段的機器。
+           混在分頁裡跟其它異常一樣大小的話，看到的人不會知道這條要優先處理。 -->
+      <n-alert v-if="report.rogue_dhcp?.length" type="error" :show-icon="true"
+               style="margin-bottom: 16px" :title="rogueTitle">
+        {{ t("anomaly.rogue_dhcp_warn") }}
+        <div class="rogue-list">
+          <span v-for="r in report.rogue_dhcp.slice(0, 8)" :key="r.server_ip" class="rogue-chip">
+            {{ r.server_ip }}<template v-if="r.subnet_cidr"> · {{ r.subnet_cidr }}</template>
+            <template v-if="r.vendor"> · {{ r.vendor }}</template>
+          </span>
+        </div>
+      </n-alert>
+
       <n-grid :cols="4" x-gap="12" style="margin-bottom: 16px">
         <n-gi><n-statistic :label="t('anomaly.ip_conflicts')" :value="report.ip_conflicts.length" /></n-gi>
         <n-gi><n-statistic :label="t('anomaly.mac_drifts')" :value="report.mac_drifts.length" /></n-gi>
@@ -207,6 +290,11 @@ async function run() {
 
 <style scoped>
 .cat-note { margin: 4px 0 14px; font-size: 12.5px; line-height: 1.7; }
+.rogue-list { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.rogue-chip {
+  font-family: var(--font-mono, monospace); font-size: 12px;
+  padding: 2px 8px; border-radius: 4px; background: rgba(208, 48, 80, .12);
+}
 .mac-tag {
   font-size: 11px; padding: 0 6px; border-radius: 3px; white-space: nowrap;
   background: var(--n-color-embedded, rgba(128, 128, 128, .12));

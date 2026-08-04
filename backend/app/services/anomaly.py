@@ -5,12 +5,16 @@
 - MAC 變動：同 MAC 在多個 switch+port 跳動（1h 內）
 - 失聯 IP：IPAM 有 IP 紀錄但 ARP/FDB 從未看過超過 N 天
 - 未授權設備：ARP 出現的 IP 但 IPAM 沒有
+- **非法 DHCP 伺服器**：掃描代理在網段上收到 DHCPOFFER，但該位址沒有被標記為 DHCP
+  伺服器。這是少數「一出現幾乎必定有事」的異常 —— 多半是有人插了台家用路由器，或某台
+  虛擬機誤開了 DHCP，會把租約發給不該拿的機器。
 
 每次偵測結果寫站內通知 + Webhook 事件 + audit。
 """
 
 from __future__ import annotations
 
+import ipaddress
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -33,6 +37,7 @@ class AnomalyReport:
     mac_drifts: list[dict[str, Any]] = field(default_factory=list)
     ghost_ips: list[dict[str, Any]] = field(default_factory=list)
     unauthorized_ips: list[dict[str, Any]] = field(default_factory=list)
+    rogue_dhcp: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,9 +45,11 @@ class AnomalyReport:
             "mac_drifts": self.mac_drifts,
             "ghost_ips": self.ghost_ips,
             "unauthorized_ips": self.unauthorized_ips,
+            "rogue_dhcp": self.rogue_dhcp,
             "total": (
                 len(self.ip_conflicts) + len(self.mac_drifts)
                 + len(self.ghost_ips) + len(self.unauthorized_ips)
+                + len(self.rogue_dhcp)
             ),
         }
 
@@ -179,16 +186,34 @@ async def detect_mac_drifts(
     return out
 
 
+async def _anomaly_subnet_ids(session: AsyncSession) -> set[Any]:
+    """有開啟異常偵測的子網路 ID。"""
+    from app.models.subnet import Subnet
+    return {
+        r[0] for r in (await session.execute(
+            select(Subnet.id).where(Subnet.anomaly_enabled.is_(True))
+        )).all()
+    }
+
+
 async def detect_ghost_ips(
     session: AsyncSession, *, days: int = 30,
 ) -> list[dict[str, Any]]:
-    """IPAM 有的 IP，但 ARP 從未看過或上次看到 > days 天前。"""
+    """IPAM 有的 IP，但 ARP 從未看過或上次看到 > days 天前。
+
+    只看有開啟異常偵測的子網路 —— 訪客／實驗網段本來就常常一堆位址沒人在用，
+    報出來只會把真正該處理的埋掉。
+    """
     cutoff = datetime.now(UTC) - timedelta(days=days)
+    subnet_ids = await _anomaly_subnet_ids(session)
+    if not subnet_ids:
+        return []
     # 取所有有寫進 IPAM 但其實沒 last_seen_scanner / last_seen_librenms 的
     rows = (
         await session.execute(
             select(IPAddress)
             .where(
+                IPAddress.subnet_id.in_(subnet_ids),
                 (
                     (IPAddress.last_seen_scanner.is_(None))
                     | (IPAddress.last_seen_scanner < cutoff)
@@ -196,7 +221,7 @@ async def detect_ghost_ips(
                 & (
                     (IPAddress.last_seen_librenms.is_(None))
                     | (IPAddress.last_seen_librenms < cutoff)
-                )
+                ),
             )
             .limit(500)
         )
@@ -213,8 +238,46 @@ async def detect_ghost_ips(
     ]
 
 
+def _is_noise_address(ip: str) -> bool:
+    """這個位址天生就不該被當成「未授權裝置」。
+
+    最大宗是 **169.254.x.x**（DHCP 拿不到位址時自己指派的 link-local）—— 那是「這台
+    機器沒拿到 IP」的徵狀，不是有人偷接東西。實測一台正式站台的未授權清單 53 筆全是
+    這個，真正該看的東西整個被埋掉。
+
+    另外排除多點傳送／保留位址與網段的網路位址、廣播位址：它們不對應到任何一台機器。
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True          # 解析不出來的字串一律不報
+    return bool(
+        addr.is_link_local or addr.is_multicast or addr.is_loopback
+        or addr.is_unspecified or addr.is_reserved
+    )
+
+
+async def _anomaly_networks(session: AsyncSession) -> list[Any]:
+    """有開啟異常偵測的子網路（網段物件）。"""
+    from app.models.subnet import Subnet
+    rows = (await session.execute(
+        select(Subnet.cidr).where(Subnet.anomaly_enabled.is_(True))
+    )).all()
+    nets = []
+    for (cidr,) in rows:
+        try:
+            nets.append(ipaddress.ip_network(str(cidr), strict=False))
+        except ValueError:
+            continue
+    return nets
+
+
 async def detect_unauthorized_ips(session: AsyncSession) -> list[dict[str, Any]]:
-    """ARP 看到但 IPAM 沒紀錄的 IP。"""
+    """ARP 看到但 IPAM 沒紀錄的 IP。
+
+    只看**有開啟異常偵測的子網路**範圍內的位址。落在所有子網路之外的位址，本來就不是
+    這套 IPAM 在管的東西，報出來只會製造雜訊。
+    """
     arp_ips_rows = (
         await session.execute(
             select(ARPEntry.ip).group_by(ARPEntry.ip).limit(2000)
@@ -229,8 +292,88 @@ async def detect_unauthorized_ips(session: AsyncSession) -> list[dict[str, Any]]
     ).all()
     ipam_ips = {str(r[0]).split("/")[0] for r in ipam_ips_rows}
 
-    unauthorized = sorted(arp_ips - ipam_ips)
+    nets = await _anomaly_networks(session)
+
+    def _in_scope(ip: str) -> bool:
+        if _is_noise_address(ip):
+            return False
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        # 網段的網路位址／廣播位址不對應到機器（/31、/32 例外，那兩種沒有這個概念）
+        for net in nets:
+            if addr in net:
+                if net.prefixlen < 31 and addr in (net.network_address, net.broadcast_address):
+                    return False
+                return True
+        return False
+
+    unauthorized = sorted(ip for ip in (arp_ips - ipam_ips) if _in_scope(ip))
     return [{"ip": ip} for ip in unauthorized[:200]]
+
+
+async def detect_rogue_dhcp(
+    session: AsyncSession, *, within_days: int = 7,
+) -> list[dict[str, Any]]:
+    """在網段上回應 DHCP、但沒有被標記為 DHCP 伺服器的主機。
+
+    合法與否是**查詢時**才比對的：把它存成欄位的話，管理員事後把某台標記為合法，
+    舊記錄仍然會寫著非法。
+
+    `via_relay` 的回應不算 —— 經由中繼轉送過來的伺服器本來就不在這個網段上，
+    拿本網段的標記去判它會是必然的誤報。
+    """
+    from app.models.dhcp_sighting import DHCPSighting
+    from app.models.subnet import Subnet
+
+    cutoff = datetime.now(UTC) - timedelta(days=within_days)
+    rows = (await session.execute(
+        select(DHCPSighting, Subnet.cidr)
+        .join(Subnet, Subnet.id == DHCPSighting.subnet_id)
+        .where(DHCPSighting.last_seen_at >= cutoff,
+               DHCPSighting.via_relay.is_(False))
+        .order_by(DHCPSighting.last_seen_at.desc())
+        .limit(200)
+    )).all()
+    if not rows:
+        return []
+
+    # 哪些位址被標記為合法的 DHCP 伺服器（依子網路分開看：同一個 IP 字串在不同
+    # 網段是不同台機器）
+    marked = {
+        (r[0], str(r[1]))
+        for r in (await session.execute(
+            select(IPAddress.subnet_id, IPAddress.ip)
+            .where(IPAddress.is_dhcp_server.is_(True))
+        )).all()
+    }
+
+    out: list[dict[str, Any]] = []
+    for sighting, cidr in rows:
+        server_ip = str(sighting.server_ip)
+        if (sighting.subnet_id, server_ip) in marked:
+            continue
+        mac = str(sighting.server_mac) if sighting.server_mac else None
+        out.append({
+            "subnet_id": str(sighting.subnet_id),
+            "subnet_cidr": str(cidr),
+            "server_ip": server_ip,
+            "mac": mac,
+            "vendor": None,          # 下面統一補（一次查完 OUI，避免逐筆打 DB）
+            "offered_ip": str(sighting.offered_ip) if sighting.offered_ip else None,
+            "router": str(sighting.router) if sighting.router else None,
+            "first_seen_at": sighting.first_seen_at,
+            "last_seen_at": sighting.last_seen_at,
+        })
+
+    macs = [o["mac"] for o in out if o["mac"]]
+    if macs:
+        vendors = await vendor_map(session, macs)
+        for o in out:
+            if o["mac"]:
+                o["vendor"] = vendors.get(mac_prefix(o["mac"]))
+    return out
 
 
 async def run_detection(
@@ -242,6 +385,7 @@ async def run_detection(
         mac_drifts=await detect_mac_drifts(session),
         ghost_ips=await detect_ghost_ips(session),
         unauthorized_ips=await detect_unauthorized_ips(session),
+        rogue_dhcp=await detect_rogue_dhcp(session),
     )
 
     if notify_admins:
@@ -261,6 +405,7 @@ async def run_detection(
                 ("MAC 變動", "notif.anom_mac_drift", report.mac_drifts),
                 ("失聯 IP", "notif.anom_ghost", report.ghost_ips),
                 ("未授權 IP", "notif.anom_unauthorized", report.unauthorized_ips),
+                ("非法 DHCP 伺服器", "notif.anom_rogue_dhcp", report.rogue_dhcp),
             ):
                 if not items:
                     continue

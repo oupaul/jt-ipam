@@ -35,7 +35,8 @@ import {
   ToolsIcon, SettingsIcon, TasksIcon,
   // Phase 3 / Admin
   Phase3Icon, VirtualizationIcon, PhysicalIcon, PowerIcon, VpnIcon,
-  AdminIcon, AuditIcon, UsersIcon, GroupsIcon, CustomFieldsIcon, CustomersIcon, AnomalyIcon, ChatHistoryIcon,
+  AdminIcon, AuditIcon, UsersIcon, GroupsIcon, CustomFieldsIcon, CustomersIcon, AnomalyIcon,
+  AiAuditIcon, ChatHistoryIcon,
   DnsIcon, LibreNMSIcon, FirewallIcon, DhcpServerIcon, WazuhIcon, ScanAgentsIcon, WebhooksIcon, LockIcon, KeyIcon,
   MigrationIcon, ImportIcon, PluginsIcon, ExportIcon, TerminalIcon,
   // topbar / user menu
@@ -256,6 +257,12 @@ const menuOptions = computed<MenuOption[]>(() => {
       { label: () => t("nav.oui_admin"),     key: "oui_admin",      icon: renderIcon(DevicesIcon) },
       { label: () => t("nav.hostname_precedence"), key: "hostname_precedence", icon: renderIcon(AddressesIcon) },
       { label: () => t("nav.anomaly"),       key: "anomaly",        icon: renderIcon(AnomalyIcon) },
+      // 排在異常偵測後面：兩者都是「找問題」，但一個是量到的事實、一個是模型的
+      // 推測，刻意分成兩頁而不是合併 —— 混在一起會分不出哪些結論可以直接相信。
+      // LLM 沒啟用就整個藏起來（跟 AI 對話小工具同一個判斷）。
+      ...(me.value?.ai_enabled
+        ? [{ label: () => t("nav.ai_audit"), key: "ai_audit", icon: renderIcon(AiAuditIcon) }]
+        : []),
       { label: () => t("nav.dns"),           key: "dns",            icon: renderIcon(DnsIcon) },
       { label: () => t("nav.adguard"),       key: "adguard",        icon: renderIcon(DnsIcon) },
       { label: () => t("nav.librenms"),      key: "librenms",       icon: renderIcon(LibreNMSIcon) },

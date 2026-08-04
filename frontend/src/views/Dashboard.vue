@@ -13,6 +13,8 @@
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import DashboardUptime from "@/components/DashboardUptime.vue";
+import DashboardAIAudit from "@/components/DashboardAIAudit.vue";
+import { useAuthStore } from "@/stores/auth";
 import { useRouter } from "vue-router";
 import {
   NCard,
@@ -38,6 +40,12 @@ import { Antenna as LiveIcon } from "@iconoir/vue";
 import { Database as CapacityIcon } from "@iconoir/vue";
 
 const { t } = useI18n();
+// AI 巡檢區的顯示條件：LLM 有啟用（跟 AI 對話小工具同一個判斷）**且**是管理員。
+// 這個功能整支端點都限管理員 —— 非管理員看到區塊只會拿到 403，等於放一塊壞掉的畫面。
+const aiEnabled = computed(() => {
+  const me = useAuthStore().me;
+  return !!me?.ai_enabled && !!me?.is_admin;
+});
 const router = useRouter();
 const msg = useMessage();
 const data = ref<DashboardOverview | null>(null);
@@ -563,6 +571,11 @@ onMounted(() => { void load(); void loadPins(); });
           </div>
         </n-space>
       </n-card>
+
+      <!-- AI 巡檢摘要放最後：它是推測，不該排在實際資料前面。
+           LLM 沒啟用就整塊不顯示（跟 AI 對話小工具同一個判斷）；
+           無全域讀取權限者拿到 403 → 元件自行不顯示。 -->
+      <DashboardAIAudit v-if="aiEnabled" />
     </n-space>
   </n-spin>
 </template>
