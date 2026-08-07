@@ -32,6 +32,7 @@ async def _run() -> int:
 
     from app.core.db import SessionLocal
     from app.models.adguard import AdGuardInstance
+    from app.models.esxi import ESXiInstance
     from app.models.fortigate import FortiGateFirewall
     from app.models.paloalto import PaloAltoFirewall
     from app.models.windows_dhcp import WindowsDhcpServer
@@ -116,7 +117,32 @@ async def _run() -> int:
                 await _hb(session, kind="pfsense.sync", target_type="pfsense_firewall",
                           target_id=fw.id, target_label=name, ok=False, error=str(exc))
 
-        # ── Wazuh ──
+    
+    # ── ESXi / vCenter ──
+    for inst in (await session.execute(
+        select(ESXiInstance).where(ESXiInstance.enabled.is_(True))
+    )).scalars().all():
+        interval = timedelta(seconds=inst.sync_interval_seconds)
+        if inst.last_sync_at and inst.last_sync_at + interval > now:
+            continue
+        name = inst.name
+        try:
+            from app.services import esxi as esxi_svc
+            summary = await esxi_svc.sync_instance(session, inst)
+            await session.commit()
+            log.info("esxi %s: %s", name, summary)
+            await _hb(session, kind="esxi.sync", target_type="esxi_instance",
+                      target_id=inst.id, target_label=name, ok=True, summary=summary)
+        except Exception as exc:  # noqa: BLE001
+            # 先 rollback 再寫 last_error：不 rollback 會二次爆、連鎖中斷整輪
+            await session.rollback()
+            inst.last_error = str(exc)[:2000]
+            await session.commit()
+            log.error("esxi %s sync failed: %s", name, exc)
+            failed += 1
+            await _hb(session, kind="esxi.sync", target_type="esxi_instance",
+                      target_id=inst.id, target_label=name, ok=False, error=str(exc))
+    # ── Wazuh ──
         wzs = (
             await session.execute(
                 select(WazuhInstance).where(WazuhInstance.enabled.is_(True))
@@ -129,6 +155,13 @@ async def _run() -> int:
             name = inst.name
             try:
                 summary = await wazuh_svc.sync_agents(session, inst)
+                # SCA（資安組態評估）：用同一組 API 憑證，失敗不影響 agent 同步本身
+                try:
+                    n = await wazuh_svc.sync_sca(session, inst)
+                    if n and isinstance(summary, dict):
+                        summary["sca"] = n
+                except Exception as exc:   # noqa: BLE001
+                    log.warning("wazuh %s sca: %s", inst.name, exc)
                 await session.commit()
                 log.info("wazuh %s: %s", name, summary)
                 await _hb(session, kind="wazuh.sync", target_type="wazuh_instance",

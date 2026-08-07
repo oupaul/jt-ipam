@@ -298,6 +298,10 @@ Main config file: `/etc/jt-ipam/backend.env` (root:jtipam 0640)
 | `SAML_*` | — | enable SAML SSO |
 | `LDAP_*` | — | LDAP/AD auth |
 | `OLLAMA_ENABLED` | — | enable AI semantic search + chat |
+| `OLLAMA_URL` | `http://127.0.0.1:11434` | LLM server address |
+| `OLLAMA_CHAT_MODEL` | `gemma4:26b` | chat model |
+| `OLLAMA_EMBEDDING_MODEL` | `granite-embedding:278m` | embedding model — **its dimension must equal `EMBEDDING_DIM`** |
+| `EMBEDDING_DIM` | `768` | size of the database `vector(N)` column; changing it means changing the migration too |
 
 See the Settings class in `app/core/config.py` for the full list.
 
@@ -366,6 +370,31 @@ After restart, register the SP metadata with the IdP: `curl https://ipam.example
 ---
 
 ## 5. Backup & restore
+
+### LLM / AI (optional)
+
+AI chat and semantic search run against a **self-hosted Ollama** by default, so data stays on your own network. The installer does not install the LLM server — it usually lives on a separate machine with a GPU.
+
+```bash
+# on the LLM server (example)
+ollama pull gemma4:26b                 # chat model
+ollama pull granite-embedding:278m     # embedding model (768-dim, multilingual)
+```
+
+Then fill in the URL and the two models under **Admin → LLM / AI**, press **Check dimension** to confirm they match, and press **Rebuild index** to populate vectors for existing records.
+
+> **Read this if you are upgrading.** An upgrade does **not** repair semantic search on its own; three things need a hand:
+> 1. The shipped default is now `granite-embedding:278m`, but that only applies **if you never saved an embedding model on the settings page** — a value in the database wins, and yours is probably the old one.
+> 2. The new model has to be pulled on your LLM server yourself.
+> 3. Existing records only get vectors once you press **Rebuild index**.
+>
+> The settings page probes the dimension when it loads and says so if they do not match — which is precisely what the old behaviour lacked: a mismatch produced no error at all, only "semantic search never returns anything".
+
+> ⚠️ **The embedding model's output dimension must equal `EMBEDDING_DIM` (768 by default)** — the size of the database's `vector(N)` column. A mismatch produces **no error message at all**; the only symptom is that semantic search never returns anything, because every index write failed. After changing the embedding model, press **Check dimension** on the settings page: it reports what the model returned versus what the column holds.
+>
+> Also note that **English-only embedding models (such as `nomic-embed-text`) collapse different non-Latin descriptions into the same vector**. The dimension looks right and search returns results, but the ranking is meaningless. Prefer a multilingual model, and compare a few of your own descriptions to confirm they produce different results.
+
+You can point it at an external OpenAI-compatible endpoint instead (ChatGPT, vLLM, LM Studio, OpenRouter…) by choosing "OpenAI-compatible" and supplying an API key (stored AES-GCM encrypted). **Your subnets, hostnames and topology are then sent to that provider** — keep the self-hosted Ollama if data must not leave your network.
 
 ### Automatic backup
 

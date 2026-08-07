@@ -59,9 +59,15 @@
                       :disabled="caps ? !(caps.tracepath || caps.traceroute) : false" @click="runTrace">
               <template #icon><n-icon><SearchIcon /></n-icon></template>{{ t("netdiag.run") }}
             </n-button>
+            <!-- 路徑追蹤要跑數十秒（沒有回應的躍點必須等滿逾時才知道它不會回）。
+                 不顯示已等待時間的話，畫面只有轉圈，看起來像當掉。 -->
+            <span v-if="trace.busy" class="nd-elapsed">
+              {{ t("netdiag.trace_running", { s: trace.elapsed }) }}
+            </span>
           </n-space>
           <div class="nd-hint">{{ t("netdiag.trace_hint") }}</div>
-          <div v-if="trace.res" class="nd-sum">
+          <div class="nd-hint">{{ t("netdiag.trace_slow_hint") }}</div>
+          <div v-if="trace.res?.tool" class="nd-sum">
             {{ t("netdiag.trace_tool", { tool: trace.res.tool }) }}
             <template v-if="trace.res.path_mtu"> · {{ t("netdiag.path_mtu", { n: trace.res.path_mtu }) }}</template>
             <n-tag v-if="trace.res.truncated" size="small" type="warning" :bordered="false"
@@ -80,7 +86,14 @@
                    :placeholder="t('netdiag.targets_ph')" />
           <n-space align="center" :size="14" style="margin-top:10px" :wrap="true">
             <span class="nd-lbl">{{ t("netdiag.ports") }}
-              <n-input v-model:value="tcp.ports" size="small" style="width:180px" placeholder="443, 22, 3389" />
+              <n-input v-model:value="tcp.ports" size="small" style="width:180px"
+                       :placeholder="t('netdiag.ports_ph')" />
+              <n-tooltip :delay="150" trigger="hover">
+                <template #trigger>
+                  <n-icon :size="15" class="nd-hint-ic"><InfoIcon /></n-icon>
+                </template>
+                <div style="max-width:280px;line-height:1.6">{{ t("netdiag.ports_hint") }}</div>
+              </n-tooltip>
             </span>
             <span class="nd-lbl">{{ t("netdiag.timeout") }}
               <n-input-number v-model:value="tcp.timeout" :min="1" :max="10" size="small" style="width:92px" />
@@ -102,7 +115,14 @@
                    :placeholder="t('netdiag.targets_ph')" />
           <n-space align="center" :size="14" style="margin-top:10px" :wrap="true">
             <span class="nd-lbl">{{ t("netdiag.ports") }}
-              <n-input v-model:value="udp.ports" size="small" style="width:180px" placeholder="53, 123, 161" />
+              <n-input v-model:value="udp.ports" size="small" style="width:180px"
+                       :placeholder="t('netdiag.ports_ph_udp')" />
+              <n-tooltip :delay="150" trigger="hover">
+                <template #trigger>
+                  <n-icon :size="15" class="nd-hint-ic"><InfoIcon /></n-icon>
+                </template>
+                <div style="max-width:280px;line-height:1.6">{{ t("netdiag.ports_hint") }}</div>
+              </n-tooltip>
             </span>
             <span class="nd-lbl">{{ t("netdiag.timeout") }}
               <n-input-number v-model:value="udp.timeout" :min="1" :max="10" size="small" style="width:92px" />
@@ -227,11 +247,13 @@ import { computed, h, onMounted, reactive, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NAlert, NButton, NCard, NDataTable, NDescriptions, NDescriptionsItem, NModal,
-  NIcon, NInput, NInputNumber, NSpace, NTag, useMessage,
+  NIcon, NTooltip, NInput, NInputNumber, NSpace, NTag, useMessage,
 } from "naive-ui";
-import { DnsIcon, LinkIcon, LockIcon, NetDiagIcon as LiveIcon, SearchIcon, TopologyIcon } from "@/icons";
+import { DnsIcon, InfoIcon, LinkIcon, LockIcon, NetDiagIcon as LiveIcon, SearchIcon, TopologyIcon } from "@/icons";
+import { MAX_PORTS, parsePorts } from "@/utils/ports";
 import CardTitle from "@/components/CardTitle.vue";
 import { apiClient, apiErrMsg } from "@/api/client";
+import { traceStream } from "@/api/tools";
 
 const MAX_TARGETS = 64;
 const { t } = useI18n();
@@ -267,7 +289,7 @@ interface UdpRow {
 const caps = ref<Caps | null>(null);
 const ping = reactive({ targets: "", count: 3, timeout: 2, concurrency: 8, busy: false, rows: [] as PingRow[] });
 // 預設 15：內網目標會提早結束；對不回應的網際網路目標，躍點數直接決定等待時間
-const trace = reactive({ target: "", maxHops: 15, busy: false, res: null as TraceRes | null });
+const trace = reactive({ target: "", maxHops: 15, busy: false, elapsed: 0, res: null as TraceRes | null });
 const tcp = reactive({ targets: "", ports: "443, 22", timeout: 2, busy: false, rows: [] as TcpRow[] });
 const udp = reactive({ targets: "", ports: "53, 123", timeout: 3, busy: false, rows: [] as UdpRow[] });
 const tls = reactive({ targets: "", port: 443, sni: "", busy: false, rows: [] as TlsRow[] });
@@ -355,7 +377,10 @@ const udpCols = computed(() => [
 
 async function runUdp() {
   if (!udp.targets.trim()) { msg.error(t("netdiag.need_target")); return; }
-  const ports = udp.ports.split(/[\s,;]+/).filter(Boolean).map(Number).filter((x) => x >= 1 && x <= 65535);
+  const parsed = parsePorts(udp.ports);
+  if (parsed.invalid.length) { msg.warning(t("netdiag.port_invalid", { s: parsed.invalid.join(", ") })); }
+  if (parsed.overflow) { msg.warning(t("netdiag.port_overflow", { n: MAX_PORTS })); }
+  const ports = parsed.ports;
   if (!ports.length) { msg.error(t("netdiag.need_port")); return; }
   udp.busy = true;
   try {
@@ -446,20 +471,43 @@ async function runPing() {
   } catch (e) { msg.error(apiErrMsg(e)); } finally { ping.busy = false; }
 }
 
+let traceTimer: ReturnType<typeof setInterval> | null = null;
+
 async function runTrace() {
   if (!trace.target.trim()) { msg.error(t("netdiag.need_target")); return; }
   trace.busy = true;
+  trace.elapsed = 0;
+  // 邊跑邊長：先給一個空殼，每收到一跳就 push 一列進去
+  trace.res = { target: trace.target, tool: "", path_mtu: null, truncated: false, hops: [] };
+  traceTimer = setInterval(() => { trace.elapsed += 1; }, 1000);
   try {
-    const { data } = await apiClient.post("/api/v1/tools/net/traceroute", {
-      target: trace.target, max_hops: trace.maxHops,
+    await traceStream(trace.target, trace.maxHops, (ev) => {
+      if (ev.type === "hop") {
+        trace.res!.hops.push({
+          hop: ev.hop!, host: ev.host ?? null,
+          rtt_ms: ev.rtt_ms ?? null, note: ev.note ?? null,
+        });
+      } else if (ev.type === "done") {
+        trace.res!.tool = ev.tool ?? "";
+        trace.res!.path_mtu = ev.path_mtu ?? null;
+        trace.res!.truncated = !!ev.truncated;
+      } else if (ev.type === "error") {
+        msg.error(ev.detail ?? t("errors.server"));
+      }
     });
-    trace.res = data;
-  } catch (e) { msg.error(apiErrMsg(e)); } finally { trace.busy = false; }
+  } catch (e) { msg.error(apiErrMsg(e)); }
+  finally {
+    trace.busy = false;
+    if (traceTimer) { clearInterval(traceTimer); traceTimer = null; }
+  }
 }
 
 async function runTcp() {
   if (!tcp.targets.trim()) { msg.error(t("netdiag.need_target")); return; }
-  const ports = tcp.ports.split(/[\s,;]+/).filter(Boolean).map(Number).filter((n) => n >= 1 && n <= 65535);
+  const parsed = parsePorts(tcp.ports);
+  if (parsed.invalid.length) { msg.warning(t("netdiag.port_invalid", { s: parsed.invalid.join(", ") })); }
+  if (parsed.overflow) { msg.warning(t("netdiag.port_overflow", { n: MAX_PORTS })); }
+  const ports = parsed.ports;
   if (!ports.length) { msg.error(t("netdiag.need_port")); return; }
   tcp.busy = true;
   try {
@@ -485,13 +533,15 @@ onMounted(async () => {
 }
 .howto-note { margin-top: 12px; font-size: 12px; color: var(--n-text-color-disabled); line-height: 1.8; }
 .nd-div { font-size: 13px; font-weight: 600; }
-/* 與上方計算工具用同一組格線參數（2 欄、12px、820px 收合），整頁節奏才一致 */
+/* 與上方計算工具用同一組格線參數（2 欄、12px、820px 收合），整頁看起來才一致 */
 .nd-grid { display: grid; grid-template-columns: 1fr; gap: 12px; align-items: start; }
 .nd-wide { grid-column: 1 / -1; }
 /* 表格儲存格不要從字中間斷行 —— "Connection refused" 曾被折成 "Connectio n refused" */
 .nd :deep(.n-data-table td) { word-break: keep-all; overflow-wrap: anywhere; }
 .nd-note { font-size: 12.5px; line-height: 1.7; color: var(--n-text-color-disabled); margin-bottom: 14px; }
 .nd-hint { margin-top: 6px; font-size: 12px; line-height: 1.6; color: var(--n-text-color-disabled); }
+.nd-elapsed { font-size:12px; opacity:.65; font-variant-numeric: tabular-nums }
+.nd-hint-ic { opacity:.55; cursor:help; margin-left:4px; vertical-align:middle }
 .nd-lbl { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
 .nd-udp-note { margin-top: 10px; font-size: 12px; line-height: 1.7; }
 .nd-hop { font-size: 12.5px; line-height: 1.7; opacity: .85; }

@@ -10,6 +10,16 @@
         <n-button size="small" :loading="loading" @click="load">
           <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("common.refresh") }}
         </n-button>
+        <!-- 清除是刪除、不是全部忽略：忽略會留下指紋，往後同一件事都自動略過，
+             跟「清掉再重新分析一次」正好相反。所以確認文字要把後果講明白。 -->
+        <n-popconfirm v-if="canRun && (summary?.total ?? 0) > 0" @positive-click="clearAll">
+          <template #trigger>
+            <n-button size="small" :loading="clearing">
+              <template #icon><n-icon><DeleteIcon /></n-icon></template>{{ t("ai_audit.clear_all") }}
+            </n-button>
+          </template>
+          {{ t("ai_audit.clear_confirm") }}
+        </n-popconfirm>
         <n-button v-if="canRun" size="small" type="primary" :loading="running" @click="runNow">
           <template #icon><n-icon><TestIcon /></n-icon></template>{{ t("ai_audit.run_now") }}
         </n-button>
@@ -116,7 +126,8 @@
           </n-tag>
           <span class="fx-what">
             <n-tag size="small" round :bordered="false">{{ t(`ai_audit.cat_${f.category}`) }}</n-tag>
-            <h3 class="fx-title">{{ f.title }}</h3>
+            <!-- eslint-disable-next-line vue/no-v-html -->
+            <h3 class="fx-title" v-html="renderInlineMarkdown(f.title)"></h3>
           </span>
           <span class="fx-when">{{ fmtDateTime(f.created_at) }}</span>
           <n-button v-if="canRun && f.status === 'open'" size="tiny" secondary
@@ -130,10 +141,14 @@
             {{ t("ai_audit.restore") }}
           </n-button>
         </div>
-        <p v-if="f.detail" class="fx-detail">{{ f.detail }}</p>
+        <!-- 這三段都是模型寫的文字，會夾 `code`、**粗體** 這類語法 —— 當純文字印會
+             把反引號直接顯示在畫面上。用行內版渲染器（跳脫在前、不產生區塊標籤）。 -->
+        <!-- eslint-disable-next-line vue/no-v-html -->
+        <p v-if="f.detail" class="fx-detail" v-html="renderInlineMarkdown(f.detail)"></p>
         <div v-if="f.recommendation" class="fx-rec">
           <span class="fx-rec-tag">{{ t("ai_audit.recommendation") }}</span>
-          <span>{{ f.recommendation }}</span>
+          <!-- eslint-disable-next-line vue/no-v-html -->
+          <span v-html="renderInlineMarkdown(f.recommendation)"></span>
         </div>
         <!-- 依據資料一定要看得到：沒有它，上面那段話就無從查證。
              IP 直接做成連結 —— 查證要能一鍵翻到那筆紀錄，不是叫人自己去搜尋。 -->
@@ -146,9 +161,17 @@
             </template>
             <IpPeek :ip="ip" :data="ipCache[ip]" />
           </n-popover>
-          <!-- 裝置與子網路也要能點過去查證 —— 只印一個名字，還是要人自己去搜尋 -->
-          <span v-for="d in evList(f.evidence, 'devices')" :key="`d-${d}`"
-                class="fx-ref" @click="goDevice(d)">{{ d }}</span>
+          <!-- 裝置與子網路也要能點過去查證 —— 只印一個名字，還是要人自己去搜尋。
+               主機名稱也要能懸停看摘要：同一列裡 IP 有、主機名稱沒有，
+               使用者得先點進去才知道那台是什麼。 -->
+          <n-popover v-for="d in evList(f.evidence, 'devices')" :key="`d-${d}`"
+                     trigger="hover" :delay="120" placement="top"
+                     @update:show="(v: boolean) => v && loadDev(d)">
+            <template #trigger>
+              <span class="fx-ref" @click="goDevice(d)">{{ d }}</span>
+            </template>
+            <DevicePeek :name="d" :data="devCache[d]" />
+          </n-popover>
           <span v-for="n in evList(f.evidence, 'subnets')" :key="`s-${n}`"
                 class="fx-ref" @click="goSubnet(n)">{{ n }}</span>
           <span v-for="[k, v] in evRest(f.evidence)" :key="k" class="fx-ev-kv">
@@ -165,19 +188,24 @@ import { computed, h, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import {
-  NAlert, NButton, NCard, NEmpty, NIcon, NPopover, NProgress, NRadioButton,
-  NRadioGroup, NSelect, NSpace, NSpin, NTag, useMessage, type SelectOption,
+  NAlert, NButton, NCard, NEmpty, NIcon, NPopconfirm, NPopover, NProgress,
+  NRadioButton, NRadioGroup, NSelect, NSpace, NSpin, NTag, useMessage,
+  type SelectOption,
 } from "naive-ui";
-import { AnomalyIcon, DismissIcon, ListIcon, RefreshIcon, TestIcon, RestoreIcon } from "@/icons";
+import {
+  AnomalyIcon, DeleteIcon, DismissIcon, ListIcon, RefreshIcon, RestoreIcon, TestIcon,
+} from "@/icons";
 import IpPeek, { type IpPeekData } from "@/components/IpPeek.vue";
+import DevicePeek, { type DevicePeekData } from "@/components/DevicePeek.vue";
 import { listAddresses } from "@/api/addresses";
 import { listDevices } from "@/api/basic";
 import { listSubnets } from "@/api/subnets";
 import CardTitle from "@/components/CardTitle.vue";
 import { fmtDateTime } from "@/utils/datetime";
+import { renderInlineMarkdown } from "@/utils/markdown";
 import { apiErrMsg } from "@/api/client";
 import {
-  dismissAIFindings, getAIAuditStatus, getAIAuditSummary, listAIFindings,
+  clearAIFindings, dismissAIFindings, getAIAuditStatus, getAIAuditSummary, listAIFindings,
   restoreAIFindings, runAIAudit,
   type AIAuditSummary, type AIAuditTask, type AIFinding,
 } from "@/api/system";
@@ -219,6 +247,18 @@ const elapsedText = computed(() => {
 
 // 執行與忽略是管理員操作（後端仍是唯一真相，這裡只是不要給看得到卻按不動的按鈕）
 const canRun = computed(() => !!auth.me?.is_admin);
+
+const clearing = ref(false);
+/** 清空整份清單，讓下一次巡檢重新報告（包含先前判定為誤報而忽略的）。 */
+async function clearAll() {
+  clearing.value = true;
+  try {
+    const r = await clearAIFindings();
+    msg.success(t("ai_audit.cleared", { n: r.deleted }));
+    await load();
+  } catch (e) { msg.error(apiErrMsg(e)); }
+  finally { clearing.value = false; }
+}
 
 const sevOptions = computed(() => ["high", "medium", "low"].map((s) => ({
   label: t(`ai_audit.sev_${s}`), value: s,
@@ -316,6 +356,29 @@ function evKeyLabel(k: string) {
 
 // IP 詳細卡片：滑過去才查，查過就快取（同一筆發現裡同一個 IP 只查一次）
 const ipCache = ref<Record<string, IpPeekData | undefined>>({});
+const devCache = ref<Record<string, DevicePeekData | undefined>>({});
+
+/** 懸停時才抓裝置摘要（抓過就留著）。用伺服器端搜尋，不必把整份裝置清單拉下來。 */
+async function loadDev(name: string) {
+  if (name in devCache.value) return;
+  devCache.value[name] = undefined;
+  try {
+    const r = await listDevices({ q: name, pageSize: 20 });
+    const hit = r.items.find((d) => d.name === name)
+      ?? r.items.find((d) => d.name?.toLowerCase() === name.toLowerCase());
+    devCache.value[name] = hit
+      ? {
+          type: hit.type, ip: (hit as any).ip ?? null,
+          vendor: (hit as any).vendor ?? null, model: (hit as any).model ?? null,
+          serial: (hit as any).serial ?? null,
+          location: (hit as any).location_name ?? null,
+          description: hit.description ?? null,
+        }
+      : { missing: true };
+  } catch {
+    devCache.value[name] = { missing: true };
+  }
+}
 
 async function loadIp(ip: string) {
   if (ipCache.value[ip] !== undefined) return;
@@ -375,7 +438,7 @@ function goIp(ip: string) {
  *  只把人帶到未篩選的整份清單，等於沒有幫上忙。 */
 async function goDevice(name: string) {
   try {
-    const r = await listDevices({ pageSize: 500 });
+    const r = await listDevices({ q: name, pageSize: 20 });
     const hit = r.items.find((d) => d.name === name)
       ?? r.items.find((d) => d.name?.toLowerCase() === name.toLowerCase());
     if (hit) {
@@ -544,7 +607,10 @@ onBeforeUnmount(stopPolling);
 .sev-cell:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0, 0, 0, .08); }
 /* 被選為篩選條件時邊框轉成該嚴重度的顏色，看得出目前在篩什麼 */
 .sev-cell.on { border-color: currentColor; box-shadow: 0 0 0 1px currentColor inset; }
-.sev-n { font-size: 20px; font-weight: 700; line-height: 1.2; }
+.sev-n {
+  font-size: 24px; font-weight: 700; line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
 .sev-l { font-size: 12px; color: var(--n-text-color-disabled); margin-top: 2px; }
 .sev-high { color: #d03050; }
 .sev-medium { color: #f0a020; }

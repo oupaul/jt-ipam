@@ -4,6 +4,158 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.151] — 2026-08-07
+
+### Changed
+- **An upgrade cannot repair semantic search on its own, so the settings page now says so instead of staying silent.** 0.5.148 fixed the shipped default and made the failure reportable, but for an existing installation none of that takes effect by itself: a saved embedding model in the database wins over the new default, the replacement model still has to be pulled on your own LLM server, and existing records only get vectors once a reindex runs. An upgraded site would have kept returning nothing from semantic search, with nothing on screen explaining why — the same silence as before.
+
+  The settings page now **probes the dimension when it loads** and states plainly when the model's output does not match the database column. It also has a **Rebuild index** button: the endpoint has existed all along, but there was no way to reach it from the interface, so there was no way to make semantic search actually start working. Both install guides gained an "if you are upgrading" section listing the three steps that genuinely need a hand.
+
+  Fully automatic was neither possible nor right: this project cannot pull a model onto someone else's LLM server, and silently overwriting a model an operator chose is not a thing an upgrade should do. What it can do is fail loudly and offer the fix in one click.
+
+## [0.5.150] — 2026-08-06
+
+### Fixed
+- **A VMware host could not be added at all.** `POST /api/v1/esxi` returned 422 `extra_forbidden` on every attempt, so the integration was unusable from the moment it shipped — and it went out twice that way.
+
+  The failover-address field was added to the model, the migration and the form, but to none of the schemas. Request schemas here forbid unknown fields, and the form always sends that key (as `null` when blank), so every submission was rejected. The 33 existing ESXi tests were all green because they exercise the SOAP parsing and the sync — **none of them goes through a schema**.
+
+  The field is now accepted on create and update, clearing it stores null rather than an empty string, and eight endpoint tests cover the contract, one of them posting the form's exact payload including the blank fields the customer had. A further test asserts that **every non-internal model column is reachable through the Create and Update schemas**, so this class of defect fails loudly next time; a column deliberately kept internal must be listed as such. A sweep of all 50 request schemas found no second instance.
+
+  The frontend client took `Record<string, unknown>`, which is why type-checking never noticed. It is typed now — though that only catches typos, not front/back drift; the request-level tests are what actually catch this.
+
+## [0.5.149] — 2026-08-06
+
+### Changed
+- **The VMware ESXi / vCenter integration is now in the README and on the project pages.** It shipped in 0.5.148 as that release's headline feature and was mentioned in neither — Proxmox VE appeared 5 times in the README and VMware not once. A capability nobody can find out about may as well not exist.
+- **"Scan cadence" reads as "scan frequency" in Traditional Chinese.** 節奏 is not how this is said in Taiwan.
+- **The per-probe intervals are laid out as an aligned three-column grid** (name, value, human-readable equivalent) instead of six full-width stacked fields. Six probes turned the dialog into a long scroll, and comparing intervals meant scrolling between them.
+
+### Fixed
+- **A traceroute now streams one hop at a time instead of showing nothing for a minute.** A hop that does not answer can only be confirmed once its timeout expires, so 15 hops take 30–60 seconds — during which the button simply looked unresponsive, with no way to tell running from hung from broken.
+
+  The part that would have failed silently: `tracepath` block-buffers its stdout when it is a pipe, so every line arrives at once when the process exits (measured: all of it at 6.02s). The command is now run under `stdbuf -oL`, after which lines genuinely arrive at +0.02s, +3.02s and +6.03s. The response also sets `X-Accel-Buffering: no`, because nginx otherwise holds the whole stream until it completes. Without either of those, the streaming code would have looked correct and changed nothing on screen.
+
+- **Ping now spaces its packets, and both code paths agree.** Asking for 10 pings returned instantly: it really did send and receive 10, but the whole burst finished in 53 ms. A 50 ms burst cannot show jitter or intermittent loss, and devices that rate-limit ICMP report loss that isn't real. Worse, the two paths measured different things entirely — a host that can open an ICMP socket took 0.05s, one falling back to `ping -c 10` took about 9 seconds, and which you got depended on the host. Both now space packets by 0.25s (10 pings ≈ 2.3s), verified against production.
+- **The address hover card showed two unlabelled English values side by side** — `active` and `unknown` — which reads as one contradictory status. They are two different fields: what the address is recorded as, and what monitoring has actually observed. They are now separate labelled rows using the same translations as the rest of the app, so `online (scanner)` reads as 上線（scanner）. A component test asserts what is rendered, since this was purely a display defect that type-checking cannot catch.
+
+## [0.5.148] — 2026-08-06
+
+### Added
+
+- **OpenAI-compatible LLM endpoints.** The provider setting adds an OpenAI-compatible mode alongside Ollama, which covers ChatGPT, vLLM, LM Studio, OpenRouter and anything else speaking that protocol — and Ollama's own `/v1` layer.
+
+  **The default stays Ollama, and switching is deliberate.** This project's premise is that a self-hosted model keeps your data on your own network; sending subnets, hostnames and topology to an outside service is a decision for the operator to make, not a behaviour that changes on upgrade. The settings page says so explicitly when the external option is selected, rather than leaving it implied.
+
+  The differences between the two are real and each was handled rather than papered over: different chat and embedding paths, different reply shapes, `options` (`num_ctx`) being Ollama-only and rejected elsewhere, and a model list at `/v1/models` instead of `/api/tags` — that last one would have left the model dropdown quietly empty with nothing on screen to explain it. A base URL already ending in `/v1` is not doubled. No key is sent when none is configured, because local endpoints usually want none and an empty `Bearer` reads as a failed authentication.
+
+  The key is **encrypted at rest** (AES-GCM, its own AAD), like every other secret in this project — a paid credential should not sit in clear text in `system_settings` where a database backup or an open `psql` would show it. It is never returned to the browser; the page only reports whether one is set.
+
+- **VMware ESXi / vCenter integration (Beta).** One implementation covers both a standalone ESXi host and vCenter — they are the same VIM API on `/sdk`, and a ContainerView absorbs the difference in inventory depth. Virtual machines land in the **same tables as Proxmox**, so topology, AI chat and the MCP `list_vms` tool needed no changes at all.
+
+  **The SOAP is hand-written rather than using pyvmomi.** The SDK would bypass `safe_request` — the layer that performs the SSRF check, re-validates the URL after every redirect, and applies the configured TLS verification — and every other outbound integration in this project goes through it. Read-only inventory needs only five calls, so the trade of a security-architecture exception for a little convenience was not worth making. It also means no new dependency.
+
+  Read-only throughout: nothing is ever written back to ESXi. Parsing tolerates missing fields by design, because they are genuinely absent in normal operation — a powered-off VM has no `guest.*`, a VM without VMware Tools reports no address, a template has no `runtime.host`. Continuation tokens are followed, since dropping one loses the rest of a large inventory **silently**.
+
+  The settings page reports connection diagnostics step by step rather than a single pass/fail: which call failed is what you actually need. A wrong password surfaces VMware's own message, because VMware returns authentication failures as a SOAP Fault over HTTP 500, which otherwise reads as a bare server error.
+
+- **The virtualisation view is split into "Virtualization (Proxmox VE)" and "Virtualization (VMware)"**, each listing only its own platform.
+
+- **Semantic search never worked, on any installation.** The shipped default embedding model returns 4096-dimensional vectors while the database column is `vector(768)`, so every single index write raised — and the error was swallowed by a `return False`. On the production box all three tables held zero embeddings. Nothing on screen ever said so: a full-table reindex reported `{subnets: 0, ip_addresses: 0, devices: 0}`, which is indistinguishable from "there was nothing to index".
+
+  Three changes, because the silence was the real defect: reindex now reports **how many failed and why** (the same run on production then said `failed: 97` with the mismatch spelled out); the settings page has a **Check dimension** button that asks the model for a vector and states what it returned versus what the column holds; and the default is now `granite-embedding:278m`, which is 768-dimensional.
+
+  The replacement was chosen by testing, not by dimension count. `nomic-embed-text` is also 768 but returned **byte-identical vectors for different Chinese descriptions** — it is an English-only model, and the distinct strings collapsed to the same unknown tokens. That would have looked fixed while ranking results at random. The model that shipped was verified to produce distinct vectors for the actual descriptions in use, down to two that differ by one word.
+
+### Changed
+- **Every probe now has a configurable interval on the scan agent page**, not only the heavy ones. The backend already accepted all seven and clamped each to its own minimum; the light probes simply had no field, so they were stuck on defaults. The page also states the resulting cadence ("one round every 5 minutes"), because the fast loop is the shortest light-probe interval — a coupling that previously existed only in the code.
+- **The i18n check now scans single-quoted keys too.** It only matched `t("…")`, so `t('addresses.os')` was skipped entirely — a key that did not exist and rendered as the raw key on screen. Strengthening the check found that one immediately, and it was the only one.
+- **Switch-port values in the investigate view use `device@port`**, matching the address detail page. The formatter is now shared rather than duplicated: one copy would eventually drift from the other.
+
+### Fixed
+- **A full reindex could deadlock against the integration sync** and abort the whole run — it held one transaction across every row of `ip_addresses`, which `jt-ipam-sync` updates every five minutes. It now commits in batches, so the conflict window is 25 rows rather than the whole table. Found by running a reindex on production for the first time it was ever capable of succeeding.
+
+## [0.5.147] — 2026-08-05
+
+### Fixed
+- **The Ping tool now works on hosts where `net.ipv4.ping_group_range` cannot be widened** — which is every LXC container, since the kernel belongs to the host. Install and upgrade already detected that case and verified the sysctl actually took effect rather than assuming it; they then printed instructions and left it to the operator. They now apply the alternative themselves: a systemd drop-in granting the backend `CAP_NET_RAW`, with `CapabilityBoundingSet` pinned to that one capability, which is narrower than the service's default.
+
+  Verified on an unprivileged LXC container: the container's capability bounding set is full, so no change on the Proxmox host is needed. `AmbientCapabilities` is applied by systemd itself, so it survives `NoNewPrivileges=yes` — the setting that makes the `setcap` route silently useless.
+
+  Both paths then **read back what the running service actually holds** and say plainly whether ping is available. Writing a unit file is not the same as it taking effect: that is precisely the trap the sysctl route fell into, where a file was written, the value never applied, and ping stayed broken while looking configured. Set `JT_IPAM_NO_NET_RAW=1` to decline the grant; every other connectivity check (TCP / UDP / TLS / HTTP) works without it.
+
+### Changed
+- **The API manual shows one section at a time** instead of being a single 16-section page that the contents list only jumped around within. The contents list marks where you are, and each section ends with links to the previous and next one — a manual is meant to be read through, not only jumped into. Sections are grouped at runtime, so the page still reads completely with JavaScript disabled, and `#anchor` deep links, browser back/forward and the language toggle all keep working.
+
+## [0.5.146] — 2026-08-05
+
+### Added
+- **Investigate mode.** One button on an address gathers everything known about it into a single view: the record, other records for the same address in overlapping subnets, what each source reports as its hostname and OS, monitoring coverage, ARP history, recent changes, and — for global readers — DNS, NAT and firewall rules. Contradictions are computed and shown at the top, because that is the point: sources disagreeing on the hostname, a disconnected agent still claiming the address, several MACs seen on one address.
+
+  Tracking down the two problems fixed earlier this week meant paging through six screens each time. On the address that had macOS attributed to a Linux VM, the dossier shows the whole story at once — four sources reporting four different names, and a disconnected macOS agent still attached.
+
+  Facts and inference stay separate: the dossier is what can be looked up, and a model's reading is only produced when asked for, labelled as inference. If the model is unavailable the feature still works — collecting the clues in one place is what saves the time, not the prose. Also available to AI chat and MCP as `investigate_ip`.
+
+## [0.5.145] — 2026-08-05
+
+### Added
+- **Three more rules in Anomaly detection**, all computed facts rather than inference:
+  - **Dangling DNS** — an A/AAAA record pointing at an address that does not exist in IPAM at all. On an external zone that is the precondition for subdomain takeover: the name still resolves, the address is unmanaged, and whoever obtains it inherits the name. Only A/AAAA are examined, since a CNAME's value is a name and would "never be found" by definition. A production zone had 8, including one pointing at a Docker bridge address.
+  - **Duplicate records in overlapping subnets** — the same address recorded in two subnets where one contains the other. Two departments registering the identical CIDR is deliberate multi-tenant use and is *not* reported; containment almost always means a mistake. It matters because integrations stamp only one of the records, so the other's liveness freezes — on a production site this showed a running machine as offline with 0% availability.
+  - **Suspicious changes** — bulk deletion by one account, repeated login failures from one source, and any permission/account/token change. Deletions with no actor are excluded: those are integrations replacing their own rows during a sync (one such sync deleted 967 rows in 19 minutes), and including them would put routine work at the top of the list and bury real mistakes. "Out of hours" is deliberately not a rule: it needs a reliable timezone and working-hours policy, and a rule that cries wolf trains people to ignore the whole list.
+
+### Changed
+- **Hovering a hostname in AI review evidence now shows a summary card**, as hovering an IP already did. Both are clues for checking a finding, so both should be equally cheap to check.
+
+## [0.5.144] — 2026-08-05
+
+### Added
+- **Security configuration assessment (SCA) on the device page.** Wazuh scores each host against benchmarks (CIS, vendor-specific) and reports how many checks pass and fail; jt-ipam now stores that per agent and shows it on the Wazuh card. A host running several benchmarks shows the **lowest-scoring** one — showing the flattering number would be self-congratulation. On a production site 35 agents have data, the worst at 23/100 (112 passed, 361 failed).
+
+  This is deliberately **not** CVE counts. Wazuh removed all vulnerability endpoints from the manager API in 4.8 — verified by listing the 150 routes this server actually exposes, none of which concern vulnerabilities — and the only remaining source is the Wazuh Indexer. That would require a second, long-lived credential able to read **every alert in the SIEM**, in exchange for two numbers, plus a dependency on an internal index name that a future release can rename. The trade is not worth it, so the integration is not offered; a brief implementation of it was removed before release rather than shipped half-considered.
+
+### Changed
+- **Integrations no longer guess when an address is ambiguous.** With overlapping subnets — two departments both using 192.168.1.0/24 — the same IP string is two different machines. Wazuh built its lookup table with a dict (later rows silently overwriting earlier ones) and LibreNMS took the first row, so which record received the data depended on database row order. Both now decline to match when an address resolves to more than one record, and report how many were skipped, because attaching data to the wrong department is worse than attaching none: with no data you go and look, with wrong data you never find out — and across departments it is a data leak. Setting "limit to subnets" on the integration narrows the candidates back to one and restores matching.
+
+## [0.5.143] — 2026-08-05
+
+### Fixed
+- **The Wazuh card claimed "0 / 0" vulnerabilities for machines that had never been checked.** The CVE fetch called `/vulnerability/*` on the Wazuh manager API — endpoints **removed in Wazuh 4.8** (the production server is 4.14.5 and returns 404). The error was swallowed, the columns stayed NULL, and the UI rendered NULL as 0. Reporting "no vulnerabilities" for something never examined is worse than reporting nothing.
+
+## [0.5.142] — 2026-08-05
+
+### Fixed
+- **AI review findings accumulated across runs instead of replacing them.** Four scheduled runs had left 62 open findings, most of them the same handful of issues restated. The fingerprint is category plus the set of cited IPs, and the model regroups those IPs differently each time — `{.97,.46,.129} + {.54}` became `{.54,.129,.46} + {.97}` the next day, which reads as a new fingerprint. A review is a snapshot of what is wrong now, not an append-only log, so each run now reconciles the open list: findings that are still present keep their original discovery time, findings that are gone are removed, and dismissed ones are left alone as the suppression record rather than being re-inserted on every run.
+- **Search results now say which subnet a record belongs to.** With overlapping subnets the same address legitimately exists more than once, and the two rows were indistinguishable — while one said online with 100% availability and the other said offline with 0%, because one subnet has scanning enabled and the other does not.
+- **Hostname source tags no longer offer a delete affordance.** They are observations of what each source reported; which one is used is decided by the hostname precedence setting. Offering an X implied the choice was made there, and anything deleted came back on the next sync.
+
+### Added
+- **DHCP reservations are now synced and shown** — whether an address is bound to a specific NIC rather than handed out dynamically. Supported on every DHCP source: OPNsense (Kea reservations *and* ISC static mappings from config.xml — one production firewall uses each, so both paths are needed), pfSense static mappings, Windows DHCP reservations, and FortiGate `reserved-address`. Shown as a "Reserved" tag with the bound MAC and originating DHCP server on the address detail page, and as an icon in the address list. Entries with no IP are skipped: a static mapping without an address only identifies a NIC, it does not reserve anything.
+
+  This matters because of the mix-up fixed in 0.5.141, where a laptop's OS was attributed to a VM: the address involved was **dynamic**, so it got recycled to another machine. A reserved address is not recycled — so "is this address pinned?" is exactly what you want to know when data appears to belong to the wrong host.
+
+## [0.5.141] — 2026-08-04
+
+### Added
+- **External exposure detection**, as a new category in Anomaly detection: which internal hosts are reachable from outside, and whether their state justifies it. Four rules — exposed with no monitoring coverage at all, exposed while offline, exposed from an archived subnet, and DNS still pointing at an offline host. It reads only what is already synced into jt-ipam (NAT rules, firewall rules, DNS records) and never contacts a firewall or device during detection. This sits in Anomaly detection rather than AI review on purpose: these are computed facts, so they can be stated plainly rather than hedged. Also queryable through AI chat and MCP via `list_anomalies`.
+
+### Fixed
+- **A macOS host's identity was being pasted onto a Linux VM.** An IP showed OS "macOS (source: Wazuh)" while its MAC said Proxmox and no macOS VM existed. The Wazuh agent `laptop-a1.local` — a laptop, status *disconnected* — still had that DHCP address recorded from months earlier, and the address had since been recycled to a VM. Agents were matched to addresses by IP alone, so the stale claim won. A disconnected agent is now ignored when the address has been seen alive *after* the agent stopped checking in; a machine that is merely powered off (no newer liveness evidence) still keeps its data. The same rule now decides monitoring coverage in exposure detection — a disconnected agent is not watching anything.
+- **Underscores inside identifiers were rendered as italics in AI chat.** `recent_ip_changes` came out as recent*ip*changes. CommonMark deliberately forbids intra-word emphasis with underscores, precisely for snake_case names; our minimal renderer did not have that condition. It also mangled identifiers inside inline code.
+
+### Fixed
+- **Every OPNsense NAT rule was recorded as disabled.** The config.xml parser tested whether the `<disabled>` element was *present*, but this firewall writes the value explicitly — `<disabled>0</disabled>` means enabled, and presence-testing read that as disabled. On a live site all 44 NAT rules showed as disabled; after the fix, 28 are enabled and 16 genuinely are not. The parser now accepts both conventions (presence-only in older configs, explicit 0/1 in newer ones), and the same class of bug on the JSON API path — `bool("0")` is `True` — is fixed with it. This is also why exposure detection initially found nothing: the data it reads was wrong, not the rule.
+- **Three components used in templates were never imported**, so they silently vanished at runtime, rendering their slot content as bare text in the wrong place: the customer dropdown when editing a location, the IP filter box on a subnet's detail page, and the member-subnet tags on the VLAN page. A CI check now scans every `.vue` for `<n-…>` tags that are not imported in that file — this class of bug passes typecheck, lint and build.
+
+## [0.5.140] — 2026-08-04
+
+### Added
+- **AI review findings can be cleared in one go**, so the next review starts from a blank slate. This is a *delete*, deliberately not a "dismiss all": dismissing records a fingerprint so the same finding is skipped on every future run, which would have permanently buried exactly what you wanted re-examined. Dismissed findings go too — those records are what suppresses them, so keeping them would mean nothing was really cleared. The confirmation says so, and the operation is audited.
+- **AI review is now listed on the feature map page** (docs/features.html). It was described on the front page but missing from the map.
+
+### Changed
+- **AI review counters use the same size as every other statistic in the product** (24px). They were 20px on the review page and 22px on the dashboard, which read as a size smaller than the KPI cards right above them.
+
 ## [0.5.139] — 2026-08-04
 
 ### Added

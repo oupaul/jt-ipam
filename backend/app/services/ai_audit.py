@@ -30,8 +30,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.address import IPAddress
 from app.models.ai_finding import AIFinding
 from app.models.device import Device
+from app.models.physical import DevicePort
 from app.models.subnet import Subnet
 from app.models.user import User
+from app.services.arp_precedence import normalize_mac
 from app.services.permission import visible_ids
 from app.services.system_config import (
     get_ai_audit_last_run,
@@ -114,6 +116,7 @@ async def _collect(session: AsyncSession, user: User) -> dict[str, Any]:
         IPAddress.id, IPAddress.ip, IPAddress.hostname, IPAddress.state,
         IPAddress.effective_status, IPAddress.discovery_source, IPAddress.is_dhcp_server,
         IPAddress.last_seen_scanner, IPAddress.last_seen_librenms, IPAddress.description,
+        IPAddress.device_id, IPAddress.mac,
     )
     if vis_ip is not None:
         if not vis_ip:
@@ -123,24 +126,40 @@ async def _collect(session: AsyncSession, user: User) -> dict[str, Any]:
     # IP 也跟著子網路的範圍走 —— 否則勾掉的網段照樣被整段送給模型
     ip_q = ip_q.where(IPAddress.subnet_id.in_([r[0] for r in sub_rows])
                       if sub_rows else IPAddress.id.is_(None))
+    ip_rows = (await session.execute(ip_q.limit(MAX_SAMPLE))).all()
+
+    vis_dev = await visible_ids(session, user=user, object_type="device", required="read")
+    dev_q = select(Device.id, Device.name, Device.type)
+    if vis_dev is not None:
+        dev_q = dev_q.where(Device.id.in_(vis_dev)) if vis_dev else dev_q.where(Device.id.is_(None))
+    dev_rows = (await session.execute(dev_q.limit(MAX_SAMPLE))).all()
+    # 只給名稱與類型，不給 UUID —— 給了模型就會把 UUID 寫進發現裡，
+    # 而人看著一串 UUID 完全不知道那是哪台機器
+    devices = [{"name": n, "type": t} for _i, n, t in dev_rows]
+
+    # ── 每筆 IP 屬於哪台機器。**沒有這個欄位，模型就只看得到「兩個 IP 剛好同名」**，
+    # 於是把一台雙網卡機器報成「重複的 IP 紀錄」（實機誤報）。
+    # 兩條線索都要用：device_id 直接指定，以及 MAC 對到某台裝置的連接埠 ——
+    # 第二張網卡的 IP 往往沒有 device_id，但它的 MAC 就在該裝置的 eth1 上。
+    # 名稱只在該裝置屬於這個帳號可見範圍時才填，否則等於繞過 RBAC 洩漏裝置名稱。
+    dev_name = {i: n for i, n, _t in dev_rows}
+    port_rows = (await session.execute(
+        select(DevicePort.device_id, DevicePort.mac_address)
+        .where(DevicePort.mac_address.isnot(None))
+    )).all()
+    by_port_mac = {normalize_mac(m): d for d, m in port_rows if normalize_mac(m)}
+
     ips = []
-    for row in (await session.execute(ip_q.limit(MAX_SAMPLE))).all():
+    for row in ip_rows:
+        owner = row[10] or by_port_mac.get(normalize_mac(row[11]))
         ips.append({
             "ip": str(row[1]), "hostname": row[2], "state": row[3],
             "status": row[4], "source": row[5], "dhcp_server": row[6],
             "last_seen_scanner": row[7].isoformat() if row[7] else None,
             "last_seen_librenms": row[8].isoformat() if row[8] else None,
             "description": row[9],
+            "device": dev_name.get(owner) if owner else None,
         })
-
-    vis_dev = await visible_ids(session, user=user, object_type="device", required="read")
-    dev_q = select(Device.id, Device.name, Device.type)
-    if vis_dev is not None:
-        dev_q = dev_q.where(Device.id.in_(vis_dev)) if vis_dev else dev_q.where(Device.id.is_(None))
-    # 只給名稱與類型，不給 UUID —— 給了模型就會把 UUID 寫進發現裡，
-    # 而人看著一串 UUID 完全不知道那是哪台機器
-    devices = [{"name": n, "type": t}
-               for _i, n, t in (await session.execute(dev_q.limit(MAX_SAMPLE))).all()]
 
     return {"subnets": subnets, "ips": ips, "devices": devices,
             "empty": not (subnets or ips or devices)}
@@ -163,6 +182,13 @@ Security is a first-class part of this review, not an afterthought. Look specifi
 Other things worth reporting: addresses recorded as in use but never seen alive; duplicate or
 contradictory records; subnets with no monitoring coverage; naming that breaks an otherwise
 consistent convention.
+
+Each address carries a "device" field naming the machine it belongs to, where that is known.
+A multi-homed machine legitimately holds several addresses — one per network interface — so
+several addresses sharing a "device", or sharing a hostname while naming the same "device",
+is normal and is NOT a duplicate or a conflict. Report a conflict only when the records
+genuinely disagree, for example the same address appearing twice, or one hostname naming two
+different devices.
 
 Rules you must follow:
 - Report only what the data below actually supports. Do not speculate beyond it.
@@ -518,23 +544,7 @@ async def _run_audit(
     await _emit("saving", total, total)
     items = _dedupe(items)[:MAX_FINDINGS]
 
-    # 使用者判斷過是誤報而忽略的，這次再被找到也不要跳回未處理 —— 直接以已忽略的
-    # 狀態存下來（仍留紀錄，看得出它又出現了），否則「忽略」等於沒有用。
-    dismissed_fps = {
-        fp for (fp,) in (await session.execute(
-            select(AIFinding.fingerprint).where(
-                AIFinding.status == "dismissed", AIFinding.fingerprint.is_not(None))
-        )).all()
-    }
-    kept = 0
-    for it in items:
-        fp = fingerprint(it)
-        was_dismissed = fp in dismissed_fps
-        session.add(AIFinding(
-            run_id=run_id, fingerprint=fp,
-            status="dismissed" if was_dismissed else "open", **it))
-        if not was_dismissed:
-            kept += 1
+    kept = await reconcile_findings(session, run_id, items)
     await session.commit()
     await _emit("done", total, total, found=kept)
     return AuditRun(
@@ -543,6 +553,61 @@ async def _run_audit(
         error=(f"{len(errors)}/{total} 批分析失敗（結果可能不完整）：{errors[0]}"
                if errors else None),
     )
+
+
+async def reconcile_findings(
+    session: AsyncSession, run_id: Any, items: list[dict[str, Any]],
+) -> int:
+    """把「未處理」清單對齊這一次的結果，回傳這次實際留下的未處理筆數。
+
+    巡檢是**當下狀態的快照**，不是逐次累加的流水帳。以前每跑一次就把整批發現再存一份，
+    四次執行累積出 62 筆、大半是同一件事 —— 因為模型每次把 IP 分組的方式不同，
+    「分類＋IP 集合」的指紋就跟著不同，於是被當成新發現。
+
+    對齊規則：
+    - 已忽略的一律不動（那是抑制的依據），而且同一件事再出現也不重新開啟
+    - 這次還在的：沿用原本那一列（保留發現時間，才看得出從什麼時候就這樣）
+    - 這次沒有了：刪掉（問題解決了，或模型換了說法）
+    - 這次新出現的：新增
+    """
+    dismissed_fps = {
+        fp for (fp,) in (await session.execute(
+            select(AIFinding.fingerprint).where(
+                AIFinding.status == "dismissed", AIFinding.fingerprint.is_not(None))
+        )).all()
+    }
+    existing = {
+        f.fingerprint: f for f in (await session.execute(
+            select(AIFinding).where(AIFinding.status == "open"))
+        ).scalars().all() if f.fingerprint
+    }
+
+    kept = 0
+    seen: set[str] = set()
+    for it in items:
+        fp = fingerprint(it)
+        if fp in seen:
+            continue
+        seen.add(fp)
+        if fp in dismissed_fps:
+            continue          # 使用者判斷過是誤報 → 不再開啟
+        cur = existing.get(fp)
+        if cur is not None:
+            # 同一件事還在：更新敘述（模型可能改寫過），但保留原本的發現時間
+            for k, v in it.items():
+                setattr(cur, k, v)
+            cur.run_id = run_id
+        else:
+            session.add(AIFinding(run_id=run_id, fingerprint=fp, status="open", **it))
+        kept += 1
+
+    # 這次沒再出現的未處理發現 → 移除（否則清單只會愈長愈長）
+    for fp, row in existing.items():
+        if fp not in seen:
+            await session.delete(row)
+
+    await session.flush()
+    return kept
 
 
 def fingerprint(item: dict[str, Any]) -> str:

@@ -280,6 +280,8 @@ async def test_audit_uses_its_own_model_when_set(monkeypatch, db_session):
     monkeypatch.setattr(ai_mod, "raw_chat", _capture)
 
     class _Cfg:
+        provider = "ollama"
+        api_key = None
         ai_audit_model = "review-model:7b"
         chat_model = "chat-model:8b"
         num_ctx = 16384
@@ -315,6 +317,8 @@ async def test_raw_chat_falls_back_to_chat_model(monkeypatch, db_session):
     monkeypatch.setattr(ai_mod, "safe_request", _fake_request)
 
     class _Cfg:
+        provider = "ollama"
+        api_key = None
         enabled = True
         url = "http://ollama.invalid:11434"
         chat_model = "chat-model:8b"
@@ -403,6 +407,8 @@ async def test_partial_batch_failure_still_reports_what_was_found(monkeypatch, d
     monkeypatch.setattr(ai_mod, "raw_chat", _flaky)
 
     class _Cfg:
+        provider = "ollama"
+        api_key = None
         ai_audit_model = None
         chat_model = "m:1b"
         num_ctx = 8192
@@ -424,6 +430,8 @@ async def test_progress_is_reported_for_each_batch(monkeypatch, db_session):
                         lambda s, p, **kw: _coro('{"findings":[]}'))
 
     class _Cfg:
+        provider = "ollama"
+        api_key = None
         ai_audit_model = None
         chat_model = "m:1b"
         num_ctx = 8192
@@ -463,6 +471,8 @@ async def test_audit_forces_json_output(monkeypatch, db_session):
     monkeypatch.setattr(ai_mod, "raw_chat", _capture)
 
     class _Cfg:
+        provider = "ollama"
+        api_key = None
         ai_audit_model = None
         chat_model = "m:1b"
         num_ctx = 8192
@@ -608,6 +618,8 @@ async def test_output_length_is_capped(monkeypatch, db_session):
     monkeypatch.setattr(ai_mod, "raw_chat", _capture)
 
     class _Cfg:
+        provider = "ollama"
+        api_key = None
         ai_audit_model = None
         chat_model = "m:1b"
         num_ctx = 8192
@@ -638,6 +650,8 @@ async def test_raw_chat_passes_num_predict_to_ollama(monkeypatch, db_session):
     monkeypatch.setattr(ai_mod, "safe_request", _fake_request)
 
     class _Cfg:
+        provider = "ollama"
+        api_key = None
         enabled = True
         url = "http://ollama.invalid:11434"
         chat_model = "m:1b"
@@ -702,6 +716,8 @@ async def test_audit_turns_thinking_off(monkeypatch, db_session):
     monkeypatch.setattr(ai_mod, "raw_chat", _capture)
 
     class _Cfg:
+        provider = "ollama"
+        api_key = None
         ai_audit_model = None
         chat_model = "m:1b"
         num_ctx = 8192
@@ -732,6 +748,8 @@ async def test_raw_chat_sends_think_false(monkeypatch, db_session):
     monkeypatch.setattr(ai_mod, "safe_request", _fake_request)
 
     class _Cfg:
+        provider = "ollama"
+        api_key = None
         enabled = True
         url = "http://ollama.invalid:11434"
         chat_model = "m:1b"
@@ -771,6 +789,8 @@ async def test_old_ollama_rejecting_think_is_retried_without_it(monkeypatch, db_
     monkeypatch.setattr(ai_mod, "safe_request", _fake_request)
 
     class _Cfg:
+        provider = "ollama"
+        api_key = None
         enabled = True
         url = "http://ollama.invalid:11434"
         chat_model = "m:1b"
@@ -854,6 +874,8 @@ async def test_raw_chat_num_ctx_override_reaches_ollama(monkeypatch, db_session)
     monkeypatch.setattr(ai_mod, "safe_request", _fake_request)
 
     class _Cfg:
+        provider = "ollama"
+        api_key = None
         enabled = True
         url = "http://ollama.invalid:11434"
         chat_model = "m:1b"
@@ -913,6 +935,8 @@ async def test_previously_dismissed_findings_do_not_come_back(monkeypatch, db_se
     monkeypatch.setattr(ai_mod, "raw_chat", lambda s, p, **kw: _coro(reply))
 
     class _Cfg:
+        provider = "ollama"
+        api_key = None
         ai_audit_model = None
         chat_model = "m:1b"
         num_ctx = 8192
@@ -935,11 +959,14 @@ async def test_previously_dismissed_findings_do_not_come_back(monkeypatch, db_se
     # 同一件事不再算成未處理的新發現；另一件事照常
     assert second.findings == 1, "已忽略的發現又跳回未處理了"
 
-    again = (await db_session.execute(
-        _select(AIFinding).where(AIFinding.run_id == second.run_id,
-                                 AIFinding.title == "重複的紀錄").limit(1)
-    )).scalar_one()
-    assert again.status == "dismissed", "應該直接以已忽略存下（留紀錄，但不吵人）"
+    # 已忽略的那一筆維持一列就好，不要每跑一次就再存一份。
+    # （原本每輪都補一列「已忽略」的紀錄，跑久了「已忽略」分頁會塞滿同一件事的複本 ——
+    #   跟未處理清單累積成 62 筆是同一個毛病。）
+    rows = (await db_session.execute(
+        _select(AIFinding).where(AIFinding.title == "重複的紀錄")
+    )).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == "dismissed"
 
 
 # ── 台灣用詞：提示詞是盡力而為，存檔前再做一次確定性替換 ────────────────────────
