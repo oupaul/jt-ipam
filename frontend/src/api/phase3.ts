@@ -56,6 +56,8 @@ export interface ScanAgent {
   description: string | null;
   agent_url: string | null;
   enabled: boolean;
+  /** 跑在 jt-ipam 主機上的那一個（安裝時自動建立） */
+  is_local: boolean;
   has_key: boolean;
   agent_version: string | null;
   server_agent_version: string | null;
@@ -410,7 +412,9 @@ export async function deleteDevicePowerPort(id: string): Promise<void> {
 // ─────────────────── Virt ───────────────────
 
 export interface VirtCluster { id: string; name: string; type: string | null; is_standalone: boolean; description: string | null; }
-export interface VirtualMachine { id: string; name: string; cluster_id: string | null; node: string | null; kind: string | null; status: string | null; ips: string[]; macs: string[]; bridges: string[]; }
+export interface VirtualMachine { id: string; name: string; cluster_id: string | null; node: string | null; kind: string | null; status: string | null; ips: string[]; macs: string[]; bridges: string[];
+  /** IP 字串 → IPAM 位址 id。重疊網段下分不出是哪一筆時後端不會給。 */
+  ip_links?: Record<string, string>; }
 export interface ProxmoxInstance { id: string; name: string; api_url: string; extra_api_urls: string[]; node: string | null; auth_username: string; auth_token_id: string; verify_tls: boolean; sync_interval_seconds: number; enabled: boolean; scope_subnet_ids?: string[] | null; last_sync_at: string | null; last_error: string | null; }
 
 export interface ProxmoxWrite {
@@ -418,6 +422,8 @@ export interface ProxmoxWrite {
   auth_username: string; auth_token_id: string; token_secret?: string;
   verify_tls?: boolean; enabled?: boolean; sync_interval_seconds?: number;
   scope_subnet_ids?: string[] | null;
+  /** 信任虛擬化取得的 IP：IPAM 沒有時自動建立（預設關） */
+  auto_create_ips?: boolean;
 }
 
 export const Virt = {

@@ -48,6 +48,7 @@ from app.api.v1.endpoints import (
     scan_agents,
     search,
     sections,
+    sftp_console,
     ssh_console,
     ssh_credentials,
     sso,
@@ -94,6 +95,7 @@ api_v1_router.include_router(subnets.router)
 api_v1_router.include_router(system_logs.router)
 api_v1_router.include_router(addresses.router)
 api_v1_router.include_router(ssh_console.router)
+api_v1_router.include_router(sftp_console.router)
 api_v1_router.include_router(ssh_credentials.router)
 api_v1_router.include_router(rdp_console.router)
 api_v1_router.include_router(vnc_console.router)

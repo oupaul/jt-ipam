@@ -4,6 +4,194 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.164] — 2026-08-12
+
+### Changed (**behaviour change — please read**)
+- **Proxmox no longer creates IP records unconditionally.** It was the one integration that created any address IPAM did not have, with **no toggle at all**. That is now governed by "trust addresses from virtualization", **off by default** (migration 0116).
+
+  ⚠️ **Upgrading changes behaviour**: VM and node IPs that used to appear on their own no longer do. To restore it, switch the toggle on under the Proxmox VE integration. This is deliberate — auto-recording removes those addresses from the "unauthorised IPs" anomaly check (whose test is "seen in ARP, absent from IPAM"), and that trade should be an explicit choice.
+
+- **Fixed an overlapping-subnet hazard in Proxmox while there.** It picked a subnet with `ORDER BY masklen(cidr) DESC LIMIT 1`, which **silently chooses one** when two tenants each hold `192.168.1.0/24` — potentially filing a VM under someone else's subnet. It now uses the same decision as every other integration: **ambiguous means don't create**.
+
+### Added
+- **VMware / ESXi gains the same "trust addresses from virtualization" toggle** (off by default). It previously never created anything, only matched existing records.
+- **A dedicated "Which sources create IP records on their own?" table in the README and on the site**, listing scan agent / LibreNMS / Proxmox / VMware / OPNsense / pfSense / the remaining integrations / imports with their toggles and defaults — previously only discoverable by reading the source.
+- The auto-recorded marker now covers the `proxmox` and `vmware` sources too.
+
+## [0.5.163] — 2026-08-12
+
+### Added
+- **An "create addresses IPAM does not have" toggle for OPNsense and pfSense** (migration 0115, **off by default**). The firewall DHCP/ARP sync only ever stamped addresses that already existed; anything else was dropped, silently — a customer had to read the source to find out. With the toggle on, an address present in a DHCP lease but absent from IPAM is created.
+
+  Placement reuses the LibreNMS rule (now extracted to `services/ip_autocreate.py` and shared by all three integrations): longest-prefix match, **created only when exactly one subnet matches**. Where overlapping subnets make it ambiguous (two tenants each holding 192.168.1.0/24), **nothing is created** — filing a record under the wrong tenant is worse than not filing it. Setting the integration's subnet scope removes the ambiguity.
+
+  ⚠️ **The risk is stated next to the toggle**: a machine that obtained a DHCP address is not necessarily one that belongs in IPAM. An unauthorised device that got a lease would be recorded as a legitimate entry — **and once in IPAM it stops appearing under "unauthorised IPs" in anomaly detection**, whose entire test is "seen in ARP, absent from IPAM". Hence off by default, with the warning shown when it is switched on.
+
+- **Auto-recorded addresses are flagged in the IP list** (amber icon plus explanation): "Auto-recorded (unregistered) — created automatically by PFSENSE's DHCP sync; nobody registered it by hand. Confirm this device is expected."
+
+### Changed
+- **Sync summaries report how many entries were skipped because IPAM had no such address** (`skipped_no_ipam_record`), and how many were created. This was previously silent.
+- `discovery_source` now permits `pfsense` (only `opnsense` was allowed).
+
+## [0.5.162] — 2026-08-12
+
+### Fixed
+- **The scan agent delete button was pushed off screen** (reported as "there is no delete"). It had always been there, but with enough columns the table overflowed horizontally and the fourth action button was simply out of view. The actions column is now **pinned right** and wide enough for four buttons (matching the users and certificates pages). The confirmation also states **how many subnets are assigned to that agent** — scanning always needs one, so deleting it leaves those subnets unscanned.
+- **The edit dialog has a delete button too**, bottom-left and away from Save: an irreversible action should not sit next to the primary one.
+- **SFTP uploads accept multiple files.** The picker was single-select, so ten files meant opening it ten times. Multiple files are sent one at a time with an "Uploading 3/10" line; failures are named individually rather than stopping the batch.
+- **A saved SFTP credential is now selected by default** (as in the SSH console): the most recent one is picked, the manual fields collapse, and Connect just works. Clear the dropdown to go back to entering credentials by hand.
+- **"Clear selection" gained its icon**, so all four batch buttons match.
+
+### Added
+- **Drag-and-drop upload in SFTP**: drop files onto the file area to upload them into the current directory. While dragging, the whole panel becomes a drop zone labelled with the destination path. Dropped folders are reported as skipped (files only for now).
+
+## [0.5.161] — 2026-08-10
+
+### Fixed (install; customer reports)
+- **Installing on a host that already runs PostgreSQL failed with `extension "vector" is not available`.** The installer picked the version apt could install (16), but jt-ipam connects to `127.0.0.1:5432` — the cluster that was **already there** (18, in this case). pgvector went to 16, so 18 never had it. The installer now asks the running cluster for its version and installs pgvector for that, and **no longer pulls a second server package** (which would create a second cluster on another port). A cluster below 16, or one with no matching pgvector available, now stops the install with a message that says so.
+- **A failed extension no longer passes silently.** The `psql` heredoc lacked `ON_ERROR_STOP`, so `CREATE EXTENSION vector` printed its error and still exited 0 — surfacing a hundred lines later as an alembic traceback. It now stops there and names the package to install.
+- **`/usr/local/bin/pnpm: No such file or directory`.** The pnpm install line sent npm's error to `/dev/null` with `|| true` and then fell back to a path that did not exist. It now keeps the output, tries three ways of installing pnpm, and verifies `pnpm --version` runs before continuing; on failure it prints what npm actually said plus the manual command.
+- **The installer no longer says "Done" when nothing is running.** Before finishing it checks the env file, the frontend dist, the service state, the listening port, and nginx in nginx mode — and lists whatever is missing.
+- **Direct TLS on port 443 now gets `CAP_NET_BIND_SERVICE` automatically** (whenever `--bind-port` is below 1024). Without it the unit starts and dies immediately with `Permission denied`, which reads like a certificate problem but is a port problem.
+
+### Documentation
+- **Does `--tls-mode self-signed` need nginx or apache? No.** The most frequently asked install question is now answered in INSTALL and the FAQ: that mode is a complete HTTPS service on its own and **listens on 8443 by default, not 443**, with commands to confirm it.
+- Added "how to use 443 instead" (including the privileged-port capability) and full steps for adding nginx later; plus a warning that a hand-written nginx config **must copy the WebSocket upgrade block**, or the consoles cannot connect and the browser shows only a bare 404.
+- FAQ entries for all three install failures, including how to recover on older versions.
+
+## [0.5.160] — 2026-08-10
+
+### Fixed
+- **A subnet with scanning enabled was never actually scanned** (customer report). Leaving the subnet's scan agent blank displayed "Local scan (jt-ipam host)" — but nothing in the backend schedules a local scan: the only entry point is a manual API call, and the frontend never calls it. The setting looked complete while liveness never updated.
+
+  Scanning now **always runs through an agent**:
+  - **Install and upgrade set up a scan agent on the jt-ipam host itself** (with the probe tools nmap / samba-common-bin / avahi-utils) and flag it as the local one. Idempotent: an existing agent is left alone, and its key is never re-issued (that would kick the running agent off); a failure here warns rather than failing the install.
+  - **Migration 0114** points existing subnets that had scanning enabled but no agent at the local agent, so an upgrade starts scanning them for real.
+  - The dropdown's blank option changed from "Local scan (jt-ipam host)" to **"(unassigned — will not be scanned)"**, and selecting it states plainly that the subnet will not be scanned and where to add an agent. The host's own agent is listed as "name (agent on the jt-ipam host)".
+
+  Worth stating outright: the probe checkboxes (ARP, reverse PTR, NetBIOS, mDNS, DHCP server detection, OS detection) have only ever been executed by an agent.
+
+### Added
+- `python -m app.cli.scan_agent ensure-local` — creates the local scan agent and prints its one-time key (used by the installer; leaves an existing one untouched).
+
+## [0.5.159] — 2026-08-09
+
+### Fixed
+- **The sidebar logo panel and the top bar did not end at the same line**, leaving a visible notch in the top-left corner. Each was sized by its own content (`14+32+14` against `8+content+8`); a few pixels apart is enough to see. Both are now bound to one `--app-header-h` with `box-sizing: border-box`, so they cannot drift apart again.
+- **The SFTP filter field was shorter than the path field** (it was the small size). Both measure 34px now.
+
+### Changed
+- **The SFTP file area has a frame**: path bar, batch bar and listing sit in one panel, with the **connection status row deliberately outside it** — that row is about the connection, not the files, matching the SSH console.
+- **"Up one level" gained an icon**; every button in that row now has one.
+
+### Tests
+- New `e2e/layout.spec.ts` measures the two bottom edges and fails if they differ by more than a pixel.
+- A layout test for SFTP: the frame exists, the status row is outside it, path and filter fields match in height, and all four buttons carry icons.
+- Fixed self-contamination in the batch test: without emptying the destination first, a second run failed to move (name already taken) while the assertions still passed — green for no reason.
+
+## [0.5.158] — 2026-08-09
+
+### Added
+- **Batch operations in SFTP.** Rows are selectable; selecting any reveals a batch bar with **download, move and delete**. Move asks for an absolute destination path; delete asks for confirmation.
+  - Directories cannot be downloaded as files, so the result **says how many were skipped** rather than quietly sending fewer.
+  - If some entries fail, the message **names them**; one failure neither stops the rest nor lets the others pass for a success.
+  - Changing directory or refreshing clears the selection — carrying a selection across directories deletes the wrong things.
+- **A filter field** narrows the current directory as you type, with a line below stating "showing N of M entries in this directory" so a filtered view is never mistaken for the whole directory.
+
+### Changed
+- **Icons on the buttons**: upload, new folder, download, rename, delete, and the three batch actions.
+- **Directory and file names line up**: files have no icon but reserve exactly the icon's width. (Measured, not eyeballed: an emoji was 17px off, and switching to an icon component was still 16px off because **scoped CSS does not reach elements built in a render function** — the fix is inline styles.)
+- **Remote errors are written for people.** The screen used to show the exception class ("SFTPNoSuchFile: No such file"); it now says which path could not be found — the one piece of information that matters when a path is mistyped. Permission denied, not-a-directory, already-exists, directory-not-empty, disk full and read-only filesystem each have their own wording, and anything unmapped **keeps its original message rather than being given an invented one**.
+- **Connection failures too**: "Cannot reach 192.0.2.10:2222: the host refused the connection — check that its SSH service is listening on that port" replaces `ConnectionRefusedError: [Errno 111]`.
+
+## [0.5.157] — 2026-08-09
+
+### Fixed
+- **SFTP could not connect at all in a real deployment** (both 0.5.155 and 0.5.156). Picking a credential and clicking connect made the form flicker and come back, with no message.
+
+  The cause was not SFTP itself: nginx forwards the WebSocket upgrade headers only for `(ssh|rdp|vnc|novnc|bmc)/ws`, and **`sftp` was not on that list**. Without those headers nginx passes a plain GET to the backend, which has only a WebSocket route at that path and no HTTP one — so it answers 404. The browser sees nothing but a closed connection, with no hint that a proxy is involved. Local development hides this: vite's dev proxy forwards WebSockets for all of `/api`.
+
+  Fixed in both nginx templates and the installer; `jt-ipam.sh upgrade` now **widens the location on existing sites automatically** (back up, then `nginx -t`, reload only on success, restore on failure). The four hand-written substitutions that each matched one historical protocol list are replaced by a single whole-line rewrite, so the next protocol cannot be half-added.
+
+- **A failed connection no longer stays silent.** When the WebSocket closes before the session is established, the screen now says so — with the close code, and a pointer to the most common cause (a proxy not forwarding the upgrade headers) — instead of dropping back to the form without a word.
+
+- **The connect card no longer jumps.** It was centered only in the "form" phase, so pressing connect threw it to the top-left corner and a failure threw it back. It now stays put through connecting and failure.
+
+### Tests
+- Added a cross-check: every `/<protocol>/ws` endpoint the backend registers must appear in both nginx templates and the installer's protocol list. Removing `sftp` turns it red — which is exactly what shipped.
+
+## [0.5.156] — 2026-08-09
+
+### Changed
+- **The SFTP connect screen now matches the SSH console.** The previous release gave SFTP its own form — labels above, fields stacked down the page — which looked nothing like SSH, RDP or VNC. The same task shaped differently per protocol asks the user to learn it twice. It is now the same card form (left-aligned labels, auth-method radio, hint block, connect button bottom-right), and once connected, the same status bar (green pill, hostname, protocol tag, disconnect).
+
+  Also filled in what should have been there from the start: **"remember these credentials"** (into the same per-user encrypted vault SSH uses), **deleting a stored credential**, and **reconnecting after a disconnect** without retyping.
+
+- **SFTP is now its own toggle** (migration 0113). It previously rode on `ssh_enabled`, so enabling SSH also enabled file transfer. In practice those are not always the same decision: a host may be meant for dropping in a config or pulling a log, without handing out a shell. The **authorization model deliberately stays identical to SSH** — someone who can read and write remote files holds effectively the same power as someone with a shell, and "it's only file transfer" is not a reason to loosen it.
+
+  **On upgrade, existing rows inherit `ssh_enabled`**: under 0.5.155 an SSH-enabled address could already use SFTP, so defaulting everything to off would make the feature silently disappear. Anyone who wants it withdrawn can simply switch it off.
+
+- **The entry button now reads "SFTP Files"** — it previously said just "Files", which did not say which kind of connection it opened.
+
+### Security
+- Raised the floor on three transitive build-time dependencies (none ship to the browser): `nanoid` ≥ 3.3.17 (custom generators loop indefinitely when size is zero) and `brace-expansion` ≥ 1.1.18 / 2.1.4 / 5.0.9 (DoS via unbounded intermediate arrays). `pnpm audit` goes from four high findings to none.
+
+## [0.5.155] — 2026-08-09
+
+### Added
+- **SFTP file browser.** You could already open an SSH terminal on an address, but getting a config file onto that host — or a log excerpt off it — meant reaching for another tool and entering the credentials again. IP detail now offers an SFTP entry point: list, navigate, download, upload, make a directory, rename, delete, all in the browser.
+
+  **It is the same gate as SSH**: the same `can_use_ssh` permission, the same single-use ticket (60 seconds, one redemption, bound to that address), the same stored credentials. Open, close, download, upload, mkdir, rename and delete are all audited — directory listings are not, since they would drown the audit trail.
+
+  A single file is capped at 100 MB and a directory listing at 2000 entries; both limits are stated on screen rather than silently applied. Uploads are truncated to the declared size, so a client cannot declare one size and send more. When the remote does not report a file's size the browser shows "—" rather than 0 B — those are different facts.
+
+### Fixed
+- **Consoles could not connect against older Redis.** Single-use tickets called Redis `GETDEL`, which only exists in **6.2 and later**. Older deployments answered `unknown command GETDEL`, so SSH, RDP, VNC, noVNC and BMC — five consoles — all failed to connect, showing nothing more specific than a connection failure. The same operation now runs as a Lua script (`EVAL` has existed since Redis 2.6), preserving single-use semantics.
+
+  This surfaced while verifying SFTP in a real browser: the fake Redis used by the unit tests implements `getdel`, so no amount of unit testing would have caught it.
+
+## [0.5.154] — 2026-08-07
+
+### Changed
+- **The AI review knows whether a subnet is actually being scanned.** A finding read "a large number of unmonitored IP addresses… this may indicate a monitoring blind spot" and advised checking whether monitoring covers the subnet. The subnet *was* being scanned, by an assigned agent, and 130 of its 233 addresses had been seen. The advice sent the reader to the wrong place: what those 103 addresses need is stale records cleaned up, or a check on hosts that answer no probe.
+
+  The model was not wrong so much as under-informed — each subnet in the snapshot carried only a CIDR and a description, with nothing that could distinguish "not monitored" from "monitored, and these never answered". Subnets now carry `scan_enabled` and how many of their addresses a scanner has ever seen, with the instruction that a scanned subnet where many addresses have been seen is covered, and that recommending a coverage check when scanning already works there sends someone to the wrong place.
+
+- **Each finding records which model wrote it** (migration 0112). A review is inference, and models differ; after switching models there was no way to tell which conclusions came from which, and therefore no way to judge whether the new one is actually better.
+
+- **"AI inference, not verified fact" now reads "An AI reading of your IPAM data — worth checking yourself."** The original phrasing denied the thing's value; it is inference drawn from facts, which is worth reading as long as you confirm it.
+
+- **Severity is shown as the background of its own cell** instead of a coloured bar down the left edge of each row. The bar said the same thing twice, and left rows visibly misaligned — which the layout then had to compensate for.
+
+## [0.5.153] — 2026-08-07
+
+### Changed
+- **An address on the virtualisation pages links to its IPAM record.** The data was already in the system, but reading a VM's address and checking how it is registered meant copying the digits, switching page and pasting them into a search.
+
+  **A link only appears when exactly one record matches.** With overlapping subnets — different units sharing `192.168.1.0/24`, which this project exists to support — the same address string legitimately has several records, and there is no way to tell which one a VM's address refers to. In that case the text stays plain: a wrong link is worse than no link, because people trust it. Verified against production: of 79 addresses on VM interfaces, 78 resolve to exactly one record and become links.
+
+## [0.5.152] — 2026-08-07
+
+### Added
+
+- **The investigate view can export a report** (`.md` / `.txt` / `.html` / `.csv`) — the facts and the AI reading together, for a handover note, a ticket attachment or an audit trail. Produced entirely in the browser, so **no new dependency and nothing to change in install or upgrade**. Text and CSV carry a UTF-8 BOM because Excel otherwise opens Chinese as mojibake; Markdown deliberately does not, since a BOM breaks the first heading.
+- **AI chat can answer whether an address is reachable from the internet** and which ports are open. The investigate view already put NAT forwards and firewall rules side by side, but only if you knew to open it; the question people actually ask is one sentence long. The tool reports facts only and does not pronounce on whether that exposure is appropriate — that depends on what the host is meant to do, which only a person knows. It sits at the same permission level as the NAT and firewall listings.
+- **The AI reading streams**, with elapsed seconds and character counts, instead of leaving a button that looks dead for a minute. Thinking and output are counted separately, because a reasoning model emits nothing else for the first stretch.
+- **The AI reading is told which patterns are normal for the host it is looking at.** A reverse proxy with twenty names resolving to it was reported as "a striking contradiction between the DNS records and the hostname sources" — the model did what it was told, since the prompt asks it to call out contradictions and nothing said that shape is ordinary for a proxy. Role signals are now computed from the facts and passed in, with the instruction that a false contradiction is worse than none because it buries the real ones.
+- **A VMware NIC now records its port group.** That column was blank because nothing ever read it, and a blank cell cannot be told apart from a failed fetch.
+- **Devices can be filtered by subnet**, and the list and detail pages say whether a device is virtual or physical. The kind is derived from the virtual-machine inventory rather than stored, so there is no second copy of the truth to maintain or to go stale.
+- **Addresses can be attached to their device automatically, by NIC MAC.** A multi-homed machine's second address usually has no device: the existing LibreNMS sync links only the primary one. The device page's address list is then incomplete, and the AI review reported such a pair as a duplicate record — while the MAC was sitting on that device's `eth1` port all along. The system already knew; it just never used it.
+
+  **Off by default, and the switch is deliberate.** An upgrade that quietly starts a job which rewrites data every five minutes is not something anyone asked for. It can be limited to chosen subnets, following the `scope_subnet_ids` convention every other integration here uses, and a **Preview** reports what it would attach before it is turned on — the same evidence that made the first run trustworthy (39 of 41 candidates were independently corroborated by hostname).
+
+  Ten rules decide when *not* to act, and none of them tries to guess better: an existing link is never overwritten and never removed; a MAC found on more than one device is left alone; an address whose device field a person has edited — including cleared — is never touched again, because otherwise clearing a wrong link would simply see it restored on the next round; protocol-reserved MACs (VRRP, HSRP) are shared across machines by definition; malformed and non-unicast MACs are rejected, since the port MAC column is free text and hand-editable, where `"N/A"` normalises to a non-empty `"a"` and would key a lookup; a hostname naming a different device is a contradiction between two independent signals; a customer conflict is respected, resolved through the subnet when the address itself has none; archived subnets are left alone.
+
+  Every attachment is written to the IP change log with what it matched on, so it can be traced and reversed. Each round logs both what was attached and what was skipped, per reason — "everything was blocked" must not look like "nothing to do".
+
+  One residual risk is stated rather than papered over: a link is never re-evaluated, so a NIC moved to another machine will leave a link that is quietly wrong. That belongs to after-the-fact detection, not to more guessing at write time.
+
+- **A login failure now says which kind of failure it was.** With the backend down, every request returned 502 and the login page still said "check your username and password" — blaming the operator's credentials for a service outage, so the natural response is to retype the password and doubt the account while the real problem is elsewhere. Only a 401 means the server actually checked and rejected the credentials; an unreachable server, a 5xx, rate limiting and a locked account now each say what they are, and the server-side ones point at `systemctl status jt-ipam-backend`.
+
 ## [0.5.151] — 2026-08-07
 
 ### Changed

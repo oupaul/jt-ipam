@@ -18,7 +18,7 @@ import type { IPAddress } from "@/types";
 import { updateAddress, deleteAddress, createAddress, type IPAddressUpdate } from "@/api/addresses";
 import { getAddressHistory, getAddressSwitchPort, type IPChangeLog, type SwitchPortInfo } from "@/api/ip_history";
 import { getHostnameSources, type HostnameSources } from "@/api/hostname";
-import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon, TerminalIcon, DisplayIcon, VncIcon, NoVncIcon, SearchIcon } from "@/icons";
+import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon, TerminalIcon, DisplayIcon, VncIcon, NoVncIcon, SearchIcon , FilesIcon } from "@/icons";
 import InvestigateModal from "@/components/InvestigateModal.vue";
 import ChangeValue from "@/components/ChangeValue.vue";
 import IpRoleTags from "@/components/IpRoleTags.vue";
@@ -183,6 +183,7 @@ const emit = defineEmits<{
   (e: "created", v: IPAddress): void;
   (e: "back"): void;
   (e: "ssh-open"): void;
+  (e: "sftp-open"): void;
   (e: "ssh-popout"): void;
   (e: "rdp-open"): void;
   (e: "rdp-popout"): void;
@@ -233,6 +234,7 @@ interface FormState {
   device_id: string | null;
   hostname_source_pin: string;  // "" = 自動 (跟全域優先序)
   ssh_enabled: boolean;
+  sftp_enabled: boolean;
   rdp_enabled: boolean;
   vnc_enabled: boolean;
   novnc_enabled: boolean;
@@ -253,6 +255,7 @@ function emptyForm(): FormState {
     device_id: null,
     hostname_source_pin: "",
     ssh_enabled: false,
+    sftp_enabled: false,
     rdp_enabled: false,
     vnc_enabled: false,
     novnc_enabled: false,
@@ -300,6 +303,7 @@ function fromAddress(a: IPAddress): FormState {
     device_id: (a as any).device_id ?? null,
     hostname_source_pin: a.hostname_source_pin ?? "",
     ssh_enabled: !!a.ssh_enabled,
+    sftp_enabled: !!a.sftp_enabled,
     rdp_enabled: !!a.rdp_enabled,
     vnc_enabled: !!a.vnc_enabled,
     novnc_enabled: !!a.novnc_enabled,
@@ -483,6 +487,7 @@ async function save() {
       device_id: form.value.device_id ?? null,
       hostname_source_pin: form.value.hostname_source_pin || null,
       ssh_enabled: form.value.ssh_enabled,
+      sftp_enabled: form.value.sftp_enabled,
       rdp_enabled: form.value.rdp_enabled,
       vnc_enabled: form.value.vnc_enabled,
       novnc_enabled: form.value.novnc_enabled,
@@ -592,6 +597,22 @@ async function remove() {
                 {{ t("ssh.connect") }}
               </n-tooltip>
             </template>
+            <!-- SFTP：自己的開關（sftp_enabled）與自己的權限判定，與 SSH 各自獨立顯示 ——
+                 有些主機只想開放傳檔、不想開終端機。分成兩顆而不是塞進同一顆的下拉：
+                 上下傳檔案跟開終端機是兩件不同的事，要用的人一開始就知道自己要哪一個。 -->
+            <template v-if="props.address?.sftp_available">
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group key="hx-sftp">
+                    <n-button size="small" @click="emit('sftp-open')">
+                      <template #icon><n-icon><FilesIcon /></n-icon></template>
+                      <span v-if="!consoleCompact">{{ t("sftp.connect_btn") }}</span>
+                    </n-button>
+                  </n-button-group>
+                </template>
+                {{ t("sftp.connect_hint") }}
+              </n-tooltip>
+            </template>
             <!-- RDP 連線分割按鈕：主鍵新分頁、下箭頭另開視窗（僅在啟用且有權限時顯示） -->
             <span v-if="props.address?.rdp_available" key="hx-rdp" class="conn-beta-wrap">
               <n-tooltip :delay="200">
@@ -655,7 +676,7 @@ async function remove() {
               <span class="conn-beta-badge conn-sol-badge">SOL</span>
             </span>
             <!-- 連線鈕（SSH/RDP/VNC/PVE/BMC）與編輯/刪除間只留一條分隔線 -->
-            <n-divider v-if="props.address?.ssh_available || props.address?.rdp_available || props.address?.vnc_available || props.address?.novnc_available || props.address?.bmc_available"
+            <n-divider v-if="props.address?.ssh_available || props.address?.sftp_available || props.address?.rdp_available || props.address?.vnc_available || props.address?.novnc_available || props.address?.bmc_available"
                        key="hx-conn-div" vertical />
             <!-- 調查：把這個位址散在各處的線索收在一起（追問題時最花時間的就是到處翻） -->
             <n-button key="hx-inv" size="small" @click="investigating = true">
@@ -941,6 +962,12 @@ async function remove() {
             <n-space vertical :size="2" style="width:100%">
               <n-switch v-model:value="form.ssh_enabled" />
               <span style="font-size: 11px; opacity: .7">{{ t("ssh.enable_hint") }}</span>
+            </n-space>
+          </n-form-item>
+          <n-form-item :label="t('sftp.enable_label')">
+            <n-space vertical :size="2" style="width:100%">
+              <n-switch v-model:value="form.sftp_enabled" />
+              <span style="font-size: 11px; opacity: .7">{{ t("sftp.enable_hint") }}</span>
             </n-space>
           </n-form-item>
           <n-form-item :label="t('rdp.enable_label')">

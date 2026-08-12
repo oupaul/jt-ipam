@@ -265,6 +265,8 @@ export interface AIFinding {
   evidence: Record<string, unknown> | null;
   object_type: string | null; object_id: string | null;
   status: string; created_at: string | null;
+  /** 寫出這條結論的模型 —— 換過模型後要分得出哪幾條出自哪一個 */
+  model?: string | null;
 }
 export interface AIAuditSummary {
   ip_count: number;
@@ -355,5 +357,33 @@ export interface ReindexResult {
 /** 重新計算所有描述的向量。慢（依資料量可能數分鐘），只在換模型或初次設定後需要。 */
 export async function reindexEmbeddings(): Promise<ReindexResult> {
   const { data } = await apiClient.post<ReindexResult>("/api/v1/ai/reindex");
+  return data;
+}
+
+export interface AutolinkConfig {
+  enabled: boolean;
+  scope_subnet_ids: string[] | null;
+}
+
+export interface AutolinkPreview {
+  would_link: number;
+  samples: { ip: string; hostname: string | null; device: string | null }[];
+  skipped: Record<string, number>;
+}
+
+export async function getAutolink(): Promise<AutolinkConfig> {
+  const { data } = await apiClient.get<AutolinkConfig>("/api/v1/system/ip-device-autolink");
+  return data;
+}
+
+export async function putAutolink(p: Partial<AutolinkConfig>): Promise<AutolinkConfig> {
+  const { data } = await apiClient.put<AutolinkConfig>("/api/v1/system/ip-device-autolink", p);
+  return data;
+}
+
+/** 只計算不寫入 —— 開啟前先看會動到什麼。 */
+export async function previewAutolink(): Promise<AutolinkPreview> {
+  const { data } = await apiClient.post<AutolinkPreview>(
+    "/api/v1/system/ip-device-autolink/preview");
   return data;
 }

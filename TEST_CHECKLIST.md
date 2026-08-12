@@ -75,12 +75,29 @@ Release flow: run the checklist → all green → bump version → deploy
 - [ ] **(B) Install-help UI**: on the scan-agent page and the subnet edit dialog,
   unavailable probes show an "install help" popover with the matching install command
 
-## 5c. Headless browser smoke
+## 5c. Real-browser testing — **mandatory for every release that touches the UI**
+
+Type checks, unit tests and API tests all pass while a page renders the wrong
+thing, renders nothing, or puts it in the wrong place. Defects this project has
+shipped that were only ever visible in a browser: a column added to a table but
+not to the column-picker defaults (so it never appeared), an export that wrote
+`undefined` into the report, a date overlapping its buttons, file names that
+failed to line up by 16px, and a console that could not connect at all because
+the reverse proxy dropped the WebSocket upgrade.
 
 - [ ] `cd frontend && pnpm exec playwright test smoke` (no backend; self-starts
   vite preview) all green
-- [ ] Against a deployed instance (with `E2E_BASE_URL` + `E2E_ADMIN_PASS`) run
-  `pnpm test:e2e` main paths (login / sections / audit)
+- [ ] Against a deployed instance (`E2E_BASE_URL` + `E2E_ADMIN_PASS`) run the
+  **whole** suite: `pnpm test:e2e`. Data-dependent specs need real data — run those
+  against a deployed instance, not an empty test DB
+- [ ] **Every changed page opened in an actual browser**, console watched: no errors,
+  no blank regions, no `undefined` / raw JSON / untranslated i18n keys on screen
+- [ ] **A new spec covering what this release changed.** Assert on the effect, not on
+  the UI's own claim: read the file back off the remote host, reload the page after
+  saving, compare the downloaded bytes. "已上傳" on screen is not evidence
+- [ ] **Measure geometry, don't eyeball it** — `boundingBox()` whenever the point is
+  alignment, overlap or spacing; a screenshot hides a 16px error
+- [ ] New text checked in both locales (switch to English, confirm no key leaks)
 
 ## 5d. System export / import (cross-instance migration) — **run in full every release that touches it**
 
@@ -177,6 +194,10 @@ Release flow: run the checklist → all green → bump version → deploy
   zero. A candidate model must also produce **different vectors for different Traditional Chinese
   descriptions** (English-only models collapse them and look fine while ranking at random).
 - [ ] **Add address in a subnet**: the create form has a required IP field (issue #14).
+- [ ] **Attach IPs by NIC MAC** (Admin → 系統設定): off by default on an existing install; **Preview**
+  reports a count plus per-reason skips and changes nothing; enabling it attaches on the next sync round
+  and writes one IP-change-log row per address with the match reason. Clear a device link by hand, then
+  confirm the next round does **not** restore it (the rule that keeps the job from fighting the operator).
 
 ### Recent (v0.5.6x–0.5.7x)
 

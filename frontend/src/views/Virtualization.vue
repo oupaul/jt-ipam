@@ -22,12 +22,13 @@ import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useTablePagination } from "@/composables/useTablePagination";
 import { apiErrMsg } from "@/api/client";
 
 const { t } = useI18n();
 const route = useRoute();
+const router = useRouter();
 const pg = useTablePagination();
 // 管理區（virt_admin）：只放 Proxmox 連線；功能/進階區（virt）：叢集 + VM
 const adminMode = computed(() => route.name === "virt_admin");
@@ -61,6 +62,18 @@ const vms = computed(() => {
   const ids = new Set(clusters.value.map((c) => c.id));
   return allVms.value.filter((v) => ids.has(v.cluster_id));
 });
+
+// 另一個平台有幾台 VM —— 用來把「空白頁」變成「你要的東西在另一頁」
+const otherPlatformCount = computed(() => {
+  if (!props.platform) return 0;
+  const otherIds = new Set(allClusters.value
+    .filter((c) => c.type !== props.platform).map((c) => c.id));
+  return allVms.value.filter((v) => otherIds.has(v.cluster_id)).length;
+});
+
+function goOtherPlatform() {
+  void router.push({ name: props.platform === "vmware" ? "virt" : "virt_vmware" });
+}
 
 async function refresh() {
   loading.value = true;
@@ -136,6 +149,7 @@ function emptyPxForm() {
     auth_username: "root@pam", auth_token_id: "", token_secret: "",
     verify_tls: false, enabled: true, sync_interval_seconds: 600,
     scope_subnet_ids: [] as string[],
+    auto_create_ips: false,
   };
 }
 const pxForm = ref(emptyPxForm());
@@ -167,6 +181,7 @@ function fillFromRow(r: ProxmoxInstance) {
     enabled: r.enabled,
     sync_interval_seconds: r.sync_interval_seconds,
     scope_subnet_ids: r.scope_subnet_ids ?? [],
+    auto_create_ips: !!(r as any).auto_create_ips,
   };
 }
 function openPxEdit(r: ProxmoxInstance) {
@@ -196,6 +211,7 @@ async function submitPx() {
         verify_tls: f.verify_tls, enabled: f.enabled,
         sync_interval_seconds: f.sync_interval_seconds,
         scope_subnet_ids: f.scope_subnet_ids,
+        auto_create_ips: f.auto_create_ips,
       };
       if (f.token_secret) payload.token_secret = f.token_secret;  // 留空＝不變
       await Virt.updateProxmox(editingPxId.value, payload);
@@ -206,6 +222,7 @@ async function submitPx() {
         token_secret: f.token_secret, verify_tls: f.verify_tls,
         enabled: f.enabled, sync_interval_seconds: f.sync_interval_seconds,
         scope_subnet_ids: f.scope_subnet_ids,
+        auto_create_ips: f.auto_create_ips,
       });
     }
     showPx.value = false;
@@ -250,9 +267,17 @@ const clusterCols = computed<DataTableColumns<any>>(() => autoSort([
   },
 ]));
 // 每個 NIC 一行（IP / bridge / MAC 三欄同 index 對齊）— 多 IP 一看就知道對應關係
-function stackedCell(arr?: string[] | null) {
+function stackedCell(arr?: string[] | null, links?: Record<string, string> | null) {
   if (!arr || !arr.length) return "—";
-  return h("div", { class: "nic-stack" }, arr.map((v) => h("div", { class: "nic-line" }, v)));
+  return h("div", { class: "nic-stack" }, arr.map((v) => {
+    const id = links?.[v];
+    return h("div", { class: "nic-line" }, id
+      ? h("a", {
+          class: "nic-link",
+          onClick: () => router.push({ name: "address-detail", params: { id } }),
+        }, v)
+      : v);
+  }));
 }
 const vmCols = computed<DataTableColumns<any>>(() => autoSort([
   { title: t("common.name"), key: "name" },
@@ -270,7 +295,10 @@ const vmCols = computed<DataTableColumns<any>>(() => autoSort([
   { title: t("virt.node"), key: "node", render: (r) => r.node ?? "—" },
   {
     title: "IP", key: "ips", minWidth: 150,
-    render: (r) => stackedCell(r.ips),
+    // 在 IPAM 裡找得到的位址就做成連結 —— 資料早就在系統裡，不該要人複製那串數字、
+    // 切到 IP 位址頁再貼上搜尋。找不到、或重疊網段下分不出是哪一筆時維持純文字
+    // （後端不給 id）：給錯的連結比沒有連結更糟，因為使用者會信它。
+    render: (r) => stackedCell(r.ips, r.ip_links),
   },
   {
     title: t("virt.bridge"), key: "bridges", minWidth: 100,
@@ -364,9 +392,23 @@ onMounted(() => {
     <template #header>
       <n-space align="center" :wrap-item="false">
         <n-icon :size="22"><VirtualizationIcon /></n-icon>
-        <span>{{ adminMode ? t("virt.proxmox_admin_title") : t("nav.virtualization") }}</span>
+        <!-- 兩個選單項共用這個元件；標題不寫平台的話，使用者根本分不出自己在哪一頁 ——
+             實機回報「vCenter 設定成功、說讀到 169 台，但虛擬化頁面看不到 VM」，就是
+             人在 PVE 那一頁找 VMware 的資料。 -->
+        <span>{{ adminMode ? t("virt.proxmox_admin_title")
+                 : (platform === "vmware" ? t("nav.virt_vmware")
+                    : platform === "proxmox" ? t("nav.virt_pve") : t("nav.virtualization")) }}</span>
       </n-space>
     </template>
+    <!-- 空頁面要能自己解釋。這一頁沒東西、別的平台卻有，那不是「沒有資料」，
+         是「資料不在這一頁」—— 兩者對使用者的意義完全不同。 -->
+    <n-alert v-if="otherPlatformCount > 0" type="info" :bordered="false"
+             style="margin-bottom: 12px">
+      {{ t("virt.other_platform_hint", { n: otherPlatformCount,
+            name: platform === "vmware" ? t("nav.virt_pve") : t("nav.virt_vmware") }) }}
+      <n-button text type="primary" size="small" style="margin-left:6px"
+                @click="goOtherPlatform">{{ t("virt.other_platform_go") }}</n-button>
+    </n-alert>
     <n-tabs v-model:value="tab" type="line">
       <n-tab-pane v-if="!adminMode" name="clusters">
         <template #tab>
@@ -485,6 +527,18 @@ onMounted(() => {
         <div style="margin: -8px 0 4px">
           <span style="font-size: 11px; opacity: .7">{{ t("virt.scope_hint") }}</span>
         </div>
+        <n-form-item :label="t('virt_autocreate.label')">
+          <div style="width:100%">
+            <n-switch v-model:value="pxForm.auto_create_ips" />
+            <div style="font-size:11px;opacity:.65;margin-top:4px">{{ t("virt_autocreate.hint") }}</div>
+            <!-- 開了就等於放棄一道偵測，這件事必須在開關旁邊講 -->
+            <n-alert v-if="pxForm.auto_create_ips" type="warning" :show-icon="false" :bordered="false"
+                     style="margin-top:6px">
+              {{ t("virt_autocreate.risk") }}
+            </n-alert>
+          </div>
+        </n-form-item>
+
         <n-alert type="info" :title="t('virt.help_title')" :bordered="false"
                  style="margin-top: 4px">
           <ol class="px-help">
@@ -538,4 +592,6 @@ onMounted(() => {
   font-variant-numeric: tabular-nums;
 }
 .nic-line + .nic-line { border-top: 1px dashed rgba(127, 127, 127, 0.18); }
+.nic-link { color: var(--primary-color, #18a058); cursor: pointer; }
+.nic-link:hover { text-decoration: underline; }
 </style>

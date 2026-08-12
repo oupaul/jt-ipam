@@ -1,4 +1,4 @@
-# jt-ipam v0.5.151
+# jt-ipam v0.5.164
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/jasoncheng7115/jt-ipam)](https://github.com/jasoncheng7115/jt-ipam/commits/main)
@@ -28,7 +28,7 @@ Familiar to phpIPAM users so they are productive from day one, but built from sc
 - **Graylog** — exposes an IP→hostname/FQDN DSV lookup endpoint for Graylog's "DSV File from HTTP" data adapter
 - **Local AI** — natural-language queries and semantic search over LLM Server (self-hosted by default, so data never leaves the host; an OpenAI-compatible endpoint can be selected explicitly instead), plus an MCP server (stdio and Streamable HTTP transports) so external LLM clients can drive the IPAM; `gemma4:26b` works well in our testing
 
-Also built in: a **browser-based remote console** — an SSH terminal plus RDP and VNC desktops and a **BMC out-of-band serial console** (IPMI SOL) (RDP/VNC/BMC are **Beta**), in the browser — credentials are not stored by default, with an optional per-user **encrypted credential vault**, object-level RBAC, single-use ticket→WebSocket sessions and full audit (RDP/VNC use an optional dependency that is installed only when a prebuilt wheel is available, so the base install is unchanged), an **IP request approval workflow** (configurable multi-stage / parallel sign-off, with in-app + email notifications), **DNS record review** (find records with no matching IPAM address), a **scan agent** (ICMP/ARP/rDNS/NetBIOS/mDNS/OS probes), **central certificate storage & distribution** (upload a commercial / self-signed cert once; a pure-bash agent pulls it on a schedule and deploys it to nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and more, reloading the service — plus a **PowerShell agent for Windows / IIS** that imports into the Windows certificate store, repoints the HTTPS binding and verifies the switch over a real TLS connection, rolling back if it fails — with encrypted private keys, expiry alerts and manual renew), **floor plans + rack U-diagrams** (half-U, front/rear, SVG/PNG/draw.io export), **cable tracing** (multi-hop), an IP change log with stale-IP reclaim, and a universal table column-picker + multi-format export.
+Also built in: a **browser-based remote console** — an SSH terminal, an **SFTP file browser** (upload/download without a separate client), plus RDP and VNC desktops and a **BMC out-of-band serial console** (IPMI SOL) (RDP/VNC/BMC are **Beta**), in the browser — credentials are not stored by default, with an optional per-user **encrypted credential vault**, object-level RBAC, single-use ticket→WebSocket sessions and full audit (RDP/VNC use an optional dependency that is installed only when a prebuilt wheel is available, so the base install is unchanged), an **IP request approval workflow** (configurable multi-stage / parallel sign-off, with in-app + email notifications), **DNS record review** (find records with no matching IPAM address), a **scan agent** (ICMP/ARP/rDNS/NetBIOS/mDNS/OS probes; one is installed on the host automatically — scanning always runs through an agent), **central certificate storage & distribution** (upload a commercial / self-signed cert once; a pure-bash agent pulls it on a schedule and deploys it to nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and more, reloading the service — plus a **PowerShell agent for Windows / IIS** that imports into the Windows certificate store, repoints the HTTPS binding and verifies the switch over a real TLS connection, rolling back if it fails — with encrypted private keys, expiry alerts and manual renew), **floor plans + rack U-diagrams** (half-U, front/rear, SVG/PNG/draw.io export), **cable tracing** (multi-hop), an IP change log with stale-IP reclaim, and a universal table column-picker + multi-format export.
 
 ## Graylog log enrichment (DSV lookup)
 
@@ -71,6 +71,34 @@ Just want a login now? Step 3 alone is enough. The same guide is built into the 
 - **Boxes / colors look broken (e.g. glances)** — set the serial login's `TERM` to `xterm-256color` (serial-getty often defaults to `vt220`).
 - **Emoji (⚠️ etc.) in the OS boot messages** — those are systemd's own glyphs; add `systemd.setenv=SYSTEMD_EMOJI=0` to the kernel cmdline. For emoji on the **BIOS** screen, set the BIOS Console Redirection **Terminal Type = VT100+** (not VT-UTF8).
 - **Console area is tiny with black margins** — serial can't auto-negotiate window size; use the console's **Fit to window** button (it sends an `stty rows/cols` command — press it at a shell prompt), or run `stty rows N cols N` yourself.
+
+## Which sources create IP records on their own?
+
+When an integration sees an address IPAM does not have yet, the behaviour differs by
+source — and it matters, because the "unauthorised IPs" anomaly check is defined as
+**"seen in ARP, absent from IPAM"**. Hence this table:
+
+| Source | When IPAM has no such address | Toggle | Default | Subnet placement |
+|---|---|---|---|---|
+| **Scan agent** | **Creates it** | none | always creates | only inside subnets assigned to that agent with scanning enabled |
+| **LibreNMS** | May create (device primary IP only, never ARP neighbours) | `auto_create_ips` | **on** | longest prefix; refuses when ambiguous |
+| **Proxmox VE** | May create | "trust addresses from virtualization" | **off** | longest prefix; refuses when ambiguous |
+| **VMware / ESXi** | May create | "trust addresses from virtualization" | **off** | longest prefix; refuses when ambiguous |
+| **OPNsense / pfSense** | May create (DHCP leases) | "create addresses IPAM does not have" | **off** | longest prefix; refuses when ambiguous |
+| AdGuard / Wazuh / DNS / Windows DHCP / FortiGate | **Match only, never create** | — | — | — |
+| CSV import / phpIPAM migration | Created from the imported data (an explicit user action) | — | — | as imported |
+
+**Shared rule**: every auto-creation path uses the same decision
+(`services/ip_autocreate.py`) — longest-prefix match on existing subnets, and
+**nothing is created when overlapping subnets make it ambiguous** (several tenants each
+holding `192.168.1.0/24` is this project's core scenario; filing a record under the wrong
+tenant is worse than not filing it). Setting an integration's subnet scope removes the
+ambiguity.
+
+> ⚠️ **Enabling auto-creation trades away part of your detection.** A machine that obtained
+> an address is not necessarily one that belongs in IPAM: once an unauthorised device is
+> recorded, it **no longer appears under "unauthorised IPs"**. Auto-created records are
+> flagged "Auto-recorded (unregistered)" in the IP list — review them regularly.
 
 ## Core entities
 

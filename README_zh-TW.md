@@ -1,4 +1,4 @@
-# jt-ipam v0.5.151
+# jt-ipam v0.5.164
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/jasoncheng7115/jt-ipam)](https://github.com/jasoncheng7115/jt-ipam/commits/main)
@@ -28,7 +28,7 @@ phpIPAM 老使用者幾乎零學習成本；以現代技術全新打造（非基
 - **Graylog**：提供 IP→主機名稱/FQDN 的 DSV 對照表端點，供 Graylog「DSV File from HTTP」資料配接器抓取
 - **本地 AI**：LLM Server 自然語言查詢 + 語意搜尋（預設自架、資料不外送；也可明確改接 OpenAI 相容端點），並提供 MCP server（stdio / Streamable HTTP）；實測搭配 `gemma4:26b` 效果良好
 
-也內建：**瀏覽器內遠端連線管理** —— SSH 終端機，外加 RDP、VNC 桌面與 **BMC 序列主控台**（IPMI SOL，不經作業系統的獨立連線）（RDP/VNC/BMC 為 **Beta**），全部在瀏覽器內，連線帳密預設不儲存、可選用**個人加密憑證金庫**（by-user、AES-GCM），物件層級 RBAC、單次 ticket→WebSocket 連線與完整稽核（RDP/VNC 走選用相依，僅在有預編譯 wheel 時才安裝，不影響基礎安裝）、**IP 申請審核流程**（可設多關卡會簽 / 依序關卡，站內 + Email 通知）、**DNS 記錄檢視**（找出沒有對應 IPAM 的記錄）、**掃描代理**（ICMP/ARP/反解/NetBIOS/mDNS/OS 探測）、**憑證集中保管與派送**（商業 / 自簽憑證一次上傳，純 bash 代理依排程自動派送到 nginx/apache/caddy/haproxy/Proxmox VE·PMG·PBS/Zimbra…等服務並重載；另有 **Windows / IIS 的 PowerShell 代理**，匯入 Windows 憑證存放區、換上 HTTPS 繫結，並實際連線確認送出的是新憑證，不對就自動還原；私鑰加密保存、到期告警、可手動續簽）、**機房平面圖 + 機櫃 U 位圖**（含半 U / 正背面、SVG/PNG/draw.io 匯出）、**纜線追蹤**（多跳穿透）、IP 異動記錄與失聯 IP 回收、通用表格欄位選擇 + 多格式匯出。
+也內建：**瀏覽器內遠端連線管理** —— SSH 終端機、**SFTP 檔案瀏覽器**（免另開工具就能上下傳檔案），外加 RDP、VNC 桌面與 **BMC 序列主控台**（IPMI SOL，不經作業系統的獨立連線）（RDP/VNC/BMC 為 **Beta**），全部在瀏覽器內，連線帳密預設不儲存、可選用**個人加密憑證金庫**（by-user、AES-GCM），物件層級 RBAC、單次 ticket→WebSocket 連線與完整稽核（RDP/VNC 走選用相依，僅在有預編譯 wheel 時才安裝，不影響基礎安裝）、**IP 申請審核流程**（可設多關卡會簽 / 依序關卡，站內 + Email 通知）、**DNS 記錄檢視**（找出沒有對應 IPAM 的記錄）、**掃描代理**（ICMP/ARP/反解/NetBIOS/mDNS/OS 探測；安裝時會在主機上自動裝一個，掃描一律由代理執行）、**憑證集中保管與派送**（商業 / 自簽憑證一次上傳，純 bash 代理依排程自動派送到 nginx/apache/caddy/haproxy/Proxmox VE·PMG·PBS/Zimbra…等服務並重載；另有 **Windows / IIS 的 PowerShell 代理**，匯入 Windows 憑證存放區、換上 HTTPS 繫結，並實際連線確認送出的是新憑證，不對就自動還原；私鑰加密保存、到期告警、可手動續簽）、**機房平面圖 + 機櫃 U 位圖**（含半 U / 正背面、SVG/PNG/draw.io 匯出）、**纜線追蹤**（多跳穿透）、IP 異動記錄與失聯 IP 回收、通用表格欄位選擇 + 多格式匯出。
 
 ## Graylog 記錄補實（DSV 對照表）
 
@@ -71,6 +71,30 @@ SOL 只是把主機的**序列埠**轉播出來，所以主機端要先設好序
 - **方框字／顏色亂（例如 glances）** —— 把序列登入的 `TERM` 設成 `xterm-256color`（serial-getty 預設常是 `vt220`）。
 - **OS 開機訊息有 emoji（⚠️ 等）** —— 那是 systemd 自己的符號；核心 cmdline 加 `systemd.setenv=SYSTEMD_EMOJI=0`。**BIOS** 畫面的 emoji 則把 BIOS Console Redirection 的 **Terminal Type 設 VT100+**（不要 VT-UTF8）。
 - **畫面範圍很小、四周留黑** —— 序列無法自動傳視窗大小；按主控台的 **符合視窗**（它會送一段 `stty rows/cols` 指令，請在 shell 提示字元按），或自行 `stty rows N cols N`。
+
+## 各來源會不會自己新增 IP 紀錄？
+
+整合看到一個 IPAM 裡還沒有的位址時，行為不是每個來源都一樣 —— 這件事會直接影響
+「未授權 IP」異常偵測（它的判定是**「ARP 看得到、IPAM 沒有」**），所以整理成一張表：
+
+| 來源 | IPAM 沒有該位址時 | 開關 | 預設 | 落點判斷 |
+|---|---|---|---|---|
+| **掃描代理** | **自動建立** | 無 | 一律建 | 只建在「已指派給該代理且有開掃描」的子網路內 |
+| **LibreNMS** | 可自動建立（只建裝置主 IP，不建 ARP 鄰居） | `auto_create_ips` | **開** | 最長首碼；歧義不建 |
+| **Proxmox VE** | 可自動建立 | 「信任虛擬化取得的 IP」 | **關** | 最長首碼；歧義不建 |
+| **VMware / ESXi** | 可自動建立 | 「信任虛擬化取得的 IP」 | **關** | 最長首碼；歧義不建 |
+| **OPNsense / pfSense** | 可自動建立（DHCP 租約） | 「自動建立 IPAM 沒有的位址」 | **關** | 最長首碼；歧義不建 |
+| AdGuard / Wazuh / DNS / Windows DHCP / FortiGate | **只比對既有，不建** | — | — | — |
+| CSV 匯入 / phpIPAM 遷移 | 由匯入內容建立（使用者明示的動作） | — | — | 依匯入資料 |
+
+**共通規則**：自動建立一律走同一套判斷（`services/ip_autocreate.py`）——
+用最長首碼找唯一命中的子網路；**重疊網段造成歧義時寧可不建**（多個單位各有
+`192.168.1.0/24` 是本專案的核心情境，把紀錄掛到錯的單位比不建更糟）。
+在整合設定裡指定「限定子網路範圍」就能消除歧義。
+
+> ⚠️ **開啟自動建立＝放棄一部分偵測能力。** 拿得到位址的機器不等於該被收錄的機器：
+> 私接的設備一旦被自動建進 IPAM，就**不會再出現在「未授權 IP」異常偵測裡**。
+> 自動建立的紀錄在 IP 清單上會標示為「自動收錄（未登記）」，請定期檢視。
 
 ## 核心物件
 

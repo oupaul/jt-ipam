@@ -66,6 +66,10 @@ class VMRead(StrictModel):
     ips: list[str] = []
     macs: list[str] = []
     bridges: list[str] = []
+    # IP 字串 → IPAM 裡那筆位址的 id，讓清單上的 IP 可以直接點過去。
+    # **重疊網段下同一個位址字串會有多筆**（本專案的設計），分不出是哪一筆時
+    # 就不放進來 —— 給錯的連結比沒有連結更糟，因為使用者會信它。
+    ip_links: dict[str, str] = {}
 
 
 class VMInterfaceRead(StrictModel):
@@ -94,6 +98,8 @@ class ProxmoxInstanceCreate(StrictModel):
     enabled: bool = True
     sync_interval_seconds: Annotated[int, Field(ge=60, le=86400)] = 600
     scope_subnet_ids: list[str] | None = None
+    # 信任虛擬化回報的 IP：IPAM 沒有時自動建立（預設關閉；風險見模型註解）
+    auto_create_ips: bool | None = None
 
 
 class ProxmoxInstanceUpdate(StrictModel):
@@ -106,6 +112,8 @@ class ProxmoxInstanceUpdate(StrictModel):
     enabled: bool | None = None
     sync_interval_seconds: Annotated[int | None, Field(ge=60, le=86400)] = None
     scope_subnet_ids: list[str] | None = None
+    # 信任虛擬化回報的 IP：IPAM 沒有時自動建立（預設關閉；風險見模型註解）
+    auto_create_ips: bool | None = None
 
 
 class ProxmoxInstanceRead(StrictModel):
@@ -119,6 +127,8 @@ class ProxmoxInstanceRead(StrictModel):
     enabled: bool
     sync_interval_seconds: int
     scope_subnet_ids: list[str] | None = None
+    # 信任虛擬化回報的 IP：IPAM 沒有時自動建立（預設關閉；風險見模型註解）
+    auto_create_ips: bool | None = None
     last_sync_at: Any
     last_error: str | None
 
@@ -313,6 +323,20 @@ async def list_vms(
             if d:
                 it.ips, it.macs, it.bridges = d["ips"], d["macs"], d["bridges"]
 
+        # 一次把這一頁用到的 IP 解析成 IPAM 位址 id（不要逐台查）。
+        # 同一個字串對到多筆就整個不給 —— 重疊網段是本專案的核心情境。
+        from app.models.address import IPAddress as _IPA
+        wanted = {ip for it in items for ip in it.ips}
+        if wanted:
+            seen: dict[str, list[str]] = {}
+            for aid, ahost in (await session.execute(
+                select(_IPA.id, func.host(_IPA.ip)).where(func.host(_IPA.ip).in_(wanted))
+            )).all():
+                seen.setdefault(str(ahost), []).append(str(aid))
+            unique = {ip: ids[0] for ip, ids in seen.items() if len(ids) == 1}
+            for it in items:
+                it.ip_links = {ip: unique[ip] for ip in it.ips if ip in unique}
+
     return Paginated[VMRead](items=items, total=total, page=page, page_size=page_size)
 
 
@@ -353,6 +377,7 @@ async def create_proxmox(
         enabled=payload.enabled,
         sync_interval_seconds=payload.sync_interval_seconds,
         scope_subnet_ids=payload.scope_subnet_ids,
+        auto_create_ips=bool(payload.auto_create_ips),
     )
     session.add(obj)
     await session.flush()
@@ -416,7 +441,7 @@ async def update_proxmox(
         urls = data["extra_api_urls"] or []
         obj.extra_api_urls = "\n".join(str(u).rstrip("/") for u in urls) or None
     for k in ("auth_username", "auth_token_id", "verify_tls", "enabled",
-              "sync_interval_seconds", "scope_subnet_ids"):
+              "sync_interval_seconds", "scope_subnet_ids", "auto_create_ips"):
         if k in data and data[k] is not None:
             setattr(obj, k, data[k])
 

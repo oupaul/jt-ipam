@@ -16,7 +16,11 @@
     "mfa_failed": "Invalid or expired code",
     "sso_oidc": "Sign in with OIDC",
     "sso_saml": "Sign in with SAML",
-    "or_sso": "Or use SSO"
+    "or_sso": "Or use SSO",
+    "unreachable": "Cannot reach the server. Check your network, or whether the jt-ipam service is running — this is not a credentials problem.",
+    "server_down": "The server cannot handle logins right now (HTTP {code}). The backend may be down or failing to start; check systemctl status jt-ipam-backend — this is not a credentials problem.",
+    "too_many": "Too many attempts. Please wait and try again.",
+    "locked": "This account is locked. Please contact an administrator."
   },
   "certStatus": {
     "col_agent": "Agent",
@@ -406,7 +410,9 @@
     "dep_redundant": "alternative (optional)",
     "deps_note": "Probes whose tool is missing won't run. On Debian/Ubuntu install with the command above (the agent unlocks it on its next report); on other distros install the equivalent package (e.g. RHEL: samba-common-tools).",
     "scan_now_done": "Queued; the agent will run a scan within {n}s.",
-    "scan_now_confirm": "Run a scan now on this agent's scan-enabled subnets (with their enabled probes)?"
+    "scan_now_confirm": "Run a scan now on this agent's scan-enabled subnets (with their enabled probes)?",
+    "delete_confirm": "Delete scan agent \"{name}\"?",
+    "delete_confirm_with_subnets": "Delete scan agent \"{name}\"? {n} subnet(s) are assigned to it and would be left with no agent to scan them — reassign them to another agent."
   },
   "os_precedence": {
     "title": "OS source precedence",
@@ -1125,7 +1131,9 @@
     "dhcp_reserved_tag": "Reserved",
     "dhcp_reserved_hint": "DHCP binds this address to a specific NIC, so it will not be recycled to another machine.",
     "dhcp_reserved_mac": "Bound to MAC",
-    "state": "State"
+    "state": "State",
+    "role_auto_added": "Auto-recorded (unregistered)",
+    "role_auto_added_hint": "Created automatically by {src}'s DHCP sync; nobody registered it by hand. Confirm this device is expected."
   },
   "subnets": {
     "title": "Subnets",
@@ -1168,20 +1176,23 @@
     "scan_enable": "Enable scanning",
     "scan_methods": "Scan methods",
     "scan_agent": "Scan agent",
-    "scan_agent_ph": "Choose: local host scan, or a scan agent",
+    "scan_agent_ph": "Choose a scan agent",
     "threshold_pct": "Usage threshold (%)",
     "threshold_ph": "Alert above this percentage",
     "allow_overlap": "Allow overlap",
     "allow_overlap_hint": "Allow overlapping an existing subnet (e.g. same CIDR but different unit / location)",
     "ip_total": "Total IPs",
-    "scan_agent_local": "Local scan (jt-ipam host)",
-    "err_scan_agent_required": "Scanning is enabled — choose how to scan: the local host, or a scan agent (use an agent for Docker / cross-segment).",
+    "err_scan_agent_required": "Scanning is enabled, so a scan agent is required — scanning always runs through an agent, and an unassigned subnet is never scanned.",
     "ai_audit": "AI review",
     "ai_audit_enable": "Include in AI review",
     "ai_audit_hint": "When ticked, addresses in this subnet are included in the scheduled review sent to the language model. Untick to exclude it entirely — useful for sensitive segments.",
     "checks": "Checks",
     "anomaly_enable": "Include in anomaly detection",
-    "anomaly_hint": "When unticked, addresses in this subnet never appear in any anomaly list (unauthorised IPs, ghost IPs…). Worth turning off for guest or lab segments."
+    "anomaly_hint": "When unticked, addresses in this subnet never appear in any anomaly list (unauthorised IPs, ghost IPs…). Worth turning off for guest or lab segments.",
+    "scan_agent_none": "(unassigned — will not be scanned)",
+    "scan_agent_local_named": "{name} (agent on the jt-ipam host)",
+    "scan_agent_none_hint": "No scan agent assigned, so this subnet will not be scanned — scanning always runs through an agent. Pick one; if the list is empty, no agent has been installed here or anywhere else yet (Admin → Scan agents to add one).",
+    "scan_agent_no_local_hint": "There is no scan agent on the jt-ipam host itself. New installs and upgrades add one automatically; if this host was upgraded from an older version without it, add one under Admin → Scan agents and follow the install instructions."
   },
   "csv_import": {
     "title": "Import addresses (CSV)",
@@ -1334,7 +1345,12 @@
     "rack_side_right": "Right half",
     "dhcp_server_via": "{ips} on this device is marked as a DHCP server",
     "search_ph": "Search name / model / serial",
-    "truncated": "showing {shown} of {total} — use search to reach the rest"
+    "truncated": "showing {shown} of {total} — use search to reach the rest",
+    "virtuality": "Kind",
+    "virtual": "Virtual",
+    "physical": "Physical",
+    "filter_subnet": "Subnet",
+    "filter_subnet_all": "All subnets"
   },
   "locations": {
     "site": "Site",
@@ -1730,7 +1746,7 @@
     "title": "Anomaly Detection",
     "run_scan": "Run scan",
     "last_run": "Last run",
-    "help": "Click the button to run all detection rules: IP conflicts, MAC drift, ghost IPs, unauthorized IPs.",
+    "help": "Run every detection rule: IP conflicts, MAC drift, stale addresses, unauthorised addresses, rogue DHCP servers, external exposure, stale DNS records, duplicate address records and suspicious changes.",
     "ip_conflicts": "IP conflicts",
     "mac_drifts": "MAC drifts",
     "ghost_ips": "Ghost IPs",
@@ -1755,12 +1771,16 @@
     "exp_exposed_archived": "Archived but still exposed",
     "exp_dns_to_offline": "DNS points at an offline host",
     "exp_hint": "All of this comes from data already synced into jt-ipam (NAT rules, firewall rules, DNS records). Detection never contacts a firewall or any device.",
-    "dangling_dns": "Dangling DNS",
+    "dangling_dns": "Stale DNS records",
     "dup_ip": "Duplicate IP records",
     "changes": "Suspicious changes",
     "chg_bulk_delete": "Bulk deletion in a short window",
     "chg_login_failures": "Repeated login failures",
-    "chg_privilege_change": "Permission / account change"
+    "chg_privilege_change": "Permission / account change",
+    "explain_dangling_dns": "DNS records pointing at an address that no longer exists in the IPAM, or that no source has seen in a long time. Besides sending people to a service that isn't there, someone else may claim that address and take over the name.",
+    "explain_external_exposure": "Addresses opened to the internet by NAT or a firewall rule whose state does not match — no monitoring at all, offline, or in an archived subnet. An open door nobody watches is the one to deal with first.",
+    "explain_duplicate_ip_records": "The same address has a record in each of two subnets that contain one another. Integration syncs stamp only one of them, so the other's liveness and hostname stay frozen at their old values.",
+    "explain_suspicious_changes": "A burst of changes in a short window, or changes from a source you would not expect. These are observed patterns only; whether they are a problem is your call."
   },
   "webhooks": {
     "events_label": "events (* = all)",
@@ -1883,7 +1903,9 @@
       "suspended": "Suspended",
       "unknown": "Unknown"
     },
-    "proxmox_admin_title": "Proxmox VE connections"
+    "proxmox_admin_title": "Proxmox VE connections",
+    "other_platform_hint": "This page shows one platform only. You have {n} virtual machines under \"{name}\".",
+    "other_platform_go": "Go there"
   },
   "physical": {
     "cabling": "Cabling",
@@ -2476,7 +2498,8 @@
     "title": "Relationships",
     "wrap_hint": "continues on next row",
     "vm": "VM",
-    "pve_node": "PVE node"
+    "pve_node": "PVE node",
+    "esxi_host": "ESXi host"
   },
   "version": {
     "title": "Version Info",
@@ -3148,8 +3171,8 @@
     "cat_coverage": "Coverage",
     "cat_policy": "Policy",
     "cat_other": "Other",
-    "disclaimer": "These are a language model's inferences about your IPAM data, not verified facts. Models state wrong things confidently — check the evidence attached to each finding and judge for yourself before acting on it.",
-    "dashboard_note": "AI inference, not verified fact",
+    "disclaimer": "Below is a language model's reading of your IPAM data. It is not the same as a verified conclusion, and a model can be confidently wrong — each finding cites the records it came from, so check those before acting.",
+    "dashboard_note": "An AI reading of your IPAM data — worth checking yourself",
     "stage_collecting": "Collecting data…",
     "stage_analyzing": "Model is analysing…",
     "stage_saving": "Saving results…",
@@ -3177,11 +3200,13 @@
     "all_category": "All categories",
     "clear_all": "Clear all",
     "clear_confirm": "This deletes every finding, including dismissed ones. The next review will report them again, including any you marked as false positives. Clear them?",
-    "cleared": "Cleared {n} findings"
+    "cleared": "Cleared {n} findings",
+    "by_model": "Model: {m}"
   },
   "ip_peek": {
     "not_found": "Not found in IPAM",
-    "role": "Role"
+    "role": "Role",
+    "allocation": "Allocation"
   },
   "investigate": {
     "title": "Investigate",
@@ -3194,7 +3219,14 @@
     "conflict_names": "Sources disagree on the hostname ({n} different names)",
     "conflict_stale_agent": "Wazuh agent \"{name}\" is disconnected and the address has been seen alive since — its claim may be stale",
     "conflict_duplicate": "This address is recorded in {n} subnets (overlapping)",
-    "conflict_macs": "{n} different MACs seen in ARP — unusual for a single host"
+    "conflict_macs": "{n} different MACs seen in ARP — unusual for a single host",
+    "export": "Export report",
+    "sec_names": "Hostname sources",
+    "sec_mon": "Monitoring",
+    "sec_fw": "Firewall",
+    "sec_changes": "IP change log",
+    "ai_progress": "{s}s · {n} chars ({think} thinking)",
+    "sec_other": "Other records for this address"
   },
   "esxi": {
     "title": "ESXi / vCenter",
@@ -3214,5 +3246,77 @@
     "help_step2": "Enter the vCenter or ESXi address only; the SOAP endpoint is always /sdk and is appended for you.",
     "help_step3": "For a self-signed certificate, turn TLS verification off or the connection will be rejected.",
     "page_title": "VMware connections"
+  },
+  "autolink": {
+    "title": "Attach IPs to devices by NIC MAC",
+    "enable": "Enable",
+    "enable_hint": "Each sync round (about 5 minutes), attach addresses that have no device but whose MAC matches a device's physical port. Off by default.",
+    "scope": "Limit to subnets",
+    "scope_all": "Blank = all subnets",
+    "scope_hint": "With overlapping subnets, you can restrict this to the ranges you know are clean.",
+    "preview": "Preview",
+    "preview_result": "{n} would be attached",
+    "preview_skipped": "skipped: {s}",
+    "skip_ambiguous_mac": "MAC on several devices",
+    "skip_manually_edited": "edited by a person",
+    "skip_invalid_mac": "unusable MAC",
+    "skip_hostname_mismatch": "hostname contradicts",
+    "skip_customer_conflict": "different customer",
+    "rules_hint": "Only fills what is empty; never overwrites and never removes an existing link. A MAC found on several devices, a protocol-reserved or non-unicast MAC, a hostname naming a different device, a customer conflict, an archived subnet — all are skipped rather than guessed. Every change is written to the IP change log, so it can be traced and undone."
+  },
+  "sftp": {
+    "connect": "Connect",
+    "disconnected": "Connection closed",
+    "up": "Up",
+    "new_folder": "New folder",
+    "new_folder_prompt": "Folder name",
+    "upload": "Upload",
+    "download": "Download",
+    "uploaded": "Uploaded {name}",
+    "rename": "Rename",
+    "rename_prompt": "New name for {name}",
+    "rename_no_slash": "Names cannot contain / — rename only works within the same directory.",
+    "delete_confirm": "Delete {name}? This runs on the remote host and cannot be undone.",
+    "truncated": "This directory has too many entries to show them all — open a subdirectory, or use the terminal.",
+    "col_name": "Name",
+    "col_size": "Size",
+    "col_mtime": "Modified",
+    "col_mode": "Mode",
+    "connect_btn": "SFTP Files",
+    "connect_hint": "SFTP: browse and transfer files on this host",
+    "connect_to": "SFTP to {ip}",
+    "enable_label": "Enable SFTP file transfer",
+    "enable_hint": "When enabled, authorized users can open the SFTP file browser from this IP's detail page. Independent of SSH: file transfer can be allowed without a terminal (same permission strength, over the same SSH connection).",
+    "err_ws_closed": "The connection closed before it was established (code {code}). On a freshly upgraded site, or behind your own reverse proxy, this usually means the proxy is not forwarding the WebSocket upgrade headers — check that the console location in nginx lists sftp.",
+    "filter_ph": "Filter this directory…",
+    "filter_note": "Showing {shown} of {total} entries in this directory.",
+    "batch_selected": "{n} selected",
+    "batch_download": "Download",
+    "batch_move": "Move",
+    "batch_delete": "Delete",
+    "batch_clear": "Clear selection",
+    "batch_delete_confirm": "Delete the {n} selected entries? This runs on the remote host and cannot be undone.",
+    "batch_move_prompt": "Move to which directory? (absolute path)",
+    "batch_no_files": "No files in the selection — directories cannot be downloaded directly.",
+    "batch_downloaded": "Downloaded {n} file(s)",
+    "batch_downloaded_skipped_dirs": "Downloaded {n} file(s); skipped {dirs} director(ies), which cannot be downloaded directly",
+    "batch_deleted": "Deleted {n} entries",
+    "batch_moved": "Moved {n} entries to {dir}",
+    "batch_partial_fail": "Some entries failed: {names}",
+    "uploaded_many": "Uploaded {n} files",
+    "upload_partial_fail": "Uploaded {ok}; these failed: {names}",
+    "uploading_progress": "Uploading {done}/{total}: {name}",
+    "drop_here": "Drop to upload into {dir}",
+    "drop_dirs_skipped": "Skipped {n} folder(s) — only files can be dropped for now."
+  },
+  "fw_autocreate": {
+    "label": "Create addresses IPAM does not have",
+    "hint": "While syncing DHCP leases, create a record for an address IPAM does not know yet (only inside this firewall's associated subnets, and only when the subnet is unambiguous). When off, such data is skipped and the sync summary reports how many were skipped.",
+    "risk": "Risk: a machine that obtained a DHCP address is not necessarily a machine that belongs in IPAM. Someone plugging in an unauthorised device and getting a lease would be recorded as a legitimate entry — and once it is in IPAM it no longer appears under \"unauthorised IPs\" in anomaly detection, whose whole test is \"seen in ARP, absent from IPAM\". Auto-created records are flagged as unregistered in the IP list; review them regularly."
+  },
+  "virt_autocreate": {
+    "label": "Trust addresses reported by virtualization (create ones IPAM lacks)",
+    "hint": "During sync, create a record when a VM or node address is not yet in IPAM (only within the configured subnet scope, and only when the subnet is unambiguous). When off, only existing records are matched.",
+    "risk": "Risk: an address visible on the hypervisor is not necessarily one that belongs in IPAM (test machines, throwaway clones, systems someone else manages). And once recorded, that address stops appearing under \"unauthorised IPs\" in anomaly detection, whose whole test is \"seen in ARP, absent from IPAM\". Auto-created records are flagged as unregistered in the IP list; review them regularly."
   }
 }

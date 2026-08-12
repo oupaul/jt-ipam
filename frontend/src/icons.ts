@@ -98,6 +98,12 @@ import {
   List,
   ChatBubbleQuestion,
   Download,
+  Upload,
+  FolderPlus,
+  Filter,
+  ArrowRight,
+  ArrowUp,
+  HelpCircle,
   PasteClipboard,
 } from "@iconoir/vue";
 
@@ -222,6 +228,13 @@ export const TestIcon = CheckCircle;
  */
 export const ChatHistoryIcon = ChatBubbleQuestion;
 export const ExportIcon = Download;
+export const DownloadIcon = Download;
+export const UploadIcon = Upload;
+export const NewFolderIcon = FolderPlus;
+export const FilterIcon = Filter;
+export const MoveIcon = ArrowRight;   // 搬移到其他目錄
+export const UpLevelIcon = ArrowUp;   // 回上一層目錄
+export const UnregisteredIcon = HelpCircle;   // 自動收錄、未經登記的位址
 export const PasteIcon = PasteClipboard;
 export const CopyIcon = Copy;
 export const TerminalIcon = Terminal;
@@ -256,3 +269,5 @@ export const OpenNewWindowIcon = OpenNewWindow;
 export function renderIcon(Icon: any, size = 18) {
   return () => h(NIcon, { size }, () => h(Icon));
 }
+/** SFTP 檔案傳輸（沿用資料夾圖示 —— 這個功能就是在瀏覽遠端目錄） */
+export const FilesIcon = Folder;
