@@ -476,6 +476,51 @@ async def set_rack_positions(
     return {"updated": updated}
 
 
+# ─────────────────── Rack CSV import ───────────────────
+@router.post("/racks/import-csv",
+             dependencies=[Depends(require_type_perm("rack", "write"))])
+async def import_racks_csv_endpoint(
+    file: Annotated[UploadFile, File()],
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    dry_run: Annotated[bool, Form()] = True,
+    update_existing: Annotated[bool, Form()] = False,
+) -> dict[str, Any]:
+    """匯入機櫃 CSV。dry_run=true 只回預覽，不寫 DB。"""
+    from app.services.csv_io import import_racks_csv as _import_csv
+
+    raw = await file.read()
+    if len(raw) > 16_777_216:
+        raise HTTPException(413, detail="CSV file too large (max 16 MB)")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(400, detail=f"CSV must be UTF-8: {exc}") from exc
+
+    result = await _import_csv(
+        session, csv_text=text, dry_run=dry_run, update_existing=update_existing,
+    )
+
+    if not dry_run and (result.inserted > 0 or result.updated > 0):
+        await append_audit(
+            session,
+            actor_user_id=str(user.id),
+            actor_ip=request.client.host if request.client else None,
+            actor_user_agent=request.headers.get("user-agent"),
+            object_type="rack", object_id="bulk",
+            action="rack_csv_import",
+            diff={
+                "inserted": result.inserted, "updated": result.updated,
+                "skipped": result.skipped, "errored": result.errored,
+                "filename": file.filename, "update_existing": update_existing,
+            },
+            request_id=getattr(request.state, "request_id", None),
+        )
+
+    return {"dry_run": dry_run, **result.to_dict()}
+
+
 # ─────────────────── Racks ───────────────────
 @router.get("/racks", response_model=Paginated[RackRead])
 async def list_racks(

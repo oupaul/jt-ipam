@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import io
 import ipaddress
+import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -27,10 +28,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.address import IPAddress
 from app.models.device import Device as DeviceModel
 from app.models.location import Location as LocationModel
+from app.models.location import Rack as RackModel
 from app.models.subnet import Subnet
 from app.schemas.address import IPAddressCreate
 from app.schemas.device import DeviceCreate
-from app.schemas.location import LocationCreate
+from app.schemas.location import LocationCreate, RackCreate
 
 EXPORT_COLUMNS: list[str] = [
     "ip",
@@ -548,6 +550,176 @@ async def import_locations_csv(
             session.add(obj)
             existing.add(name)
             existing_objs[name] = obj  # 同 CSV 內重複名稱的 upsert 也能找到
+
+        inserted += 1
+
+    if not dry_run and (inserted > 0 or updated > 0):
+        await session.commit()
+
+    return ImportResult(
+        inserted=0 if dry_run else inserted,
+        updated=0 if dry_run else updated,
+        skipped=skipped,
+        errored=errored,
+        errors=errors,
+        preview=preview,
+    )
+
+
+# ─── Rack CSV import ────────────────────────────────────────────────────────
+
+_RACK_INPUT_COLS = {
+    "name", "location", "u_height", "width_mm", "depth_mm",
+    "description", "seq", "numbering", "face",
+}
+
+_RACK_COL_ALIASES: dict[str, str] = {
+    "名稱": "name",
+    "機房": "location",
+    "地點": "location",
+    "u數": "u_height",
+    "高度": "u_height",
+    "寬度": "width_mm",
+    "深度": "depth_mm",
+    "描述": "description",
+    "說明": "description",
+    "排序": "seq",
+    "編號方向": "numbering",
+    "面向": "face",
+}
+
+
+async def import_racks_csv(
+    session: AsyncSession,
+    *,
+    csv_text: str,
+    dry_run: bool = False,
+    update_existing: bool = False,
+) -> ImportResult:
+    """匯入機櫃 CSV。
+
+    - header 必須含 `name`（機櫃名稱）；唯一鍵是 (location, name) —— Rack 沒有
+      DB 唯一鍵限制（同名機櫃可能分屬不同機房），所以比對邏輯自己做，不靠 DB 撞鍵。
+    - `location` 欄放機房名稱，對應到既有 Location；找不到就整列視為錯誤
+      （寧可不建，也不要建出一個掛錯機房、或憑空免機房的機櫃）；留空＝不指定機房。
+    - update_existing=False（預設）：已存在同 (location, name) 視為 skip
+    - update_existing=True：以 CSV 非空欄位更新既有機櫃
+    - 支援欄位：name, location, u_height, width_mm, depth_mm, description, seq,
+      numbering(top-down/bottom-up), face(front/rear)
+    - 平面圖座標（pos_x/pos_y/pos_rot/pos_w/pos_h）不支援 CSV 匯入，維持手動擺放。
+    """
+    text = _strip_bom(csv_text)
+    if not text.strip():
+        return ImportResult(inserted=0, updated=0, skipped=0, errored=0, errors=[], preview=[])
+
+    sample = text[:4096]
+    dialect = _detect_dialect(sample)
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+
+    _norm_headers = [
+        (_RACK_COL_ALIASES.get((c or "").strip(), (c or "").strip())).lower()
+        for c in (reader.fieldnames or [])
+    ]
+    if not reader.fieldnames or "name" not in _norm_headers:
+        return ImportResult(
+            inserted=0, updated=0, skipped=0, errored=1,
+            errors=[ImportRowError(line_number=1, raw={"fieldnames": reader.fieldnames or []},
+                                   error="Required header 'name' (or '名稱') not found")],
+            preview=[],
+        )
+
+    loc_q = await session.execute(select(LocationModel))
+    loc_by_name: dict[str, LocationModel] = {r.name: r for r in loc_q.scalars().all()}
+
+    rack_q = await session.execute(select(RackModel))
+    existing_objs: dict[tuple[uuid.UUID | None, str], RackModel] = {
+        (r.location_id, r.name): r for r in rack_q.scalars().all()
+    }
+    existing = set(existing_objs.keys())
+
+    inserted = 0
+    updated = 0
+    skipped = 0
+    errored = 0
+    errors: list[ImportRowError] = []
+    preview: list[dict[str, Any]] = []
+
+    for line_no, raw in enumerate(reader, start=2):
+        row_raw = {(k or "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
+        row = {(_RACK_COL_ALIASES.get(k, k).lower()): v for k, v in row_raw.items()}
+        unknown = [k for k in row if k not in _RACK_INPUT_COLS and k != ""]
+        if unknown:
+            errors.append(ImportRowError(line_no, dict(row), f"Ignored unknown columns: {unknown}"))
+
+        name = row.get("name") or ""
+        if not name:
+            errored += 1
+            errors.append(ImportRowError(line_no, dict(row), "Missing name"))
+            continue
+
+        loc_name = row.get("location") or ""
+        location_id: uuid.UUID | None = None
+        if loc_name:
+            loc = loc_by_name.get(loc_name)
+            if loc is None:
+                errored += 1
+                errors.append(ImportRowError(line_no, dict(row), f"Unknown location: {loc_name!r}"))
+                continue
+            location_id = loc.id
+
+        try:
+            payload = RackCreate(
+                name=name,
+                location_id=location_id,
+                u_height=int(row["u_height"]) if row.get("u_height") else 42,
+                width_mm=int(row["width_mm"]) if row.get("width_mm") else None,
+                depth_mm=int(row["depth_mm"]) if row.get("depth_mm") else None,
+                description=row.get("description") or None,
+                seq=int(row["seq"]) if row.get("seq") else None,
+                numbering=row.get("numbering") or "top-down",
+                face=row.get("face") or "front",
+            )
+        except Exception as exc:
+            errored += 1
+            msg = getattr(exc, "errors", lambda: [{"msg": str(exc)}])()
+            errors.append(ImportRowError(line_no, dict(row), f"Validation: {msg[0]['msg']}"))
+            continue
+
+        key = (location_id, name)
+        if key in existing:
+            if not update_existing:
+                skipped += 1
+                continue
+            if not dry_run:
+                obj = existing_objs[key]
+                if row.get("u_height"):    obj.u_height = payload.u_height
+                if row.get("width_mm"):    obj.width_mm = payload.width_mm
+                if row.get("depth_mm"):    obj.depth_mm = payload.depth_mm
+                if row.get("description"): obj.description = payload.description
+                if row.get("seq"):         obj.seq = payload.seq
+                if row.get("numbering"):   obj.numbering = payload.numbering
+                if row.get("face"):        obj.face = payload.face
+            updated += 1
+            continue
+
+        if len(preview) < 5:
+            preview.append(payload.model_dump(mode="json"))
+
+        if not dry_run:
+            obj = RackModel(
+                name=payload.name,
+                location_id=payload.location_id,
+                u_height=payload.u_height,
+                width_mm=payload.width_mm,
+                depth_mm=payload.depth_mm,
+                description=payload.description,
+                seq=payload.seq,
+                numbering=payload.numbering,
+                face=payload.face,
+            )
+            session.add(obj)
+            existing.add(key)
+            existing_objs[key] = obj  # 同 CSV 內重複名稱的 upsert 也能找到
 
         inserted += 1
 

@@ -19,9 +19,14 @@ import {
   NRadioButton,
   NButtonGroup,
   NDropdown,
+  NUpload,
+  NPopover,
+  NCheckbox,
+  NAlert,
   useMessage,
   type DataTableColumns,
   type DataTableRowKey,
+  type UploadCustomRequestOptions,
 } from "naive-ui";
 import { NIcon } from "naive-ui";
 import { RacksIcon, DeleteIcon, PlusIcon, EditIcon, SaveIcon, CancelIcon, LocationsIcon, PinIcon, ExportIcon } from "@/icons";
@@ -314,6 +319,43 @@ async function refresh() {
   }
 }
 
+// CSV 匯入
+const dryRun = ref(true);
+const updateExisting = ref(false);
+const importBusy = ref(false);
+const importResult = ref<Record<string, unknown> | null>(null);
+
+async function uploadRacksCsv(opts: UploadCustomRequestOptions) {
+  const { file } = opts;
+  if (!file.file) { opts.onError(); return; }
+  importBusy.value = true;
+  importResult.value = null;
+  try {
+    const fd = new FormData();
+    fd.append("file", file.file as Blob, file.name);
+    fd.append("dry_run", String(dryRun.value));
+    fd.append("update_existing", String(updateExisting.value));
+    const resp = await apiClient.post("/api/v1/racks/import-csv", fd, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    importResult.value = resp.data;
+    if (dryRun.value) {
+      msg.info(t("rack_csv_import.dry_run_preview", { n: resp.data.preview?.length ?? 0 }));
+    } else {
+      msg.success(t("rack_csv_import.imported", {
+        inserted: resp.data.inserted ?? 0,
+        updated: resp.data.updated ?? 0,
+        skipped: resp.data.skipped ?? 0,
+      }));
+      await refresh();
+    }
+    opts.onFinish();
+  } catch (e: any) {
+    msg.error(e?.response?.data?.detail ?? t("rack_csv_import.import_failed"));
+    opts.onError();
+  } finally { importBusy.value = false; }
+}
+
 async function loadDiagram(id: string) {
   diagramLoading.value = true;
   try {
@@ -594,6 +636,28 @@ function onMergedExport(key: string) {
         <ColumnPicker :all="columnPickerItems" :visible="visibleKeys"
                       @update:visible="setVisible" @reset="reset" />
         <ExportButton :columns="columns" :rows="rows" filename="racks" :title="t('nav.racks')" />
+        <n-popover trigger="click" placement="bottom-end" :width="360">
+          <template #trigger>
+            <n-button :disabled="!isAdmin">
+              {{ t("rack_csv_import.button") }}
+            </n-button>
+          </template>
+          <n-space vertical :size="12">
+            <n-alert type="info" size="small">
+              <span v-html="t('rack_csv_import.hint_html')" />
+            </n-alert>
+            <n-checkbox v-model:checked="dryRun">{{ t("rack_csv_import.dry_run") }}</n-checkbox>
+            <n-checkbox v-model:checked="updateExisting">{{ t("rack_csv_import.update_existing") }}</n-checkbox>
+            <n-upload :custom-request="uploadRacksCsv" :show-file-list="false" accept=".csv,text/csv" :disabled="importBusy">
+              <n-button :loading="importBusy" type="primary" size="small">
+                {{ t("rack_csv_import.select_file") }}
+              </n-button>
+            </n-upload>
+            <n-card v-if="importResult" size="small" :title="t('rack_csv_import.result_title')">
+              <pre style="font-size:11px;overflow:auto;max-height:260px;margin:0">{{ JSON.stringify(importResult, null, 2) }}</pre>
+            </n-card>
+          </n-space>
+        </n-popover>
       </n-space>
       <n-space v-if="checkedKeys.length" align="center" style="margin-bottom: 8px; padding: 8px 12px; background: rgba(127,127,127,0.08); border-radius: 6px;">
         <span>{{ t("common.selected_n", { n: checkedKeys.length }) }}</span>
