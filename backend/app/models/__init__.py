@@ -41,6 +41,7 @@ from app.models.fortigate import (
     FortiGateFirewall,
     FortiGatePolicy,
 )
+from app.models.fw_snapshot import FwRuleSnapshot
 from app.models.ip_change_log import IPChangeLog
 from app.models.ip_hostname import IPHostnameObservation
 from app.models.ip_request import IPRequest, IPRequestEvent, IPRequestStageApproval
@@ -63,6 +64,12 @@ from app.models.physical import (
     PowerPanel,
     VPNTunnel,
 )
+from app.models.pve_firewall import (
+    PVEFirewallGroup,
+    PVEFirewallIPSet,
+    PVEFirewallRule,
+    PVEFirewallState,
+)
 from app.models.scan_agent import ScanAgent
 from app.models.section import Section
 from app.models.ssh_credential import SSHCredential
@@ -79,6 +86,7 @@ from app.models.vlan import VLAN, DeviceVLAN, VLANDomain
 from app.models.vrf import VRF
 from app.models.wazuh import WazuhAgent, WazuhInstance
 from app.models.windows_dhcp import WindowsDhcpServer
+from app.models.zabbix import ZabbixHost, ZabbixInstance
 from app.models.zyxel import ZyxelAddressObject, ZyxelFirewall, ZyxelPolicy
 
 __all__ = [
@@ -129,6 +137,10 @@ __all__ = [
     "OPNsenseFirewall",
     "OPNsenseRuleLabel",
     "OPNsenseSyncedAlias",
+    "PVEFirewallGroup",
+    "PVEFirewallIPSet",
+    "PVEFirewallRule",
+    "PVEFirewallState",
     "Permission",
     "PfSenseFirewall",
     "PfSenseSyncedAlias",
@@ -158,4 +170,6 @@ __all__ = [
     "WebhookSubscription",
     "WirelessLink",
     "WirelessSSID",
+    "ZabbixHost",
+    "ZabbixInstance",
 ]

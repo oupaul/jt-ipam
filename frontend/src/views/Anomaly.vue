@@ -2,14 +2,18 @@
 import { computed, ref, h } from "vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
+import { useRoute, useRouter } from "vue-router";
+import { useEntityLinks } from "@/composables/useEntityLinks";
 import {
-  NCard, NSpace, NIcon, NButton, NAlert, NStatistic, NGrid, NGi, NDataTable, NEmpty,
+  NCard, NSpace, NIcon, NButton, NAlert, NGrid, NGi, NDataTable, NEmpty,
   NTabs, NTabPane, NModal, NSelect, useMessage, type DataTableColumns,
 } from "naive-ui";
 import { runAnomalyScan, type AnomalyReport } from "@/api/phase3";
-import { AnomalyIcon, TestIcon, InfoIcon, SettingsIcon } from "@/icons";
+import { AiAuditIcon, AnomalyIcon, DownloadIcon, EyeIcon, InfoIcon, SettingsIcon, TestIcon, renderIcon } from "@/icons";
+import { renderMarkdown } from "@/utils/markdown";
+import { downloadTextFile } from "@/utils/investigateReport";
 import { listSubnets, setAnomalyScope } from "@/api/subnets";
-import { apiErrMsg } from "@/api/client";
+import { apiClient, apiErrMsg } from "@/api/client";
 import { autoSort } from "@/composables/useTableSort";
 import type { Subnet } from "@/types";
 import { useTablePagination } from "@/composables/useTablePagination";
@@ -57,10 +61,20 @@ async function saveScope() {
   } catch (e) { msg.error(apiErrMsg(e)); await loadSubnets(); }
   finally { scopeSaving.value = false; }
 }
-const activeTab = ref("ip_conflicts");
+const CATEGORY_KEYS = [
+  "ip_conflicts", "mac_drifts", "ghost_ips", "unauthorized_ips", "rogue_dhcp",
+  "external_exposure", "dangling_dns", "duplicate_ip_records", "suspicious_changes",
+  "fw_rule_rot",
+];
+const route = useRoute();
+const links = useEntityLinks(useRouter());
+// 通知點進來要落在對應的頁籤（?tab=fw_rule_rot），不是丟到第一個分類讓人自己找
+const activeTab = ref(
+  CATEGORY_KEYS.includes(String(route.query.tab)) ? String(route.query.tab) : "ip_conflicts");
 
 type CatKey = "ip_conflicts" | "mac_drifts" | "ghost_ips" | "unauthorized_ips"
-  | "rogue_dhcp" | "external_exposure" | "dangling_dns" | "duplicate_ip_records" | "suspicious_changes";
+  | "rogue_dhcp" | "external_exposure" | "dangling_dns" | "duplicate_ip_records" | "suspicious_changes"
+  | "fw_rule_rot";
 const CATEGORIES: { key: CatKey; label: () => string }[] = [
   { key: "ip_conflicts", label: () => t("anomaly.ip_conflicts") },
   { key: "mac_drifts", label: () => t("anomaly.mac_drifts") },
@@ -71,17 +85,32 @@ const CATEGORIES: { key: CatKey; label: () => string }[] = [
   { key: "dangling_dns", label: () => t("anomaly.dangling_dns") },
   { key: "duplicate_ip_records", label: () => t("anomaly.dup_ip") },
   { key: "suspicious_changes", label: () => t("anomaly.changes") },
+  { key: "fw_rule_rot", label: () => t("anomaly.fw_rot") },
 ];
 
 const rogueTitle = computed(() =>
   t("anomaly.rogue_dhcp") + `（${report.value?.rogue_dhcp?.length ?? 0}）`);
+
+// 首屏四張統計卡；數字 > 0 用警示色，一眼看得出哪一類有事
+const statCards = computed(() => {
+  const r = report.value;
+  if (!r) return [];
+  return [
+    { key: "ip_conflicts", label: t("anomaly.ip_conflicts"), value: r.ip_conflicts.length },
+    { key: "mac_drifts", label: t("anomaly.mac_drifts"), value: r.mac_drifts.length },
+    { key: "ghost_ips", label: t("anomaly.ghost_ips"), value: r.ghost_ips.length },
+    { key: "unauthorized_ips", label: t("anomaly.unauthorized"),
+      value: r.unauthorized_ips.length },
+  ];
+});
 
 const anyFindings = computed(() => {
   const r = report.value;
   return !!r && (r.ip_conflicts.length + r.mac_drifts.length + r.ghost_ips.length
     + r.unauthorized_ips.length + (r.rogue_dhcp?.length ?? 0)
     + (r.external_exposure?.length ?? 0) + (r.dangling_dns?.length ?? 0)
-    + (r.duplicate_ip_records?.length ?? 0) + (r.suspicious_changes?.length ?? 0)) > 0;
+    + (r.duplicate_ip_records?.length ?? 0) + (r.suspicious_changes?.length ?? 0)
+    + (r.fw_rule_rot?.length ?? 0)) > 0;
 });
 function catRows(key: CatKey): Record<string, any>[] {
   return (report.value?.[key] as Record<string, any>[]) ?? [];
@@ -100,6 +129,7 @@ const COLLBL: Record<string, string> = {
   records: "重複的紀錄", actor: "操作者", actor_ip: "來源 IP",
   action: "動作", count: "次數", first_at: "最早", object_type: "物件類型",
   effective_status: "存活狀態", names: "DNS 名稱", owner: "負責人", rules: "來源規則",
+  source: "來源", interface: "介面", descr: "規則描述", detail: "說明",
 };
 // 各類別的欄位（順序）＋預設隱藏（ip_address_id 是內部 UUID，預設不顯示，可在「欄位」勾選）
 const CAT_KEYS: Record<CatKey, string[]> = {
@@ -115,6 +145,7 @@ const CAT_KEYS: Record<CatKey, string[]> = {
   duplicate_ip_records: ["ip", "records"],
   suspicious_changes: ["kind", "actor", "actor_ip", "object_type", "action",
                        "count", "first_at", "last_at"],
+  fw_rule_rot: ["kind", "name", "source", "interface", "port", "descr", "detail"],
 };
 const CAT_HIDDEN: Partial<Record<CatKey, string[]>> = {
   ghost_ips: ["ip_address_id"],
@@ -189,15 +220,28 @@ function renderMac(o: Record<string, any>) {
       pretty("last_seen_at", o.last_seen_at)),
   ]);
 }
-function renderVal(k: string, v: any) {
+// 表格裡的 IP 要能點進 IP 詳細資料（回報：看到可疑 IP 卻只能自己複製去搜）。
+// 有 ip_address_id 就直接開那一筆；只有文字就帶去 /addresses?q=<ip> 搜尋。
+function renderIp(row: any, ipText: string) {
+  return row?.ip_address_id
+    ? links.ipById(row.ip_address_id, ipText)
+    : links.ipByText(ipText);
+}
+function renderVal(k: string, v: any, row?: any) {
   if (v == null || v === "") return "—";
-  if (k === "macs" && Array.isArray(v)) {
-    return h("div", { style: "display:flex;flex-direction:column;gap:3px" }, v.map(renderMac));
+  if ((k === "ip" || k === "server_ip" || k === "offered_ip") && typeof v === "string") {
+    return renderIp(row, v);
   }
   if (k === "ips" && Array.isArray(v)) {
     if (!v.length) return h("span", { style: "opacity:.5" }, "—");
     return h("div", { style: "display:flex;flex-direction:column;gap:2px;font-size:12.5px" },
-      v.map((it: any) => h("div", null, it.hostname ? `${it.ip}（${it.hostname}）` : it.ip)));
+      v.map((it: any) => h("div", null, [
+        it.ip_address_id ? links.ipById(it.ip_address_id, it.ip) : links.ipByText(it.ip),
+        it.hostname ? h("span", { style: "opacity:.7" }, `（${it.hostname}）`) : null,
+      ])));
+  }
+  if (k === "macs" && Array.isArray(v)) {
+    return h("div", { style: "display:flex;flex-direction:column;gap:3px" }, v.map(renderMac));
   }
   if (Array.isArray(v)) {
     return h("div", { style: "display:flex;flex-direction:column;gap:3px" },
@@ -213,16 +257,74 @@ function catCols(key: CatKey): DataTableColumns<any> {
   const visible = prefs[key].visibleKeys.value;
   // autoSort：與全站表格一致，替沒有自訂 sorter 的欄位補上預設排序。
   // 這幾張表原本整排標頭都不能排 —— 十幾筆 MAC 變動想按時間或按網段看都做不到。
-  return autoSort(CAT_KEYS[key].filter((k) => visible.includes(k)).map((k) => {
+  const cols = autoSort(CAT_KEYS[key].filter((k) => visible.includes(k)).map((k) => {
     const wide = k === "locations" || k === "macs";
     return {
       title: COLLBL[k] ?? k,
       key: k,
       minWidth: wide ? 420 : (k === "ips" ? 220 : 140),
       ellipsis: wide || k === "ips" ? false : { tooltip: true },
-      render: (r: any) => renderVal(k, r[k]),
+      render: (r: any) => renderVal(k, r[k], r),
     };
   }));
+  // 未授權 IP：加「AI 判讀」—— 把「有一個不明 IP」變成「看起來是什麼、下一步查哪」。
+  // 欄位標題用「操作」——與按鈕同名看起來像重複貼兩次（使用者回饋，與規則異動頁同一批）。
+  if (key === "unauthorized_ips") {
+    cols.push({
+      title: t("common.actions"), key: "_triage", width: 200, className: "col-actions",
+      render: (r: any) => h("span",
+        { style: "display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap" }, [
+          h(NButton, {
+            size: "tiny", secondary: true, loading: triageBusy.value.has(r.ip),
+            disabled: triageBusy.value.has(r.ip),
+            onClick: () => doTriage(r.ip),
+          }, { icon: renderIcon(AiAuditIcon, 15), default: () => t("anomaly.triage_btn") }),
+          triageResults.value[r.ip]
+            ? h(NButton, { size: "tiny", type: "primary", secondary: true,
+                           onClick: () => { triageShow.value = r.ip; } },
+                { icon: renderIcon(EyeIcon, 15), default: () => t("fw_changes.ai_view") })
+            : null,
+        ]),
+    } as any);
+  }
+  return cols;
+}
+
+// AI 判讀：LLM 要跑幾十秒 —— 背景執行，完成後該列長出「檢視結果」，
+// 結果留在頁面可重看（與防火牆規則異動的 AI 解讀同一套體驗）。
+interface TriageResult { ip: string; card: string; disclaimer: string; model?: string }
+const triageBusy = ref<Set<string>>(new Set());
+const triageResults = ref<Record<string, TriageResult>>({});
+const triageShow = ref<string | null>(null);
+async function doTriage(ip: string) {
+  triageBusy.value.add(ip); triageBusy.value = new Set(triageBusy.value);
+  try {
+    const { data } = await apiClient.post("/api/v1/anomalies/triage", { ip });
+    triageResults.value = { ...triageResults.value, [ip]: data };
+    msg.success(t("fw_changes.ai_done"));
+  } catch (e: any) {
+    msg.error(e?.response?.data?.detail ?? t("errors.server"));
+  } finally { triageBusy.value.delete(ip); triageBusy.value = new Set(triageBusy.value); }
+}
+
+/** 下載判讀報告：.md 保留原始 markdown；.txt 去標記純文字（與規則異動頁一致）。 */
+function downloadTriage(fmt: "md" | "txt") {
+  const ip = triageShow.value;
+  const res = ip ? triageResults.value[ip] : null;
+  if (!ip || !res) return;
+  const header = [
+    `# ${t("anomaly.triage_title", { ip })}`,
+    "",
+    `- ${t("fw_changes.ai_model")}：${res.model ?? "—"}`,
+    "",
+    `> ${res.disclaimer}`,
+    "",
+  ].join("\n");
+  const body = header + res.card + "\n";
+  const text = fmt === "md" ? body : body
+    .replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "").replace(/^>\s?/gm, "");
+  downloadTextFile(text, `ip-triage-${ip}.${fmt}`, fmt);
 }
 
 async function run() {
@@ -298,11 +400,16 @@ async function run() {
         </div>
       </n-alert>
 
-      <n-grid :cols="4" x-gap="12" style="margin-bottom: 16px">
-        <n-gi><n-statistic :label="t('anomaly.ip_conflicts')" :value="report.ip_conflicts.length" /></n-gi>
-        <n-gi><n-statistic :label="t('anomaly.mac_drifts')" :value="report.mac_drifts.length" /></n-gi>
-        <n-gi><n-statistic :label="t('anomaly.ghost_ips')" :value="report.ghost_ips.length" /></n-gi>
-        <n-gi><n-statistic :label="t('anomaly.unauthorized')" :value="report.unauthorized_ips.length" /></n-gi>
+      <!-- 統計卡：有框有底色才看得出是一組數字，且點下去直接切到那一類（回報） -->
+      <n-grid :cols="4" x-gap="12" y-gap="12" style="margin-bottom: 16px">
+        <n-gi v-for="s in statCards" :key="s.key">
+          <div class="anom-stat" :class="{ 'anom-stat--hit': s.value > 0 }"
+               role="button" tabindex="0"
+               @click="activeTab = s.key" @keyup.enter="activeTab = s.key">
+            <div class="anom-stat__label">{{ s.label }}</div>
+            <div class="anom-stat__value">{{ s.value }}</div>
+          </div>
+        </n-gi>
       </n-grid>
       <n-empty v-if="!anyFindings" :description="t('anomaly.none_found')" style="margin: 24px 0" />
 
@@ -326,9 +433,62 @@ async function run() {
       </n-tabs>
     </template>
   </n-card>
+
+  <!-- AI 鑑識卡：走全站共用 markdown 渲染器（先跳脫再產標籤，無注入面）——
+       原本 pre-wrap 純文字會把 **粗體** 的星號原樣露出（使用者截圖）；＋模型標示＋下載 -->
+  <n-modal :show="!!triageShow" preset="card" style="width: 560px; max-width: 94vw"
+           :title="t('anomaly.triage_title', { ip: triageShow ?? '' })"
+           @update:show="(v: boolean) => { if (!v) triageShow = null; }">
+    <n-alert type="warning" :bordered="false" style="margin-bottom: 10px">
+      {{ triageShow ? triageResults[triageShow]?.disclaimer : "" }}
+    </n-alert>
+    <!-- eslint-disable-next-line vue/no-v-html -->
+    <div class="triage-body" v-html="renderMarkdown(triageShow ? triageResults[triageShow]?.card ?? '' : '')" />
+    <template #footer>
+      <div class="triage-foot">
+        <span class="triage-model">{{ t("fw_changes.ai_model") }}：{{
+          (triageShow ? triageResults[triageShow]?.model : "") || "—" }}</span>
+        <n-space :size="8">
+          <n-button size="small" secondary @click="downloadTriage('md')">
+            <template #icon><n-icon><DownloadIcon /></n-icon></template>
+            {{ t("fw_changes.ai_dl_md") }}
+          </n-button>
+          <n-button size="small" secondary @click="downloadTriage('txt')">
+            <template #icon><n-icon><DownloadIcon /></n-icon></template>
+            {{ t("fw_changes.ai_dl_txt") }}
+          </n-button>
+        </n-space>
+      </div>
+    </template>
+  </n-modal>
 </template>
 
 <style scoped>
+/* 統計卡：外框 + 底色，數字有值時轉為警示色（原本是裸數字，看起來像沒對齊的散字） */
+.anom-stat {
+  border: 1px solid var(--n-border-color, rgba(128, 128, 128, 0.28));
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: rgba(127, 127, 127, 0.04);
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, transform .1s ease;
+}
+.anom-stat:hover { border-color: #18a058; transform: translateY(-1px); }
+.anom-stat__label { font-size: 12.5px; opacity: .7; }
+.anom-stat__value { font-size: 26px; font-weight: 600; line-height: 1.25; }
+.anom-stat--hit {
+  border-color: rgba(240, 160, 32, .55);
+  background: rgba(240, 160, 32, .09);
+}
+.anom-stat--hit .anom-stat__value { color: #d97706; }
+
+.triage-body { font-size: 13px; line-height: 1.85; }
+.triage-body :deep(code) { background: rgba(128, 128, 128, .14); border-radius: 4px;
+  padding: 1px 5px; font-size: 12px; }
+.triage-body :deep(p) { margin: 6px 0; }
+.triage-body :deep(ul), .triage-body :deep(ol) { margin: 4px 0; padding-left: 20px; }
+.triage-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.triage-model { font-size: 12px; opacity: .65; }
 .cat-note { margin: 4px 0 14px; font-size: 12.5px; line-height: 1.7; }
 .rogue-list { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
 .rogue-chip {

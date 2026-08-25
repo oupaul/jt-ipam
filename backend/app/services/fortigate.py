@@ -1,17 +1,19 @@
-"""FortiGate 同步服務（Beta）—— FortiOS REST API，**全程唯讀（只打 GET）**。
+"""FortiGate 同步服務 —— FortiOS REST API，**全程唯讀（只打 GET）**。
 
 安全 / 相容重點：
 - 認證用 `Authorization: Bearer <token>` **標頭**；不用 `?access_token=` 網址參數
   （PSIRT FG-IR-24-268；FortiOS 7.4.5 / 7.6.1 起預設停用該形式）
 - 走既有 `safe_request`（SSRF 白名單）；金鑰 AES-GCM 加密、aad 綁實例 id
 - 多 VDOM：`?vdom=<名稱>` 逐一撈；VDOM 清單可自動探索，非 VDOM 模式退回 root
-- **無實機可驗** → 所有欄位一律容錯解析：抓不到就略過該筆／該項，不讓單一端點拖垮整輪同步
+- 容錯解析：欄位抓不到就略過該筆／該項；**單一端點失敗不拖垮整輪**（實機常態是「10 支有 9 支可讀」）
+- 已於客戶實機驗證（v0.5.195 區段隔離、v0.5.196 多份 JSON 相接的解析）
 """
 
 from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -93,10 +95,45 @@ async def _api_get(
     if resp.status_code != 200:
         raise FortiGateError(f"FortiGate GET {path}: {resp.status_code} {resp.text[:200]}")
     try:
-        body = resp.json()
+        body = _loads_tolerant(resp.text)
     except ValueError as exc:
-        raise FortiGateError(f"回應不是 JSON（{path}）") from exc
+        # 200 但不是 JSON，實務上幾乎都是 FortiOS 直接回了網頁介面的 HTML
+        # （該韌體版本／機型沒有這支端點，或 token 走不到 monitor 範圍被導去登入頁）。
+        # 訊息一定要帶回證據，否則現場只看到「不是 JSON」無從判斷要調什麼。
+        ctype = resp.headers.get("content-type", "?")
+        snippet = " ".join(resp.text[:120].split())
+        hint = ""
+        if "html" in ctype.lower() or snippet.lower().startswith(("<!doctype", "<html")):
+            hint = "（回的是網頁而非 API：此韌體版本可能沒有這支端點，或 API 管理員讀不到該資源）"
+        # 解析器的原始訊息要帶上（例如 Extra data 就直指「多份文件相接」），
+        # 否則看到開頭是合法 JSON 會誤判成端點不存在
+        raise FortiGateError(
+            f"回應不是 JSON（{path}）：{exc} content-type={ctype} 內容開頭={snippet!r}{hint}",
+        ) from exc
     return _unwrap(body)
+
+
+def _loads_tolerant(text: str) -> Any:
+    """解析 FortiOS 回應，容忍「多個 JSON 文件相接」。
+
+    實機（FortiOS，客戶站台）對 `monitor/system/dhcp` 回的是好幾份 JSON 直接串在一起
+    （每個 VDOM／範圍一份，外面沒有陣列包起來）。`resp.json()` 會在第二份的開頭丟
+    `Extra data`，於是一份**內容完全合法**的回應被判成「不是 JSON」，整段 DHCP 同步
+    直接失效。逐份解析後交給 `_unwrap` 合併 results。
+    """
+    dec = json.JSONDecoder()
+    docs: list[Any] = []
+    idx, n = 0, len(text)
+    while idx < n:
+        while idx < n and text[idx].isspace():
+            idx += 1
+        if idx >= n:
+            break
+        obj, idx = dec.raw_decode(text, idx)   # 任何一份壞掉就照樣拋 ValueError
+        docs.append(obj)
+    if not docs:
+        raise ValueError("empty response")
+    return docs[0] if len(docs) == 1 else docs
 
 
 def _unwrap(body: Any) -> Any:
@@ -612,24 +649,49 @@ async def diagnose(fw: FortiGateFirewall) -> dict[str, Any]:
 
 
 async def sync_instance(session: AsyncSession, fw: FortiGateFirewall) -> dict[str, Any]:
-    """跑此實例所有啟用的同步；設定 last_sync_at / last_error。"""
+    """跑此實例所有啟用的同步；設定 last_sync_at / last_error。
+
+    **每個區段各自隔離**：實機上很常見「10 支端點有 9 支可讀」（某支在該韌體版本
+    不存在、或 API 管理員讀不到）。若不隔離，DHCP 租約一掛就會讓 ARP／政策／位址
+    物件全部不同步，而畫面上只看得到一行錯誤 —— 看起來像整台壞掉。
+    """
     vdoms = await list_vdoms(fw)
     counts: dict[str, Any] = {"vdoms": len(vdoms)}
+    errors: dict[str, str] = {}
+
+    async def _section(name: str, coro_factory: Any) -> None:
+        try:
+            result = await coro_factory()
+            if isinstance(result, dict):
+                counts.update(result)
+            else:
+                counts[name] = result
+        except FortiGateError as exc:
+            errors[name] = str(exc)[:200]
+
     if fw.sync_dhcp:
-        counts["dhcp"] = await sync_dhcp_leases(session, fw, vdoms)
+        await _section("dhcp", lambda: sync_dhcp_leases(session, fw, vdoms))
     if fw.sync_dhcp_ranges:
-        counts["dhcp_ranges"] = await sync_dhcp_ranges(session, fw, vdoms)
-        counts["dhcp_reservations"] = await sync_dhcp_reservations(session, fw, vdoms)
+        await _section("dhcp_ranges", lambda: sync_dhcp_ranges(session, fw, vdoms))
+        await _section("dhcp_reservations", lambda: sync_dhcp_reservations(session, fw, vdoms))
     if fw.sync_arp:
-        counts["arp"] = await sync_arp(session, fw, vdoms)
+        await _section("arp", lambda: sync_arp(session, fw, vdoms))
     if fw.sync_vpn:
-        counts.update(await sync_vpn(session, fw, vdoms))
+        await _section("vpn", lambda: sync_vpn(session, fw, vdoms))
     if fw.sync_policies:
-        counts["policies"] = await sync_policies(session, fw, vdoms)
+        await _section("policies", lambda: sync_policies(session, fw, vdoms))
+        if "policies" not in errors:
+            from app.services.fw_review import run_sentinel
+            await run_sentinel(session, source_type="fortigate", instance=fw)
     if fw.sync_nat:
-        counts["nat"] = await sync_nat(session, fw, vdoms)
+        await _section("nat", lambda: sync_nat(session, fw, vdoms))
     if fw.sync_addresses:
-        counts["addresses"] = await sync_addresses(session, fw, vdoms)
+        await _section("addresses", lambda: sync_addresses(session, fw, vdoms))
+
     fw.last_sync_at = datetime.now(UTC)
-    fw.last_error = None
+    # 部分失敗要留下痕跡（否則使用者以為全部同步成功），但不影響其他區段
+    fw.last_error = ("部分區段失敗：" + "；".join(f"{k}: {v}" for k, v in errors.items())
+                     if errors else None)
+    if errors:
+        counts["errors"] = errors
     return counts

@@ -4,6 +4,352 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.204] — 2026-08-24
+
+### Added
+- **The audit chain is now verified on a schedule and anchored outside the database.** A hash chain proves that no record was altered or removed *in the middle* — but it cannot detect the one thing an intruder would actually do, which is cut off the tail: delete the last N entries and what remains still verifies perfectly. Every sync round now verifies the chain and appends the newest entry's hash, id and total count to `/var/lib/jt-ipam/audit-anchors.jsonl` and to the system journal. If that anchored entry later goes missing, or its hash changed, or the total shrank, every admin gets an alert naming which of the three it was. Verification is incremental — it resumes from the last anchor instead of rewalking the whole chain each round. A test in the suite deliberately truncates the tail and asserts that chain verification alone still reports "intact", so the reason this module exists cannot be quietly forgotten.
+- **Zabbix integration.** Zabbix is the most widely deployed open-source NMS in Taiwan, and it is positioned here as a *complement* to LibreNMS rather than a replacement: it contributes host-to-IP mapping, availability as a third evidence source for effective status, maintenance windows (so a host under maintenance is not reported as missing), and a monitoring coverage gap — addresses IPAM knows the hostname of that Zabbix is not watching. What it deliberately does not claim is ARP/FDB, which is not in Zabbix's built-in data and would need per-site custom SNMP items. Authentication accepts an API token (5.4+) or username/password; both are encrypted at rest. As with every other integration it only stamps addresses that already exist, honours the subnet scope, and takes `limit(1)` so overlapping ranges cannot abort a whole sync round.
+
+### Security
+- **Dependency vulnerabilities: 85 down to 1.** A `pip-audit` sweep found advisories across 17 packages, several of them in the request path — starlette, aiohttp, python-multipart, pyjwt, cryptography, pillow. All are upgraded and the minimum versions are pinned in `pyproject.toml` so a fresh install cannot land back on a vulnerable release. The one remaining finding is `diskcache` 5.6.3, pulled in transitively, for which no fixed version exists upstream yet.
+
+### Fixed
+- **Audit records written in the same transaction all chained off the same predecessor.** `append_audit` added its row without flushing, and production sessions run with `autoflush=False`, so a bulk operation writing several audit rows at once had every one of them point at the same previous hash — a real break in the chain, caused by the writer rather than by anyone tampering. Production had accumulated 28 such breaks, 26 of them from NAT bulk-delete. Each entry now chains off the previous one within the same transaction. The reason no test caught this is worth stating: the test fixture used SQLAlchemy's default `autoflush=True`, which hid the bug; the regression test now disables it to match production.
+- `JT_IPAM_AUDIT_CHAIN_BASELINE_ID` sets the id verification starts from. Existing deployments carry records that can no longer be made verifiable — breaks left by the writer bug above, and on our own production a batch of 1,953 rows from one day of end-to-end test traffic written by a different build — and rewriting historical hashes to "repair" them would itself be tampering. The baseline draws an explicit line instead, and every round logs a warning naming what is not covered, so the compromise stays visible rather than silent.
+
+## [0.5.203] — 2026-08-24
+
+### Added
+- **The PVE firewall tab now shows the rules themselves.** It stated a verdict for each guest without showing the evidence, which left the obvious question — which rules does this VM actually have? — unanswerable. Every row expands to its rules, with the guest's own rules first and the datacenter and node rules that also apply to it below, each tagged with the level it comes from. Disabled rules are marked, and a rule referencing a security group, IPSet or alias can be expanded to its contents, since a bare name says nothing. A rule-count column makes it visible at a glance which guests carry rules at all.
+
+### Changed
+- zh-TW wording: 姿態 → 防護狀態 (posture). The former was a literal translation and is not how this is said in Taiwan.
+
+## [0.5.202] — 2026-08-24
+
+### Changed
+- The PVE firewall tab now carries the same table furniture as every other tab: a filter box, a posture dropdown (each option showing its own count), sortable column headers, the column picker and export. The posture summary is four equal-width cards ordered by risk instead of a row of differently sized tags, and the selected one is outlined.
+
+## [0.5.201] — 2026-08-24
+
+### Added
+- **Proxmox VE firewall sync.** The east-west layer was invisible: rules written at the datacenter, node and guest levels never reached IPAM, so a guest could look unmanaged while carrying a dozen rules — or look protected while none of them applied. Three things decide whether a rule does anything, and all three are now read and combined into a single posture: the cluster switch, the guest switch, and **the per-NIC `firewall=1` flag that lives in the VM config rather than the firewall API**. The default policy matters more than the rules themselves — `policy_in=ACCEPT` with no rules is wide open while the rule list looks clean — so `policy_in`/`policy_out` are stored alongside a flag recording whether the value was set explicitly or inherited, because the API omits keys that were never configured. Security groups, IPSets and aliases are expanded (a guest-level name shadows a datacenter one), and unresolvable members are marked rather than dropped, since dropping them makes a rule look narrower than it is. Deliberately **not** merged into the exposed-services list: a PVE rule is not a statement about reachability from outside.
+- **Network probes can be run from a scan agent instead of the server.** The server only sees its own segment; verifying reachability inside a customer site has to happen from that segment. Because agents only ever dial out, the request travels as a queued job — created by the backend, long-polled by the agent, executed locally, reported back. Admins only, since it means sending packets inside someone's network: the probe kind is restricted to ping/tcp/traceroute/rdns, targets must parse as an address or hostname, arguments are passed as a list and never through a shell, jobs expire if no agent takes them, and **the agent re-validates everything itself** rather than trusting what the backend handed it.
+
+## [0.5.200] — 2026-08-23
+
+### Fixed
+- **A single IP could accumulate thousands of change-log entries that said nothing.** Two Wazuh agents registered against the same address overwrote each other's hostname on every sync round, writing a pair of entries each time — one address had flipped 620 times in ten days, and the worst had 1,838 entries, every one of them the same event, burying the edits a person actually made. The Wazuh sync now converges on one name the way the Proxmox sync already did, and `log_change` drops an entry whose immediate predecessor is its exact inverse within ten minutes: the net effect is zero, so recording both is noise.
+- **The switch-port field could not be edited correctly.** The stored format is `switch / port` while the read view renders it as `switch@port`, so anyone copying what they saw typed a value that displayed as one unbroken string. Editing now has separate switch and port inputs with the `@` shown between them, and the canonical format is composed on save. The field also states plainly that the LibreNMS sync maintains it and will overwrite a value entered by hand.
+
+### Changed
+- The change-log section on the IP detail page shows the total in its header, filters by event type and source (each option carrying its own count), and pages through 50 at a time instead of an endless "load more". The endpoint returns the total and the available filter values rather than a bare array — with 1,838 entries behind it, a single page of results tells the reader nothing about how much they are not seeing.
+
+## [0.5.199] — 2026-08-22
+
+### Changed
+- **FortiGate is no longer marked Beta.** The label existed because the integration was written against the documentation with no hardware to test on; it has since been validated against a customer's live device, which surfaced and fixed the two defects that mattered — one unreadable endpoint aborting the whole instance sync (0.5.195) and FortiOS concatenating several JSON documents in one response (0.5.196). The tolerant parsing and per-section isolation stay; only the label is gone.
+
+## [0.5.198] — 2026-08-20
+
+### Changed
+- The two tabs on the exposed-services page now read as a pair — "By IP" and "By FQDN" — instead of one being a phrase and the other a bare acronym.
+
+## [0.5.197] — 2026-08-20
+
+### Added
+- **The exposed-services list can now be read by name**: a second tab shows the same data grouped by FQDN, resolved through the DNS records IPAM already syncs (A/AAAA directly, CNAME aliases followed up to three hops). No live resolution is performed — an audit list has to be reproducible, not dependent on what external DNS happens to answer today. Exposures with no DNS name are counted and named in the FQDN view so one page is never mistaken for the whole picture, and the IP view stays the default.
+- `list_attack_surface` for AI chat / MCP: ask by name (`fqdn=`) or by address (`ip=`), with `scope`, a true `count`, and unregistered targets flagged.
+
+### Fixed
+- **Clicking a notification did nothing.** The bell only marked it read — it never navigated — and the link the backend wrote pointed at `/anomalies` while the route is `/anomaly`, so even the notification page led nowhere. Notifications now carry the category (`/anomaly?tab=fw_rule_rot`) and the page opens on that tab. Only same-site paths are followed.
+- **AI could not be asked about firewall rule decay**: `fw_rule_rot` was missing from the anomaly tool's detector list, so that category was invisible to the assistant.
+- IP values in the anomaly tables link to the IP detail page (by id when known, otherwise a search), instead of leaving the reader to copy the address elsewhere.
+
+### Changed
+- The anomaly summary numbers are now bordered cards with a background: a non-zero count turns amber, and clicking a card switches to that category.
+
+## [0.5.196] — 2026-08-20
+
+### Fixed
+- **FortiGate DHCP lease sync failed against a real device even though the response was valid JSON.** FortiOS returns several JSON documents concatenated (one per VDOM/scope, with no array wrapping them), so the standard parser stopped at the second document with "Extra data" and the whole DHCP section was reported as "response is not JSON" — while the body plainly started with `{"http_method":"GET","results":[...]}`. Responses are now parsed document by document and their `results` merged. Genuinely non-JSON bodies (a login page, for instance) still raise, and the error now includes the parser's own message, which is what distinguishes "several documents" from "not JSON at all".
+
+## [0.5.195] — 2026-08-19
+
+### Fixed
+- **One unreadable FortiGate endpoint aborted the whole instance sync.** A real device reported "9 of 10 endpoints readable" (its firmware answers the DHCP-lease monitor path with the web UI instead of JSON). Because `sync_instance` ran the sections in one unguarded sequence, that single failure stopped ARP, policies, NAT and address objects from syncing at all, while the UI showed one error line — it looked like the whole firewall was broken. Each section is now isolated; partial failures are recorded in `last_error` (never silently reported as success) and the remaining sections still sync.
+
+### Changed
+- TEST_CHECKLIST gained section 7c (integration sync resilience): section isolation, partial failure recorded in `last_error`, no chain abort across instances, errors that carry evidence, and a connection test that reflects what the sync actually gets.
+- The FortiGate connection test no longer reports a bare "response is not JSON". It now carries the evidence — `content-type` and the first 120 characters — and, when the body is HTML, says plainly that the firewall answered with a web page rather than the API, which means either that firmware has no such endpoint or the API administrator cannot read that resource.
+
+## [0.5.194] — 2026-08-19
+
+### Fixed
+- **LDAP login returned HTTP 500 when the LDAP user shared an email with an existing local account** (user report: the same person legitimately has both a local and an LDAP account). The LDAP bind actually succeeded; the request then died committing the auto-provisioned user because `users.email` was a unique key. Email is contact information, not identity — identity is the username — so migration 0120 drops the unique index (a plain index remains). Both login lookups are now realm-scoped (`email` matches only LDAP accounts in the LDAP realm and only non-LDAP accounts in the local realm) and no longer use `scalar_one_or_none()`, so duplicate emails cannot turn into a `MultipleResultsFound` 500 either.
+- **AI answers about one subnet were computed from whole-system data**: `wazuh_missing_agents` had no subnet parameter at all, so "which hosts in 198.51.100.0/24 have no Wazuh agent" returned every IP in the system (the reply mixed in 203.0.113.x and 192.0.2.x). The same gap existed in `list_wazuh_agents`, `list_fdb`, `list_dhcp_ranges`, `list_vms` and `list_nat`; `list_power`/`list_racks`/`list_devices` could not be limited to a rack or location. All of them now take a scope parameter (resolved through the existing visibility check) and return `scope`, and their tool descriptions require the model to pass it and to state the coverage.
+- **Silent truncation in AI list tools**: several tools returned only a `limit`-clipped array with no total, so the model presented one page as the complete answer. They now return `count` (total in scope) alongside `returned`.
+- `list_devices` and `list_racks` applied the visibility filter *after* the SQL `LIMIT`, so a restricted account received fewer rows than requested and the count included rows it could not see. Visibility is now part of the query.
+
+### Changed
+- `list_ip_requests` now derives its scope from the shared permission tier (global read) instead of its own ad-hoc admin check, so tools and REST endpoints cannot drift apart.
+- The user list no longer repeats the realm suffix in the account column (`jason@ldap` shows as `jason`); the authentication-method column already carries it. The stored username is unchanged and the full value stays in the tooltip.
+
+## [0.5.193] — 2026-08-18
+
+### Added
+- **AI chat panel can now be expanded**: a maximize toggle sits to the right of the close (X) button; it grows the panel leftward and upward to roughly two-thirds of the screen (anchored bottom-right), with the message area filling the extra height and the input pinned to the bottom. Click again to restore the original size.
+
+## [0.5.192] — 2026-08-17
+
+### Fixed
+- **The hostname-sources row and FDB tag on the IP detail page appeared only sometimes** (user report: "am I doing it wrong or is it the system?" — it was the system): the watch that loads them lacked `immediate`, so opening the modal from the list (show toggling) triggered it while a direct URL / refresh (inline mode, where the condition holds from mount and never changes) never did — the whole row vanished. `immediate: true` makes both entry paths identical.
+
+### Changed
+- zh-TW wording: 腐化 → 劣化 (firewall rule/alias decay).
+
+## [0.5.191] — 2026-08-17
+
+### Changed
+- **The unauthorized-IP AI triage now matches the firewall rule-change AI analysis** (the same feedback batch resurfaced on this page): the column header reads "Actions" instead of duplicating the button label; the result modal renders markdown via the site-wide escape-then-tag renderer instead of leaking literal asterisks; the analysis runs in the background with a View-result button growing on completion (results stay on the page, multiple rows concurrently); the button gained an icon; the modal names the model that produced the reading; and the report can be downloaded as .md/.txt with an IP/model/disclaimer header.
+
+## [0.5.190] — 2026-08-17
+
+### Fixed
+- **In direct TLS mode (uvicorn terminating TLS) nothing ever served the UI** (customer report: doctor all green, `/healthz` fine, but `https://host:8443/` answered `{"detail":"Not Found"}`): direct mode skips nginx — correctly — but the backend never mounted the frontend either. The backend now serves the SPA from `frontend/dist` when present, mounted last so API routes always win: `/` and client-side routes (refresh / direct URL) return index.html, API 404s stay JSON, index.html and version.json carry no-cache (the update detector depends on it) while hashed assets remain cacheable. nginx mode is unaffected — nginx serves dist itself and this mount is never reached.
+- **doctor gained an end-to-end UI check for direct mode**: `/healthz` alone stayed green through the failure above — the API was alive while the page users load was a 404. It now requires `https://127.0.0.1:<port>/` to answer HTML, and points at the upgrade when it does not.
+
+## [0.5.189] — 2026-08-16
+
+### Fixed (exposed-services list, a round of hands-on feedback)
+- **Clicking column headers did nothing**: column keys pointed at nested fields (`identity.ip` etc.) so the sorters compared undefineds. Rows are now flattened before entering the table; sort/filter/search all read flat fields, and ports sort numerically (sources mix ints and strings).
+- **The table overflowed the card's right edge**: added `scroll-x` sized to the visible columns, so it scrolls inside the card.
+- **Mixed-case protocols** (tcp vs TCP): normalized to uppercase in cells and the filter dropdown.
+- **"? unregistered" noise**: NAT entries with neither a target IP nor a port (OPNsense's Anti-Lockout auto-rule and kin) are undeterminable and no longer listed; dangling forwards that do carry a port stay — those are red flags.
+- **Chinese text leaking into the English UI**: the scope note was hardcoded Chinese from the backend; it now comes from frontend i18n.
+
+### Added
+- **The "paired" tag is now interactive**: hovering pops a card listing the counterpart entries (type + name + firewall) — previously the tag never said what it paired with.
+
+### Changed (version info page)
+- The backend package list now covers the **complete runtime dependency set** (34 packages — pyjwt/pyotp/ldap3/dnspython/pywinrm/python3-saml/pgvector/geoip2/celery/… were missing).
+- Optional dependencies list **traceroute (preferred) and tracepath (fallback) separately**, and the "installed" badge no longer wraps.
+- "Go to Releases" now links to the GitHub project — releases aren't published for this repo, so the old link landed on an empty page.
+
+## [0.5.188] — 2026-08-16
+
+### Changed
+- Rule-change table width rebalanced: the actions column shrinks to just fit its buttons (185px, the View-result button wraps when it appears) so spare width goes to the diff column; the meaningless sort arrow on the actions column is gone too.
+
+## [0.5.187] — 2026-08-15
+
+### Added
+- **AI analysis results can be downloaded as a report**: the modal footer gained "Download .md" / "Download .txt" — .md keeps the original markdown (with a header carrying the firewall, time, model and disclaimer), .txt strips the markup (BOM-prefixed so Chinese text opens cleanly); zero-dependency, generated entirely in the browser.
+- **The analysis shows which model produced it**: the backend returns the configured chat model with the result, shown in the modal footer and embedded in downloaded reports — different models carry different credibility, so it is part of the finding.
+
+### Changed
+- The acknowledge and AI columns merged into a single "Actions" column: column headers identical to the button labels inside read like an accidental duplicate (user feedback); once acknowledged, the button gives way to the status text in place.
+
+## [0.5.186] — 2026-08-15
+
+### Changed
+- **Firewall rule-change AI analysis now runs in the background**: the LLM takes tens of seconds and the UI used to block on it; the button now returns immediately (multiple rows can analyze concurrently) and a "View result" button grows next to it when done — the result stays on the page for re-reading.
+- **The AI result modal renders markdown** via the site-wide zero-dependency renderer (escape-then-tag, no injection surface) — model output like `**bold**` previously showed its literal asterisks.
+- zh-TW: 認領 → 認可 (more formal); the acknowledge and AI-analysis buttons gained icons, matching the site convention.
+
+## [0.5.185] — 2026-08-15
+
+### License change
+- **Relicensed from Apache-2.0 to AGPL-3.0-or-later as of this release.** The AGPL's network copyleft means anyone offering a modified jt-ipam as a service must publish their source — closed-source derivatives are no longer possible. Releases up to and including v0.5.184 remain available under their original Apache-2.0 terms.
+
+### Added
+- **Path trace, three hands-on fixes**: (1) it now prefers `traceroute -I` (ICMP) — tracepath probes with high UDP ports that are commonly filtered late in the path, so the same route a terminal reached in 9 hops went silent after hop 7 for us and never "arrived"; ICMP almost always gets through (10 hops to destination in testing). The install/upgrade script now installs the traceroute package. (2) Each hop shows its **reverse-DNS name** alongside the IP (matching the terminal traceroute experience; a short timeout keeps unresolvable hops from slowing the trace). (3) The result **states whether the destination was reached** — an unreached trace gets a labelled tag with an explanation instead of silently stopping mid-path and looking finished.
+- **The trace button becomes "Cancel" while running**: a 30–60-second job cannot offer only a spinner; cancelling aborts the stream and the backend kills the probe process immediately. A user's own cancel shows as info, not a red error.
+- **Four more dropdowns on the exposed-services list**: type (NAT/rule), protocol, status and customer — options derived from the data, stacking with the firewall filter and the search box.
+- **NAT ↔ rule pairing**: when the same target IP and port has both a NAT forward and a permit rule, both rows carry a "paired" tag (port forwards usually travel with an associated rule) — pure data matching, nothing guessed.
+
+### Changed
+- The live-status column no longer prints raw strings like `online (librenms)` — a green/red dot with a localized label and a small source note instead.
+- The AI chat's three header icons are now properly centred (the icon slot kept its text gap when labels were hidden, nudging icons low-left).
+- zh-TW wording: 查看 → 檢視.
+
+## [0.5.184] — 2026-08-15
+
+### Changed
+- **Final form of the grid's auto-recorded marker: diagonal two-colour cells.** Solid purple (0.5.183) was unmissable but hid liveness — prominence and status should not be a trade-off. The upper-left half is purple (auto-recorded) and the lower-right half keeps the normal liveness colour; both facts are visible at a glance, legend updated.
+
+## [0.5.183] — 2026-08-15
+
+### Changed
+- **Third take on the subnet grid's auto-recorded marker: solid purple cells.** An orange outline and then an orange corner badge were both reported "still too small" among hundreds of tiny cells — a few pixels can never stand out. Purple is the one colour the palette does not use (green/red/amber/blue/grey are taken), so the whole cell changes colour and is unmissable; liveness moves to the tooltip and the legend says so. The IP list's auto-recorded marker turned purple to match.
+
+## [0.5.182] — 2026-08-15
+
+### Changed
+- **Site-wide layout rule: card headers hold no controls.** Buttons, dropdowns, inputs and column pickers moved from card header rows into a toolbar at the top of the card body across 23 views/components (racks, section/subnet/device/customer detail, IP requests, topology, tasks, notifications, API tokens, AI review, chat history, rule changes, dashboard widgets, IP detail and more). Behaviour and permission conditions untouched — only the position changed. Verified by a browser sweep: 13 main pages with zero header controls, no blank pages, no JS errors.
+- Firewall rule-change diffs: the red "+" no longer sits on its own line — small coloured tags (added/removed/changed) now share the line with the rule text.
+
+### Added
+- **IP and device cards show virtual/physical.** Correlated with the virtualisation integrations (Proxmox/VMware): when an IP or MAC matches a VM interface, a "Virtual machine" tag appears with the VM name and cluster; devices are matched three ways — name, primary IP, and port MACs (a renamed VM still matches by IP/MAC). **No match shows nothing** — the integration may simply not cover that host; "unknown" is not "physical", and asserting otherwise would mislead (pinned by a test).
+
+## [0.5.181] — 2026-08-15
+
+### Changed (a round of hands-on feedback on the exposed-services page)
+- The toolbar (search / firewall filter / columns / refresh) **moved into the card body**; card headers no longer hold controls, and all four controls share one height.
+- Added a **type-to-filter search box** (IP / hostname / name / description / port).
+- **Registered IPs link straight to their IP card** (the site-wide entity links).
+- The subnet grid's auto-recorded marker became an **orange corner badge** — the outline was too easy to miss among hundreds of small cells; legend updated.
+- zh-TW wording: 紅旗→警訊, 盤點→清單, 逐家→逐一.
+
+## [0.5.180] — 2026-08-15
+
+### Changed
+- Page renamed: "Attack surface" → "**Exposed services**" — it says what the page actually lists, and avoids colliding with the existing external-exposure anomaly category.
+- **Every column split apart** (from real-world use): "IP:port (hostname)" crammed into one cell and "NAT | name" into another — IP, port, hostname, type (NAT/rule), name and firewall (vendor + instance) are now separate, sortable columns; NAT rows gained the firewall instance name (previously vendor only).
+- Added the **site-wide column picker** (same preference store, synced across devices) and a **firewall source dropdown** (options derived from the data, so manual entries or future vendors need no code change).
+
+## [0.5.179] — 2026-08-15
+
+### Added
+- **An "Attack surface" inventory page** (next to firewall rule changes; for admins and read-all accounts with global read — auditors are exactly its audience). It aggregates what is reachable from outside — enabled NAT port forwards plus WAN permits whose destination is a single IP — each entry with its IPAM identity (hostname, customer/subnet, Wazuh agent presence, live status). **"Unregistered" is flagged in red**: an external opening pointing at a host IPAM does not know is a red flag in itself. Anomaly detection's external-exposure check finds problems; this page is the inventory an audit asks for first. Rules whose destination is an alias / any / a network are **not expanded by guesswork** (a list an auditor signs must contain nothing guessed) — the page states its scope plainly.
+
+## [0.5.178] — 2026-08-15
+
+### Added (three applications of the synced firewall rules)
+- **A "Firewall" block on the IP detail view** — the reverse question: which rules explicitly cover this IP (exact address / covering network / alias membership, each with its match reason), which NAT entries point at it, which aliases contain it. `any` rules are deliberately not listed (every any-rule matches every IP; listing them is pure noise) — a footnote says they also apply. Dual-gated: the IP must be readable, and firewall rules are global-infrastructure data requiring global read.
+- **Alias-rot detection** (part of the firewall-rule-rot anomaly category): alias members that fall inside subnets this IPAM manages but have no IP record — the rule looks unchanged while the alias now points at an unknown address. External members are normal and never flagged.
+- **Acknowledgements for rule changes** (the compliance trail): an admin can mark each change as known, with a note (e.g. a ticket number). Unacknowledged changes accumulate into exactly what an audit asks for: "N firewall changes this month, M unexplained."
+
+### Fixed
+- Three new endpoints logged audits without `request_id` (two were latent in earlier versions; the tests forced them out).
+
+## [0.5.177] — 2026-08-15
+
+### Added
+- **AI analysis for firewall rule changes** (a button on each change in the rule-changes page; admin-only, on demand). Detection and alerting stay fully deterministic; the AI is an interpretation layer — and it brings **system-wide evidence about the target address** to the model: IPAM registration and change timeline, ARP/MAC, whether a Wazuh agent is present (an unmonitored host is one more reason for suspicion), reverse DNS, what other NAT exposures the host already has, whether it is a VM, and which subnet/customer owns it — information the IPAM has and the firewall does not. Output is three fixed sections: what the change does / risk assessment / what to do next.
+- That system-wide evidence layer (`full_ip_context`) now also feeds the AI triage card for unauthorised IPs — both features share it. A failing evidence source just loses one line; it cannot blank the card.
+
+### Fixed
+- Target lookups only accept genuine single addresses: **networks (e.g. 10.0.0.0/24) were being treated as hosts** — caught by an adversarial test; aliases and "any" are also skipped, and lookups are capped.
+
+## [0.5.176] — 2026-08-15
+
+### Changed
+- Wording (zh-TW): watcher-type features are no longer called 哨兵 ("sentinel", uncommon in Taiwan); they are 異動偵測 ("change detection"), matching the existing 異常偵測 (anomaly detection). Notification matrix, the rule-changes page and docs updated; sentinel *values* in code comments are now 保留值.
+
+## [0.5.175] — 2026-08-15
+
+### Added
+- **A new anomaly category: firewall rule rot.** The rule-change sentinel watches *changes*; this watches what is *already wrong* in the active ruleset: (1) **dangling port forwards** — synced, enabled forwards whose target address is not in IPAM (usually reclaimed, so traffic goes to an unknown host); (2) **any-to-any permits** (that interface effectively has no firewall); (3) **management ports** (SSH/Telnet/RDP/VNC/IPMI) **open to any source on a WAN interface**. All deterministic, and deliberately conservative — manual NAT entries do not count as dangling (an unlinked IP is normal there), disabled rules are skipped, and SSH-to-any on a LAN is everyday practice: this page's enemy is the false positive. The any-any and management-port checks start with pfSense (the most stable data shape); OPNsense/FortiGate follow once verified per vendor.
+- The docs feature page gained the v0.5.172–174 security-AI entries (rule sentinel / IP forensics / triage cards).
+
+## [0.5.174] — 2026-08-15
+
+### Fixed
+- **Baseline snapshots now store their diff as SQL NULL.** SQLAlchemy's JSON columns serialise Python None as **JSON null** by default, so "`diff IS NULL` means baseline" never held at the SQL level — the API happened to be fine (it reads back as None), but any direct SQL (reports, future features) would misjudge it. Found on the first real snapshots in production; existing rows were normalised as well.
+
+## [0.5.173] — 2026-08-15
+
+### Added
+- **A "Firewall rule changes" view** (next to anomaly detection, admin-only). The sentinel notification says "details are in the snapshot" — but 0.5.172 had no screen that showed snapshots, so the notification pointed at a place that did not exist. This page lists every change event with its full diff (added / removed / changed, with before-and-after values per field); the first snapshot is labelled as the comparison baseline. Rule descriptions render as plain text (never v-html), so injection phrases stay literal.
+
+### Fixed
+- **Snapshot timestamps now come from the application.** They relied on PostgreSQL's `now()`, which is the **transaction** timestamp — two snapshots in one transaction got identical times, making "the latest snapshot" unstable, so the sentinel could diff against the wrong baseline. Caught by a test taking two snapshots in a single transaction.
+
+## [0.5.172] — 2026-08-15
+
+### Added (security x AI, three pieces)
+- **A firewall rule-change sentinel.** We sync rules from three firewall families (OPNsense / pfSense / FortiGate), but nothing ever watched them — a permit rule appearing overnight is the classic sign of a compromised firewall or an insider backdoor, and each sync silently overwrote the previous state. Every sync now normalises the rules and hashes them; **only when the hash differs is a snapshot row stored (with a per-rule diff)** and admins notified (switchable in the notification matrix). Reordering rules in the UI does **not** count as a change (cry wolf twice and nobody reads the alert again), the first snapshot is a baseline and does not alert, and rule descriptions are untrusted text — the notification body is assembled from plain data, never through an LLM. A sentinel failure cannot break the sync itself.
+- **IP forensics (`get_ip_history` MCP tool).** The first question in any incident is "who was this IP at the time". Ask in AI chat and get the evidence timeline: field-level change log (with source), ARP IP-MAC bindings (a MAC change is immediately visible), per-source hostname observations, and DHCP-server sightings. All deterministic retrieval; interpretation is left to the human or the model. RBAC matches the IP detail rules — a restricted account asking about an IP it cannot see gets **no ARP/MAC data** (otherwise history queries become a side door around permissions).
+- **An AI triage card for unauthorised IPs.** Each row of the anomaly page's unauthorised-IP list gains an "AI triage" button: OUI vendor, per-source hostnames, MACs and switch ports are assembled for the local LLM, which produces a card — what this device most likely is, the risk, and where to look next (admin-only; clearly labelled as inference, with the raw evidence returned alongside). **Injection resistance is the core of the design**: hostnames are attacker-controlled text (a hostile device can set its mDNS name to an injection phrase), so every untrusted field is fenced in `<data>` markers, truncated, fence-breaking sequences are neutralised, and the model is told data is not instructions — pinned by adversarial tests.
+
+## [0.5.171] — 2026-08-14
+
+### Fixed
+- **After `git pull`, the rest of an upgrade still ran from the old copy of the script.** The new code was pulled correctly, but the backup, the migration, the frontend build, the systemd units and the nginx configuration all ran the old logic — meaning **fixes to installation and upgrade only took effect on the customer's *second* upgrade**, while the first one looked completely normal and exited 0. The script now hands over to the new version once the pull has updated it (with `--no-pull`, since the pull already happened; a flag prevents handing over in a loop; nothing re-runs when the commit is unchanged).
+
+  WARNING: **this fix lives in the new script**, so the upgrade that pulls it is still driven by the old one. **Sites on 0.5.170 or earlier should run `upgrade` twice** (or run `jt-ipam.sh doctor` afterwards and follow whatever it prints). After that, once is enough.
+
+## [0.5.170] — 2026-08-13
+
+### Fixed
+- **The SFTP file browser was only partly masked after a disconnect** (reported by a user). The dimming was applied **piece by piece** — the path bar and the table were covered, while the pagination row and alerts stayed bright and looked usable. Applying it piece by piece always misses one, and "looks clickable but nothing happens" is harder to understand than "obviously disabled". The whole panel is now masked at once: the content stays visible underneath (so you can still see what was there), nothing in it is interactive, and the centre of the panel says the connection dropped, notes that the listing may no longer match the remote host, and offers a reconnect button.
+- **Pressing "Disconnect" dropped back to the connection form with "the connection was closed before it was established (code 1005)".** `disconnect()` set the state to "closed" first, and the WebSocket's onclose then read that state to decide whether it had ever connected — finding something other than "connected", it concluded the connection had failed before it opened. The user's own click looked like a connection error. A dedicated flag now records whether the session ever came up, rather than inferring it from the state.
+
+## [0.5.169] — 2026-08-13
+
+### Fixed
+- **A partly failed AI review deleted findings it had never looked at.** The review is sent to the model in batches; when one batch fails (a timeout, a reply that will not parse as JSON), that batch's data **was not examined at all this round**, so its problems naturally do not appear in the results. The reconcile step only asked "did this come back again?", concluded those findings were resolved, and removed them — on screen the problems appeared to have fixed themselves while they were still there.
+
+  A run with any failed batch now only adds and updates, **never deletes**, and says so in the result: "to avoid treating unexamined problems as resolved, existing findings were not removed this time" (otherwise the only visible effect is a list that mysteriously did not shrink). Better to keep one finding that may already be fixed than to let a real one disappear quietly.
+
+## [0.5.168] — 2026-08-13
+
+### Fixed
+- **Deleting a folder over SFTP failed with nothing but "Failure"** (reported by a user). **SFTP v3 has no "directory not empty" status code** — a server asked to remove a folder with contents can only answer with the generic failure, which asyncssh surfaces verbatim as `SFTPFailure("Failure")`. The screen said neither why nor what to do next. (The message table did have `SFTPDirNotEmpty`, but that exception almost never appears in practice.)
+
+  A failed delete now **works out the reason itself**: it lists the directory, and if there is anything in it says so plainly — "the folder X is not empty (N items left)" — then asks whether to **delete it along with its contents**. If the directory really is empty (so the failure has another cause, usually permissions) the original error is kept rather than claiming it is not empty. Batch deletes list non-empty folders separately instead of mixing them in with real failures.
+
+  The recursive delete **does not follow symbolic links**; it removes the link itself. Following one would delete things outside the tree being removed, which is data loss rather than an inconvenience. Verified against a real SFTP server: after removing a directory containing a subdirectory and a symlink, the file the link pointed at was untouched.
+
+## [0.5.167] — 2026-08-13
+
+### Added
+- **The AI review can now be scheduled weekly or monthly**, not just "at these times every day". The schedule is now two dimensions: **which days** (daily / chosen weekdays / a chosen day of the month) x **what times** (the existing list). Picking the 31st runs on the **last day** of months that are shorter — rather than skipping those months entirely. That failure mode (a condition that is simply never true) produces no error and no log entry; it just looks like the feature is not working, so it is pinned down by tests.
+- **Scan agents have a "Record unregistered IPs automatically" toggle, off by default.** A scan agent used to create a record for every live address IPAM did not know about, **unconditionally** — the last of the three source families still doing so (0115 covered OPNsense/pfSense, 0116 Proxmox/VMware). WARNING: **this changes behaviour** — after upgrading, scan agents no longer record new addresses until you turn this on under Scan agents. The reason: once an address is recorded it **no longer appears in unauthorised-IP detection** (whose whole test is "we can see it, IPAM does not have it"), so a machine somebody plugged in without asking would quietly become a normal-looking record.
+- **The subnet grid now marks auto-recorded addresses**: cells created automatically by an integration or a scan agent, which nobody registered by hand, are drawn **green with an orange outline** (same state as before, but visibly unregistered), and the legend gained an "Auto-recorded (n)" entry. The orange marker in the IP list now also covers the scan agent — it previously recognised only OPNsense/pfSense/Proxmox/VMware, so scanner-created records carried no marker at all.
+
+### Changed
+- **Dismissing an AI review finding now asks first.** Dismissing is not "hide it this time": every later review skips that finding automatically, and undoing it means finding it again under the Dismissed tab. It uses the same popconfirm as "Clear all" on that page rather than a second pattern.
+- The subnet detail's "Import CSV" and "Export CSV" buttons got icons (upload / download arrows), matching the rest of that row.
+
+### Fixed
+- **Addresses dropped during a scan-agent report are now counted.** There were two silent paths — auto-recording switched off, and "no assigned, scanning-enabled subnet contains this address" — and both simply `continue`d, so all a user saw was "it scanned and nothing happened", with nothing on screen pointing at the real cause. The response now carries `created`, `skipped_not_in_ipam` and `skipped_no_subnet`.
+- The "auto-recorded" tooltip claimed the address came from a DHCP sync, but the sources now include virtualisation and scan agents. It is worded generally and states the cost (unauthorised-IP detection stops listing it).
+- The schedule hint said runs happen "at these times every day", which stopped being true once the frequency became configurable.
+
+## [0.5.166] — 2026-08-12
+
+### Added
+- **`jt-ipam.sh doctor`, a one-command health check.** It checks the configuration file, whether the backend actually answers, the database and its `pgvector` extension, whether the schema is at the latest revision, whether the built frontend matches the backend version, the timers and the backup directory, the last sync result, and the local scan agent. **Anything it can't confirm comes with a command you can copy and run**, so nobody has to go log-hunting first; attaching its output is enough to open a useful bug report. (It deliberately decides "is the service up?" by connecting rather than by looking for a bound port — minimal images often lack `iproute2`, so an `ss`-based check reports a failure while the service is fine, and a diagnostic that lies is worse than no diagnostic.)
+- **`scripts/test-fresh-install.sh` runs a real first-time install in a clean-OS container** and verifies the parts that only ever break at a customer site: the backend answers, the backup and sync timers actually reach `Result=success`, the backup unit self-heals when its directory is deleted, and `doctor` comes back clean. It is now a required release step (TEST_CHECKLIST 5b). **Install bugs cannot reproduce on a machine that is already installed** — every install failure customers reported had that in common.
+
+### Fixed
+- **A fresh install in nginx mode was unreachable from a browser** (found by the container test above, before any customer hit it). The installer only ever ran `systemctl reload nginx` — and reload against a service that was never started just prints `nginx.service is not active, cannot reload` and moves on, with the exit status swallowed. The config was written, the certificate was in place and the backend was healthy, but nginx had never been started and was not enabled at boot, so **nothing served the UI**. A single function now handles it: test the config, enable it at boot, start or reload as appropriate, and **verify it is actually running** — saying plainly that jt-ipam is unreachable until it is.
+- **Neither the health check nor the install test treats `/healthz` as end-to-end evidence any more**: the nginx site answers that path itself with a static `return 200 "ok"`, so it stays green with the backend completely stopped — it only ever proved nginx was alive. Both now request a route that has to be proxied (an unauthenticated 401 counts as "the backend answered"; a dead backend gives 502).
+- **A fresh install logged a red `duplicate key ... uq_groups_name` exception on first start.** Seeding the built-in roles and circuit types is idempotent, but **uvicorn starts several workers at once**: four processes see an empty table simultaneously, all INSERT, and the losers hit the unique constraint. Nothing was actually broken — the winner had already seeded — but the first thing a customer saw in the log looked like a failed install. The seed functions now take a PostgreSQL advisory lock so callers queue up (the lock lives with the invariant it protects, so every call path is covered). **Idempotent is not the same as concurrency-safe**; there is now a regression test that really does run them concurrently.
+- **The backup service failed the first time it ran after a fresh install** (reported by a customer on Debian 12). `jt-ipam-backup.service` listed `/var/backups/jt-ipam` in `ReadWritePaths` before anything created it, and systemd refuses to start with `226/NAMESPACE` — an error that names nothing about the actual cause, leaving the customer to create the directory by hand. Install and upgrade now create the directories the units need, and the unit itself no longer fails when one is missing.
+- **`pgvector` was installed for the wrong PostgreSQL major** when the host already had a cluster on a different version, so the database connected but the extension was absent (which shows up as semantic search and AI features quietly returning nothing). The installer now detects the **running** cluster's major and installs the matching `postgresql-N-pgvector`.
+- **A failing frontend dependency install was swallowed**, so the installer finished with no usable frontend. It now shows the full output, verifies the build artifacts afterwards, and stops with a clear message if either step failed.
+
+### Changed
+- **SFTP's new folder, rename and move now use in-app dialogs** rather than the browser's `window.prompt`. A native prompt looks like a system warning, ignores the theme, and leaves nowhere for guidance or validation.
+- **Move offers both a path field and a clickable directory browser**: type an absolute path at the top, or walk the directory list below (directories only, since a file cannot be a destination). The button states the destination outright — "Move here: /some/path". An empty level says so rather than looking broken.
+- **Large directories are paginated** instead of being truncated with "showing part of it". The listing cap went from 2000 to 20000 entries (paginating removed the reason it was kept low); beyond that it still truncates, and still says so.
+
+### Fixed
+- **In the device list the type tag overlapped the physical/virtual column, and the delete button sat past the table's right edge.** The type column had no width (its longest label is "Wireless AP") and the actions column had 136px for four buttons and was not pinned. Same family as the scan-agent page, and the same fix: enough width plus `fixed: right`.
+
+### Tests
+- The SFTP e2e specs drive the real dialogs now, and assert that **no native browser dialog appears** — reintroducing `window.prompt` turns them red.
+- Fixed two races in the tests themselves: with a fixed filename, a leftover file from the previous run made "the row is in the table" true before the drop even happened, so the test read the file mid-write and got an empty string. Filenames are now unique per run.
+
+## [0.5.165] — 2026-08-12
+
+### Fixed (**major: several integrations had not run at all since v0.5.150**)
+- **The scheduled sync stopped after its first two integrations.** In `jt-ipam-sync.py` the ESXi block lost four spaces of indentation, which did two things: it ran against an **already-closed session**, and **every block from Wazuh onwards ended up nested inside the ESXi `for` loop**. On any host without an enabled ESXi instance that loop body never executes — so **Wazuh, LibreNMS, ARP pruning, AdGuard, FortiGate, Windows DHCP, Proxmox, DNS, certificate fetch, certificate alerts, IP-to-device autolink and the AI review all silently stopped**, with nothing on screen to show it.
+
+  The leaked connection then raised `RuntimeError: greenlet is being finalized` during interpreter shutdown, so systemd recorded every run as failed (259 times in 24 hours on our own prod). The `MissingGreenlet` a customer reported has the same root cause.
+
+  One visible symptom was "**the AI review schedule is set but never runs**" — that code sits at the end of the script and was never reached. After the fix, on prod: every integration runs again, the AI review produced 19 findings, and the greenlet errors are gone.
+
+- **Added `await engine.dispose()` before the script exits.** Without it the pooled asyncpg connections survive until interpreter shutdown, where the event loop and greenlet are gone and `terminate()` blows up.
+
+- **A single unreachable integration no longer marks the whole run as failed.** An offline firewall is a *reported* condition (written to that instance's last_error and visible in the UI), yet the script exited non-zero, so `systemctl status jt-ipam-sync` stayed red forever — which made a genuine failure indistinguishable from a device being down (it misled both a customer and us). Non-zero is now reserved for a run that could not complete, and the log states "sync completed with N integration error(s)".
+
+### Tests
+- Added `tests/test_sync_script_structure.py`: an AST check that **every integration block is a direct child of the session block**, failing if any becomes nested inside another loop. Restoring the broken indentation turns 9 of its 12 cases red. Python does not report this kind of indentation as an error — it simply means something else — so only a structural check can hold it.
+
 ## [0.5.164] — 2026-08-12
 
 ### Changed (**behaviour change — please read**)
@@ -11,7 +357,7 @@ based on [Keep a Changelog](https://keepachangelog.com/); versions track
 
   ⚠️ **Upgrading changes behaviour**: VM and node IPs that used to appear on their own no longer do. To restore it, switch the toggle on under the Proxmox VE integration. This is deliberate — auto-recording removes those addresses from the "unauthorised IPs" anomaly check (whose test is "seen in ARP, absent from IPAM"), and that trade should be an explicit choice.
 
-- **Fixed an overlapping-subnet hazard in Proxmox while there.** It picked a subnet with `ORDER BY masklen(cidr) DESC LIMIT 1`, which **silently chooses one** when two tenants each hold `192.168.1.0/24` — potentially filing a VM under someone else's subnet. It now uses the same decision as every other integration: **ambiguous means don't create**.
+- **Fixed an overlapping-subnet hazard in Proxmox while there.** It picked a subnet with `ORDER BY masklen(cidr) DESC LIMIT 1`, which **silently chooses one** when two tenants each hold `198.51.100.0/24` — potentially filing a VM under someone else's subnet. It now uses the same decision as every other integration: **ambiguous means don't create**.
 
 ### Added
 - **VMware / ESXi gains the same "trust addresses from virtualization" toggle** (off by default). It previously never created anything, only matched existing records.
@@ -23,7 +369,7 @@ based on [Keep a Changelog](https://keepachangelog.com/); versions track
 ### Added
 - **An "create addresses IPAM does not have" toggle for OPNsense and pfSense** (migration 0115, **off by default**). The firewall DHCP/ARP sync only ever stamped addresses that already existed; anything else was dropped, silently — a customer had to read the source to find out. With the toggle on, an address present in a DHCP lease but absent from IPAM is created.
 
-  Placement reuses the LibreNMS rule (now extracted to `services/ip_autocreate.py` and shared by all three integrations): longest-prefix match, **created only when exactly one subnet matches**. Where overlapping subnets make it ambiguous (two tenants each holding 192.168.1.0/24), **nothing is created** — filing a record under the wrong tenant is worse than not filing it. Setting the integration's subnet scope removes the ambiguity.
+  Placement reuses the LibreNMS rule (now extracted to `services/ip_autocreate.py` and shared by all three integrations): longest-prefix match, **created only when exactly one subnet matches**. Where overlapping subnets make it ambiguous (two tenants each holding 198.51.100.0/24), **nothing is created** — filing a record under the wrong tenant is worse than not filing it. Setting the integration's subnet scope removes the ambiguity.
 
   ⚠️ **The risk is stated next to the toggle**: a machine that obtained a DHCP address is not necessarily one that belongs in IPAM. An unauthorised device that got a lease would be recorded as a legitimate entry — **and once in IPAM it stops appearing under "unauthorised IPs" in anomaly detection**, whose entire test is "seen in ARP, absent from IPAM". Hence off by default, with the warning shown when it is switched on.
 
@@ -168,7 +514,7 @@ based on [Keep a Changelog](https://keepachangelog.com/); versions track
 ### Changed
 - **An address on the virtualisation pages links to its IPAM record.** The data was already in the system, but reading a VM's address and checking how it is registered meant copying the digits, switching page and pasting them into a search.
 
-  **A link only appears when exactly one record matches.** With overlapping subnets — different units sharing `192.168.1.0/24`, which this project exists to support — the same address string legitimately has several records, and there is no way to tell which one a VM's address refers to. In that case the text stays plain: a wrong link is worse than no link, because people trust it. Verified against production: of 79 addresses on VM interfaces, 78 resolve to exactly one record and become links.
+  **A link only appears when exactly one record matches.** With overlapping subnets — different units sharing `198.51.100.0/24`, which this project exists to support — the same address string legitimately has several records, and there is no way to tell which one a VM's address refers to. In that case the text stays plain: a wrong link is worse than no link, because people trust it. Verified against production: of 79 addresses on VM interfaces, 78 resolve to exactly one record and become links.
 
 ## [0.5.152] — 2026-08-07
 
@@ -303,7 +649,7 @@ based on [Keep a Changelog](https://keepachangelog.com/); versions track
   This is deliberately **not** CVE counts. Wazuh removed all vulnerability endpoints from the manager API in 4.8 — verified by listing the 150 routes this server actually exposes, none of which concern vulnerabilities — and the only remaining source is the Wazuh Indexer. That would require a second, long-lived credential able to read **every alert in the SIEM**, in exchange for two numbers, plus a dependency on an internal index name that a future release can rename. The trade is not worth it, so the integration is not offered; a brief implementation of it was removed before release rather than shipped half-considered.
 
 ### Changed
-- **Integrations no longer guess when an address is ambiguous.** With overlapping subnets — two departments both using 192.168.1.0/24 — the same IP string is two different machines. Wazuh built its lookup table with a dict (later rows silently overwriting earlier ones) and LibreNMS took the first row, so which record received the data depended on database row order. Both now decline to match when an address resolves to more than one record, and report how many were skipped, because attaching data to the wrong department is worse than attaching none: with no data you go and look, with wrong data you never find out — and across departments it is a data leak. Setting "limit to subnets" on the integration narrows the candidates back to one and restores matching.
+- **Integrations no longer guess when an address is ambiguous.** With overlapping subnets — two departments both using 198.51.100.0/24 — the same IP string is two different machines. Wazuh built its lookup table with a dict (later rows silently overwriting earlier ones) and LibreNMS took the first row, so which record received the data depended on database row order. Both now decline to match when an address resolves to more than one record, and report how many were skipped, because attaching data to the wrong department is worse than attaching none: with no data you go and look, with wrong data you never find out — and across departments it is a data leak. Setting "limit to subnets" on the integration narrows the candidates back to one and restores matching.
 
 ## [0.5.143] — 2026-08-05
 
@@ -392,7 +738,7 @@ based on [Keep a Changelog](https://keepachangelog.com/); versions track
   - **Off by default**: it broadcasts on the segment, so whether to do it is decided per subnet in that subnet's scan settings.
   - Sends only DISCOVER, never REQUEST — it does not actually take an address.
   - Whether a server is legitimate is decided **at query time**, not baked into the sighting: mark one as legitimate later and the old records follow, rather than leaving a permanently wrong "rogue" label behind.
-  - The comparison is per subnet — with overlapping ranges (several units sharing 192.168.1.0/24), one segment's marking is never mistaken for another's authorisation.
+  - The comparison is per subnet — with overlapping ranges (several units sharing 198.51.100.0/24), one segment's marking is never mistaken for another's authorisation.
   - Relayed offers are not flagged: that server was never on this segment to begin with.
 - **Each subnet can be included in or excluded from the AI review** — a tick box on the subnet edit page, or a multi-select under Admin → LLM / AI. Both write **the same field**, so either place works. Sensitive segments can be excluded entirely and are never sent to the model.
 - **AI review** — have the language model look over the IPAM data this system manages and flag what is suspicious, inconsistent or a security concern (addresses recorded as in use but never seen alive, hosts whose name and role disagree, duplicate or contradictory records, subnets with no monitoring coverage at all…). Three entry points: a new **AI review** page in the sidebar, a summary block on the dashboard, and an on/off switch plus schedule under Admin → LLM / AI (off by default). The schedule rides on the existing sync timer rather than adding a job; the page also has a **Run now** button so you do not have to wait for it.
@@ -581,7 +927,7 @@ Found by running the new Windows agent against a real Windows 11 + IIS host, not
 
 ### Fixed
 - **`GET /addresses` leaked a global count in `total`.** The same defect fixed in 0.5.116 for sections and subnets was still present on the largest table: the count query carried the subnet/section/archived filters but never the visibility condition, which was applied only to rows after pagination. A restricted account saw a total far larger than what it could see, and pagination was broken.
-- **Two MCP tools mishandled overlapping subnets.** `switch_port_for_ip` queried `IPAddress.ip == ip` with no scope and no `limit(1)` before `scalar_one_or_none()`, so in an overlapping-subnet deployment — several customers sharing `192.168.1.0/24`, the product's core scenario — it raised `MultipleResultsFound` and the tool failed outright. Both it and `get_ip_detail` also checked visibility *after* picking an arbitrary row, so picking a row in an invisible subnet reported "IP not found" even when the caller could see the same IP in another subnet. Both now scope the query first and then take one row.
+- **Two MCP tools mishandled overlapping subnets.** `switch_port_for_ip` queried `IPAddress.ip == ip` with no scope and no `limit(1)` before `scalar_one_or_none()`, so in an overlapping-subnet deployment — several customers sharing `198.51.100.0/24`, the product's core scenario — it raised `MultipleResultsFound` and the tool failed outright. Both it and `get_ip_detail` also checked visibility *after* picking an arbitrary row, so picking a row in an invisible subnet reported "IP not found" even when the caller could see the same IP in another subnet. Both now scope the query first and then take one row.
 - **The Permissions page could not grant rack or location permissions.** It requested `/api/v1/locations/racks` and `/api/v1/locations/locations`; the real paths are `/api/v1/racks` and `/api/v1/locations`, so both were swallowed by `/locations/{location_id}`, failed UUID parsing and returned `400` — leaving those two object lists permanently empty.
 - **Nine i18n keys were never translated** and rendered as raw keys: the task trigger column and its two values, four BMC serial-console troubleshooting entries, and the two MAC columns on the connections page. Also removed two orphan keys that existed only in en-US.
 

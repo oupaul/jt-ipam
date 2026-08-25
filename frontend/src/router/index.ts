@@ -94,6 +94,7 @@ const routes: RouteRecordRaw[] = [
       { path: "zyxel-fw", name: "zyxel_fw", component: () => import("@/views/ZyxelFirewallView.vue") },
       { path: "paloalto-fw", name: "paloalto_fw", component: () => import("@/views/PaloAltoFirewallView.vue") },
       { path: "wazuh", name: "wazuh", component: () => import("@/views/WazuhAdmin.vue"), meta: { admin: true } },
+      { path: "zabbix", name: "zabbix", component: () => import("@/views/ZabbixAdmin.vue"), meta: { admin: true } },
       { path: "plugins", name: "plugins", component: () => import("@/views/PluginsAdmin.vue"), meta: { admin: true } },
       // Phase 3
       { path: "oui", name: "oui_admin", component: () => import("@/views/OUIAdmin.vue"), meta: { admin: true } },
@@ -115,6 +116,8 @@ const routes: RouteRecordRaw[] = [
       { path: "webhooks", name: "webhooks", component: () => import("@/views/Webhooks.vue"), meta: { admin: true } },
       { path: "nat", name: "nat", component: () => import("@/views/NAT.vue") },
       { path: "anomaly", name: "anomaly", component: () => import("@/views/Anomaly.vue"), meta: { admin: true } },
+      { path: "fw-rule-changes", name: "fw_rule_changes", component: () => import("@/views/FwRuleChanges.vue"), meta: { admin: true } },
+      { path: "attack-surface", name: "attack_surface", component: () => import("@/views/AttackSurface.vue") },
       { path: "advanced", name: "advanced", component: () => import("@/views/Advanced.vue") },
       { path: "advanced/tenancy", name: "adv-tenancy", component: () => import("@/views/Advanced.vue"), props: { mode: "tenancy" } },
       { path: "advanced/asn", name: "adv-asn", component: () => import("@/views/Advanced.vue"), props: { mode: "asn" } },

@@ -9,14 +9,17 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NModal, NCard, NSpace, NButton, NDescriptions, NDescriptionsItem,
-  NForm, NFormItem, NInput, NSelect, NSwitch, NPopconfirm, NTag, NIcon,
+  NForm, NFormItem, NInput, NSelect, NSwitch, NPopconfirm, NTag, NIcon, NPagination,
   NCollapse, NCollapseItem, NTimeline, NTimelineItem, NText, NEmpty, NSpin,
   NTooltip, NCheckbox, NCheckboxGroup, NButtonGroup, NDivider,
   useMessage,
 } from "naive-ui";
+import { useAuthStore } from "@/stores/auth";
+import { apiClient } from "@/api/client";
 import type { IPAddress } from "@/types";
 import { updateAddress, deleteAddress, createAddress, type IPAddressUpdate } from "@/api/addresses";
-import { getAddressHistory, getAddressSwitchPort, type IPChangeLog, type SwitchPortInfo } from "@/api/ip_history";
+import { getAddressHistory, getAddressSwitchPort, type HistoryFacet, type IPChangeLog,
+  type SwitchPortInfo } from "@/api/ip_history";
 import { getHostnameSources, type HostnameSources } from "@/api/hostname";
 import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon, TerminalIcon, DisplayIcon, VncIcon, NoVncIcon, SearchIcon , FilesIcon } from "@/icons";
 import InvestigateModal from "@/components/InvestigateModal.vue";
@@ -116,6 +119,20 @@ async function loadRelatedNat() {
     relatedNat.value = res.items as any;
   } catch { /* silent */ }
 }
+// 此 IP 被哪些防火牆規則／別名管到（反向查詢）。
+// 防火牆規則屬全域基礎設施資料：無 has_global_read 的帳號不打這支、也不顯示區塊。
+const fwInfo = ref<{ rules: any[]; nat: any[]; aliases: any[] } | null>(null);
+const auth = useAuthStore();
+async function loadFirewall() {
+  fwInfo.value = null;
+  if (!props.address?.id) return;
+  if (auth.me?.has_global_read === false) return;
+  try {
+    const { data } = await apiClient.get(`/api/v1/addresses/${props.address.id}/firewall`);
+    fwInfo.value = data;
+  } catch { /* silent — 沒有整合防火牆時就不顯示 */ }
+}
+
 function goNat() {
   emit("update:show", false);
   void router.push({ name: "nat" });
@@ -341,6 +358,7 @@ watch(
       void loadDhcpRanges();
       void loadRelations();
       void loadRelatedNat();
+      void loadFirewall();
     }
   },
   { immediate: true },
@@ -355,30 +373,50 @@ const stateType = computed<"success" | "info" | "warning" | "error" | "default">
        : "default";
 });
 
-// ── 異動記錄 (feature B)：展開時才載入；每頁 100 筆，可「載入更多」 ──
-const HISTORY_PAGE = 100;
+// ── 異動記錄：展開時才載入。**分頁 + 篩選 + 總數** ──
+// 實機單一 IP 最多 1,838 筆、且幾乎全是同一種事件（整合互相覆寫主機名稱），
+// 原本的「載入更多」要按 18 次、也看不出總共幾筆 → 改成先篩選再翻頁。
+const HISTORY_PAGE = 50;
 const history = ref<IPChangeLog[]>([]);
+const historyTotal = ref(0);
+const historyPage = ref(1);
+const historyEventOpts = ref<HistoryFacet[]>([]);
+const historySourceOpts = ref<HistoryFacet[]>([]);
+const historyEvent = ref<string | null>(null);
+const historySource = ref<string | null>(null);
 const historyLoading = ref(false);
 const historyLoaded = ref(false);
-const historyHasMore = ref(false);
+const historyPageCount = computed(() =>
+  Math.max(1, Math.ceil(historyTotal.value / HISTORY_PAGE)));
 
-async function loadHistory(more = false) {
+async function loadHistory() {
   if (!props.address?.id) return;
-  if (!more && historyLoaded.value) return;
   historyLoading.value = true;
   try {
-    const offset = more ? history.value.length : 0;
-    const page = await getAddressHistory(props.address.id, HISTORY_PAGE, offset);
-    history.value = more ? [...history.value, ...page] : page;
-    historyHasMore.value = page.length === HISTORY_PAGE;
+    const page = await getAddressHistory(props.address.id, {
+      limit: HISTORY_PAGE,
+      offset: (historyPage.value - 1) * HISTORY_PAGE,
+      event_type: historyEvent.value ?? undefined,
+      source: historySource.value ?? undefined,
+    });
+    history.value = page.items;
+    historyTotal.value = page.total;
+    // 選項以「未篩選」為母體，選了之後其他選項不會消失
+    historyEventOpts.value = page.event_types;
+    historySourceOpts.value = page.sources;
     historyLoaded.value = true;
   } catch { /* silent */ } finally {
     historyLoading.value = false;
   }
 }
 
+function onHistoryFilter() {
+  historyPage.value = 1;      // 換篩選條件一律回第一頁，否則會停在不存在的頁
+  void loadHistory();
+}
+
 function onHistoryToggle(names: Array<string | number>) {
-  if (names.includes("history")) void loadHistory();
+  if (names.includes("history") && !historyLoaded.value) void loadHistory();
 }
 
 function eventLabel(e: string): string {
@@ -416,11 +454,33 @@ const pinOptions = computed(() => {
   return opts;
 });
 
+// 交換器位置：儲存格式是「交換器 / 埠」（LibreNMS 同步就是這樣寫），
+// 顯示與編輯都以 @ 呈現。這裡把單一字串拆成兩格、存檔前再組回去。
+const swName = ref("");
+const swPort = ref("");
+function splitSwitchPort(v: string): [string, string] {
+  const i = (v || "").indexOf(" / ");
+  return i < 0 ? [v || "", ""] : [v.slice(0, i), v.slice(i + 3)];
+}
+watch(() => form.value.switch_port, (v) => {
+  const [a, b] = splitSwitchPort(v || "");
+  if (a !== swName.value) swName.value = a;
+  if (b !== swPort.value) swPort.value = b;
+}, { immediate: true });
+watch([swName, swPort], ([a, b]) => {
+  const name = (a || "").trim();
+  const port = (b || "").trim();
+  form.value.switch_port = port ? `${name} / ${port}` : name;
+});
+
 // 換 IP 時清掉舊快取
 watch(() => props.address?.id, () => {
   history.value = [];
   historyLoaded.value = false;
-  historyHasMore.value = false;
+  historyTotal.value = 0;
+  historyPage.value = 1;
+  historyEvent.value = null;
+  historySource.value = null;
   hostnameSources.value = null;
   hostnameSourcesLoaded.value = false;
   switchPort.value = null;
@@ -434,9 +494,12 @@ async function loadSwitchPort() {
   catch { switchPort.value = null; }
 }
 
+// immediate：inline（IP 詳細資料頁）模式下 show 一開始就是 true、id 一開始就有值，
+// 沒有 immediate 這個 watch 永遠不觸發 → 直接開網址／重新整理時「主機名稱來源」
+// 與 FDB 標籤整列消失，只有從清單開彈窗（show false→true）才看得到（使用者回報）。
 watch(() => [props.show, props.address?.id], () => {
   if (props.show && props.address?.id) { void loadHostnameSources(); void loadSwitchPort(); }
-});
+}, { immediate: true });
 
 function close() {
   // inline(頁面)模式：檢視中按取消＝返回上一頁；編輯中＝退出編輯
@@ -579,9 +642,9 @@ async function remove() {
           </n-tooltip>
         </span>
       </template>
-      <!-- inline(頁面)模式：操作鈕放右上，比照裝置詳細資料頁 -->
-      <template v-if="inline && !isCreate" #header-extra>
-        <n-space align="center" :size="8" :wrap-item="false">
+      <!-- inline(頁面)模式：操作工具列自標題列搬到內文最上方 -->
+      <n-space v-if="inline && !isCreate" align="center" justify="end" :size="8" :wrap-item="false"
+               style="margin-bottom: 10px">
           <template v-if="!editMode">
             <!-- SSH 連線分割按鈕：主鍵嵌入終端機、下箭頭可另開視窗（僅在啟用且有權限時顯示） -->
             <template v-if="props.address?.ssh_available">
@@ -713,8 +776,7 @@ async function remove() {
               <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
             </n-button>
           </template>
-        </n-space>
-      </template>
+      </n-space>
 
       <div v-if="props.address || isCreate">
         <!-- view mode -->
@@ -813,6 +875,13 @@ async function remove() {
             {{ resvLine }}
           </n-descriptions-item>
           <n-descriptions-item :label="t('addresses.effective_status')">{{ effectiveDisplay }}</n-descriptions-item>
+          <!-- 虛擬化對應：比對到 VM 網卡才顯示「虛擬機」；比對不到不顯示——
+               「查無」是「不知道」，不是「實體機」，反向斷言是誤導 -->
+          <n-descriptions-item v-if="(props.address as any)?.virt_vm" :label="t('addresses.virt')">
+            <n-tag size="small" type="info">{{ t('addresses.virt_vm_tag') }}</n-tag>
+            <span style="margin-left:6px">{{ (props.address as any).virt_vm.vm }}
+              <span style="opacity:.65">@ {{ (props.address as any).virt_vm.cluster || (props.address as any).virt_vm.platform }}</span></span>
+          </n-descriptions-item>
           <n-descriptions-item :label="t('addresses.last_seen_scanner')">{{ fmtDateTime(props.address?.last_seen_scanner) }}</n-descriptions-item>
           <n-descriptions-item :label="t('addresses.last_seen_librenms')">{{ fmtDateTime(props.address?.last_seen_librenms) }}</n-descriptions-item>
           <n-descriptions-item :label="t('addresses.last_seen_dns')">{{ fmtDateTime(props.address?.last_seen_dns) }}</n-descriptions-item>
@@ -824,6 +893,27 @@ async function remove() {
         <div v-if="!editMode && relations.length > 1" style="margin-top: 14px">
           <div style="font-size: 12px; opacity: 0.6; margin-bottom: 6px">{{ t("relations.title") }}</div>
           <relation-chain :nodes="relations" :current-id="props.address?.id" />
+        </div>
+
+        <!-- 防火牆反查：這個 IP 被哪些規則／別名管到（any 規則不列，另以一句話註明） -->
+        <div v-if="!editMode && fwInfo && (fwInfo.rules.length || fwInfo.aliases.length)"
+             style="margin-top: 14px">
+          <div style="font-size: 12px; opacity: 0.6; margin-bottom: 6px">
+            {{ t("addresses.fw_title", { n: fwInfo.rules.length }) }}
+          </div>
+          <div v-for="(r, i) in fwInfo.rules.slice(0, 12)" :key="i"
+               style="font-size: 12.5px; line-height: 1.8">
+            <n-tag size="tiny" style="margin-right: 6px">{{ r.source_type }}</n-tag>
+            {{ r.firewall }}｜{{ r.action }} {{ r.src }} → {{ r.dst }}{{ r.dst_port ? ":" + r.dst_port : "" }}
+            <span style="opacity:.6">（{{ r.match }}{{ r.descr ? "；" + r.descr : "" }}）</span>
+          </div>
+          <div v-if="fwInfo.aliases.length" style="font-size: 12.5px; margin-top: 4px">
+            {{ t("addresses.fw_aliases") }}：
+            <n-tag v-for="a in fwInfo.aliases" :key="a.name" size="tiny" style="margin-right: 4px">
+              {{ a.name }}（{{ a.source_type }}）
+            </n-tag>
+          </div>
+          <div style="font-size: 11.5px; opacity: 0.55; margin-top: 4px">{{ t("addresses.fw_any_note") }}</div>
         </div>
 
         <!-- 關聯的 NAT 規則 -->
@@ -846,8 +936,29 @@ async function remove() {
 
         <!-- 異動記錄 (feature B)，展開才載入 -->
         <n-collapse v-if="!editMode && props.address" style="margin-top: 12px" @update:expanded-names="onHistoryToggle">
-          <n-collapse-item :title="t('ipChanges.history')" name="history">
+          <n-collapse-item name="history">
+            <!-- 標題帶總數：不然使用者不知道自己看到的是全部還是一頁 -->
+            <template #header>
+              {{ t("ipChanges.history") }}
+              <n-text v-if="historyLoaded" depth="3" style="font-size: 12.5px">
+                （{{ historyTotal }}）
+              </n-text>
+            </template>
             <n-spin :show="historyLoading">
+              <!-- 篩選：整合互相覆寫會讓單一事件類型灌爆清單，先篩再看才有意義 -->
+              <n-space v-if="historyLoaded && (historyEventOpts.length > 1 || historySourceOpts.length > 1)"
+                       :size="8" style="margin-bottom: 8px">
+                <n-select v-model:value="historyEvent" clearable size="small" style="width: 190px"
+                          :placeholder="t('ipChanges.all_events')"
+                          :options="historyEventOpts.map((o) => ({
+                            label: `${eventLabel(o.value)}（${o.count}）`, value: o.value }))"
+                          @update:value="onHistoryFilter" />
+                <n-select v-model:value="historySource" clearable size="small" style="width: 190px"
+                          :placeholder="t('ipChanges.all_sources')"
+                          :options="historySourceOpts.map((o) => ({
+                            label: `${labelSource(o.value)}（${o.count}）`, value: o.value }))"
+                          @update:value="onHistoryFilter" />
+              </n-space>
               <n-empty v-if="historyLoaded && !history.length" :description="t('ipChanges.empty')" size="small" />
               <n-timeline v-else style="padding: 4px 0">
                 <n-timeline-item
@@ -872,10 +983,9 @@ async function remove() {
                   <n-text v-if="h.note" depth="3" style="font-size: 12px; display: block">{{ h.note }}</n-text>
                 </n-timeline-item>
               </n-timeline>
-              <div v-if="historyHasMore" style="text-align: center; margin-top: 8px">
-                <n-button size="small" :loading="historyLoading" @click="loadHistory(true)">
-                  {{ t("common.load_more") }}
-                </n-button>
+              <div v-if="historyPageCount > 1" style="display:flex; justify-content:center; margin-top: 10px">
+                <n-pagination v-model:page="historyPage" :page-count="historyPageCount"
+                              size="small" @update:page="loadHistory" />
               </div>
             </n-spin>
           </n-collapse-item>
@@ -910,8 +1020,21 @@ async function remove() {
             <n-form-item :label="t('addresses.owner')" style="flex: 1 1 240px">
               <n-input v-model:value="form.owner" />
             </n-form-item>
-            <n-form-item :label="t('addresses.switch_port')" style="flex: 1 1 200px">
-              <n-input v-model:value="form.switch_port" />
+            <!-- 交換器位置：拆成兩格。單一輸入框會讓人照著唯讀畫面打成 sw@port，
+                 但實際儲存格式是「交換器 / 埠」，打錯就顯示成一整團字串 -->
+            <n-form-item :label="t('addresses.switch_port')" style="flex: 1 1 320px">
+              <n-space :size="6" :wrap-item="false" style="width: 100%">
+                <n-input v-model:value="swName" :placeholder="t('addresses.switch_name_ph')"
+                         style="flex: 1 1 55%" />
+                <span style="align-self: center; color: #18a058; font-weight: 700">@</span>
+                <n-input v-model:value="swPort" :placeholder="t('addresses.switch_port_ph')"
+                         style="flex: 1 1 45%" />
+              </n-space>
+              <template #feedback>
+                <span style="font-size: 11.5px; opacity: .7">
+                  {{ t("addresses.switch_port_hint") }}
+                </span>
+              </template>
             </n-form-item>
           </n-space>
           <n-form-item :label="t('common.description')">

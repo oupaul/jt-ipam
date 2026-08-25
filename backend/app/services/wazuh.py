@@ -303,7 +303,11 @@ async def sync_agents(session: AsyncSession, inst: WazuhInstance) -> dict[str, A
                 from app.services.hostname import apply_observation
                 ipa = await session.get(IPAddress, addr_id)
                 if ipa is not None:
-                    await apply_observation(session, ip=ipa, source="wazuh", hostname=agent_name)
+                    # 多個代理可能登記同一個 IP（DHCP 位址被回收再配給別台，舊代理的登記沒清）
+                    # → 用 tiebreak 穩定收斂到同一個名字；否則每輪同步兩個代理互相覆寫，
+                    # 一天可以洗出好幾百筆 hostname_changed（實機：單一 IP 十天內翻 620 次）
+                    await apply_observation(session, ip=ipa, source="wazuh",
+                                            hostname=agent_name, tiebreak_min=True)
 
         if existing is None:
             obj = WazuhAgent(
@@ -359,6 +363,7 @@ async def sync_agents(session: AsyncSession, inst: WazuhInstance) -> dict[str, A
 
 async def find_missing_agents(
     session: AsyncSession, *, instance_id: uuid.UUID | None = None, hostnamed_only: bool = True,
+    subnet_ids: list[uuid.UUID] | None = None,
 ) -> list[dict[str, Any]]:
     """找應該裝 Wazuh 卻沒有 active agent 的 IP。
 
@@ -367,6 +372,8 @@ async def find_missing_agents(
     - 該 IP 沒有對映到 active 狀態的 WazuhAgent
 
     `instance_id`=None → 跨所有 Wazuh instance 比對。
+    `subnet_ids`=None → 全域；給了就只看這些子網路（問「某網段有誰沒裝」時必須給，
+    否則會把全站的缺口當成該網段的答案回去）。
     """
     sub = select(WazuhAgent.jt_ipam_address_id).where(
         WazuhAgent.status == "active",
@@ -379,6 +386,10 @@ async def find_missing_agents(
     )
     if hostnamed_only:
         stmt = stmt.where(IPAddress.hostname.is_not(None), IPAddress.hostname != "")
+    if subnet_ids is not None:
+        if not subnet_ids:
+            return []
+        stmt = stmt.where(IPAddress.subnet_id.in_(subnet_ids))
     rows = (await session.execute(stmt)).all()
     return [
         {

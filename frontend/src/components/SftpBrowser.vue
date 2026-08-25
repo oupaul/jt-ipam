@@ -17,7 +17,7 @@ import { useI18n } from "vue-i18n";
 import {
   NAlert, NButton, NCard, NDataTable, NForm, NFormItem, NIcon, NInput,
   NInputNumber, NPopconfirm, NRadio, NRadioGroup, NSelect, NSpace, NSpin, NSwitch,
-  NTag, useMessage,
+  NTag, NModal, NInputGroup, useMessage,
 } from "naive-ui";
 import type { DataTableColumns } from "naive-ui";
 import { h } from "vue";
@@ -26,6 +26,7 @@ import {
   requestSftpTicket, type SftpEntry, type SshCredential,
 } from "@/api/ssh";
 import { fmtDateTime } from "@/utils/datetime";
+import { useTablePagination } from "@/composables/useTablePagination";
 import {
   RefreshIcon, FilesIcon, CancelIcon, DeleteIcon, EditIcon,
   DownloadIcon, UploadIcon, NewFolderIcon, FilterIcon, MoveIcon, UpLevelIcon,
@@ -75,10 +76,19 @@ async function delSelectedCred() {
 }
 
 let ws: WebSocket | null = null;
+/** 是否曾經真的連上過。
+ *
+ * 不能用 phase 判斷「斷線時是不是已經連上」：使用者按「中斷連線」時，我們自己會先把
+ * phase 設成 closed，接著 onclose 讀到的就不是 connected → 誤判成「還沒連上就斷了」，
+ * 於是跳回連線表單並顯示「連線在建立完成前就被關閉（代碼 1005）」—— 明明是使用者
+ * 自己按的，卻看起來像連線失敗。 */
+let everConnected = false;
 /** 下載中的檔案：收到 file_begin 後開始累積二進位框，file_end 才落地。 */
 let incoming: { name: string; size: number; chunks: Uint8Array[]; got: number } | null = null;
 /** 等待中的請求：讓 send 之後可以 await 到結果。 */
 let pending: { resolve: (v: any) => void; reject: (e: Error) => void } | null = null;
+/** 這次的 list 只是「對話框在瀏覽目錄」，不要動主畫面的清單。 */
+let browsingOnly = false;
 
 function send(obj: Record<string, unknown>) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -122,6 +132,7 @@ async function connect() {
   }
 
   try {
+    everConnected = false;
     const tk = await requestSftpTicket(props.addressId);
     ws = new WebSocket(buildSshWsUrl(tk.ws_path, tk.ticket));
     ws.binaryType = "arraybuffer";
@@ -153,14 +164,19 @@ async function connect() {
       const m = JSON.parse(ev.data);
       switch (m.type) {
         case "ready":
+          everConnected = true;
           phase.value = "connected";
           cwd.value = m.cwd || "/";
           void refresh();
           break;
         case "list":
-          cwd.value = m.path;
-          entries.value = m.entries ?? [];
-          truncated.value = !!m.truncated;
+          // 移動對話框也用同一個 list 取目錄 —— 那時候不能動主畫面的狀態，
+          // 否則「已勾選的那幾列」會被換掉，按下移動時就什麼都不剩了（實際踩過）。
+          if (!browsingOnly) {
+            cwd.value = m.path;
+            entries.value = m.entries ?? [];
+            truncated.value = !!m.truncated;
+          }
           pending?.resolve(m); pending = null;
           break;
         case "file_begin":
@@ -185,17 +201,22 @@ async function connect() {
         case "ok":
           pending?.resolve(m); pending = null;
           break;
-        case "error":
+        case "error": {
           errorMsg.value = m.message ?? "";
           // 連線階段失敗要退回表單，否則使用者卡在一片空白、無從重試
           if (phase.value !== "connected") phase.value = "error";
-          pending?.reject(new Error(m.message)); pending = null;
+          // 帶上 code：有些失敗是可以補救的（例如資料夾不是空的 → 問要不要連內容一起刪），
+          // 只丟字串的話呼叫端只能把它當成一般錯誤顯示
+          const err = new Error(m.message) as Error & { code?: string };
+          err.code = m.code;
+          pending?.reject(err); pending = null;
           break;
+        }
       }
     };
 
     ws.onclose = (ev) => {
-      const wasConnected = phase.value === "connected";
+      const wasConnected = everConnected;
       phase.value = wasConnected ? "closed" : "error";
       // 還沒連上就被關掉，而且後端也沒送 error —— 這時什麼都不說，畫面看起來像
       // 「按了沒反應」。實際遇過的原因是反向代理沒轉發 WebSocket 升級標頭
@@ -329,27 +350,39 @@ async function onDrop(ev: DragEvent) {
   await uploadFiles(files);
 }
 
-async function doMkdir() {
-  const name = window.prompt(t("sftp.new_folder_prompt"));
-  if (!name) return;
-  busy.value = true;
-  try {
-    await request({ type: "mkdir", path: `${cwd.value.replace(/\/+$/, "")}/${name}` });
-    await refresh();
-  } catch (e: any) { msg.error(e?.message ?? String(e)); }
-  finally { busy.value = false; }
+// ── 名稱輸入對話框（新增資料夾 / 重新命名）
+// 用應用程式自己的對話框，不用 window.prompt：瀏覽器原生對話框長得跟系統警告一樣、
+// 不受主題影響、也沒辦法做驗證與說明。
+const nameDlg = ref<{ mode: "mkdir" | "rename"; value: string; row: SftpEntry | null } | null>(null);
+const nameDlgTitle = computed(() =>
+  nameDlg.value?.mode === "mkdir" ? t("sftp.new_folder") : t("sftp.rename"));
+const nameDlgShow = computed({
+  get: () => nameDlg.value !== null,
+  set: (v: boolean) => { if (!v) nameDlg.value = null; },
+});
+
+function doMkdir() {
+  nameDlg.value = { mode: "mkdir", value: "", row: null };
 }
 
-async function doRename(row: SftpEntry) {
-  const name = window.prompt(t("sftp.rename_prompt", { name: row.name }), row.name);
-  // 取消（null）與「改成同一個名字」都不該送出去
-  if (!name || name === row.name) return;
-  // 只准改同一層的檔名：帶 / 的輸入會變成搬移，那是另一件事，先擋掉
+function doRename(row: SftpEntry) {
+  nameDlg.value = { mode: "rename", value: row.name, row };
+}
+
+async function submitNameDlg() {
+  const d = nameDlg.value;
+  if (!d) return;
+  const name = d.value.trim();
+  if (!name) return;
+  // 名稱不能含 /：那會變成搬移到別的目錄，是另一件事（要搬請用「移動」）
   if (name.includes("/")) { msg.error(t("sftp.rename_no_slash")); return; }
+  if (d.mode === "rename" && d.row && name === d.row.name) { nameDlg.value = null; return; }
   busy.value = true;
   try {
     const dir = cwd.value.replace(/\/+$/, "");
-    await request({ type: "rename", path: row.path, to: `${dir}/${name}` });
+    if (d.mode === "mkdir") await request({ type: "mkdir", path: `${dir}/${name}` });
+    else await request({ type: "rename", path: d.row!.path, to: `${dir}/${name}` });
+    nameDlg.value = null;
     await refresh();
   } catch (e: any) { msg.error(e?.message ?? String(e)); }
   finally { busy.value = false; }
@@ -359,6 +392,31 @@ async function doDelete(row: SftpEntry) {
   busy.value = true;
   try {
     await request({ type: "delete", path: row.path, is_dir: row.is_dir });
+    await refresh();
+  } catch (e: any) {
+    // 資料夾有內容：SFTP 不會刪有東西的資料夾。與其只說失敗，不如把後端查到的
+    // 項目數講出來，並讓使用者明確決定要不要連內容一起刪（這是破壞性的，要問過）
+    if (e?.code === "dir_not_empty") {
+      errorMsg.value = "";
+      confirmRecursive.value = { path: row.path, detail: e.message ?? "" };
+    } else {
+      msg.error(e?.message ?? String(e));
+    }
+  } finally { busy.value = false; }
+}
+
+/** 待確認的「連同內容刪除」；null＝沒有待確認的 */
+const confirmRecursive = ref<{ path: string; detail: string } | null>(null);
+
+async function doDeleteRecursive() {
+  const target = confirmRecursive.value;
+  confirmRecursive.value = null;
+  if (!target) return;
+  busy.value = true;
+  try {
+    const r = await request({ type: "delete", path: target.path, is_dir: true,
+                              recursive: true });
+    msg.success(t("sftp.deleted_recursive", { n: r?.removed ?? 0 }));
     await refresh();
   } catch (e: any) { msg.error(e?.message ?? String(e)); }
   finally { busy.value = false; }
@@ -433,6 +491,9 @@ const shownEntries = computed(() => {
   return entries.value.filter((e) => e.name.toLowerCase().includes(q));
 });
 
+// 目錄很大時分頁顯示 —— 原本只能截斷後說「只顯示一部分」，現在整份都拿得到、翻頁看
+const pagination = useTablePagination();
+
 // ── 批次作業
 const checkedKeys = ref<string[]>([]);
 const checkedRows = computed(() =>
@@ -463,13 +524,23 @@ async function batchDelete() {
   busy.value = true;
   const failed: string[] = [];
   try {
+    const nonEmpty: string[] = [];
     for (const r of rows) {
       try { await request({ type: "delete", path: r.path, is_dir: r.is_dir }); }
-      catch { failed.push(r.name); }        // 一個失敗不該讓其他的也不做
+      catch (e: any) {
+        // 有內容的資料夾另外列：那不是「刪不掉」，而是要先決定要不要連內容刪，
+        // 混在一般失敗裡會讓人以為壞了
+        if (e?.code === "dir_not_empty") nonEmpty.push(r.name);
+        else failed.push(r.name);           // 一個失敗不該讓其他的也不做
+      }
     }
     // 部分失敗要說清楚是哪幾個，否則使用者以為全刪了
+    if (nonEmpty.length) {
+      msg.warning(t("sftp.batch_dirs_not_empty", { names: nonEmpty.join("、") }),
+                  { duration: 8000 });
+    }
     if (failed.length) msg.error(t("sftp.batch_partial_fail", { names: failed.join("、") }));
-    else msg.success(t("sftp.batch_deleted", { n: rows.length }));
+    else if (!nonEmpty.length) msg.success(t("sftp.batch_deleted", { n: rows.length }));
   } finally {
     clearSelection();
     await refresh();
@@ -477,12 +548,55 @@ async function batchDelete() {
   }
 }
 
-async function batchMove() {
-  const rows = checkedRows.value;
+// ── 移動對話框：可直接打路徑，也可以點目錄一層層瀏覽
+const moveDlg = ref(false);
+const moveDest = ref("/");            // 目的地（輸入框與瀏覽同步）
+const moveDirs = ref<SftpEntry[]>([]); // 目前瀏覽層的子目錄
+const moveLoading = ref(false);
+
+/** 按下「移動」當下要搬的項目 —— 快照起來，不受之後瀏覽目錄影響。 */
+const movingRows = ref<SftpEntry[]>([]);
+
+function openMoveDlg() {
+  if (!checkedRows.value.length) return;
+  movingRows.value = [...checkedRows.value];
+  moveDest.value = cwd.value;
+  moveDlg.value = true;
+  void browseMove(cwd.value);
+}
+
+/** 列出某層的子目錄給對話框點選（只顯示目錄 —— 檔案不能當搬移目的地）。 */
+async function browseMove(path: string) {
+  moveLoading.value = true;
+  browsingOnly = true;
+  try {
+    const m = await request({ type: "list", path });
+    moveDest.value = m.path;
+    moveDirs.value = (m.entries ?? []).filter((e: SftpEntry) => e.is_dir);
+  } catch (e: any) {
+    msg.error(e?.message ?? String(e));
+  } finally {
+    browsingOnly = false;
+    moveLoading.value = false;
+  }
+}
+
+function moveUp() {
+  const p = moveDest.value.replace(/\/+$/, "");
+  void browseMove(p.slice(0, p.lastIndexOf("/")) || "/");
+}
+
+async function confirmMove() {
+  const dir = moveDest.value.trim().replace(/\/+$/, "") || "/";
+  moveDlg.value = false;
+  await batchMove(dir);
+  await refresh();          // 對話框瀏覽過別的目錄，回到原本這一層
+}
+
+async function batchMove(dest: string) {
+  const rows = movingRows.value.length ? movingRows.value : checkedRows.value;
   if (!rows.length) return;
-  const dest = window.prompt(t("sftp.batch_move_prompt"), cwd.value);
-  if (!dest || !dest.trim()) return;
-  const dir = dest.trim().replace(/\/+$/, "") || "/";
+  const dir = dest.replace(/\/+$/, "") || "/";
   busy.value = true;
   const failed: string[] = [];
   try {
@@ -626,7 +740,9 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
 
       <!-- 檔案操作區：路徑、操作與清單包在同一個框裡（狀態列刻意留在框外，
            與 SSH 主控台一致：那一列講的是連線，不是檔案）。 -->
-      <div class="sftp-panel" :class="{ 'sftp-full': fullHeight, 'sftp-dropping': dragging }"
+      <div class="sftp-panel"
+           :class="{ 'sftp-full': fullHeight, 'sftp-dropping': dragging,
+                     'sftp-offline': phase !== 'connected' }"
            @dragenter="onDragEnter" @dragover="onDragOver"
            @dragleave="onDragLeave" @drop="onDrop">
         <!-- 拖曳中：整塊面板都是放置區，並講明會放到哪個目錄 -->
@@ -634,12 +750,25 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
           <n-icon :size="28"><UploadIcon /></n-icon>
           <span>{{ t("sftp.drop_here", { dir: cwd }) }}</span>
         </div>
+        <!-- 連線中斷：整塊面板一次遮起來，不逐塊套樣式。
+             逐塊套的話總會漏掉一塊（分頁列、錯誤列都曾經還亮著、還能點），
+             而且「能點但送不出去」比「明顯不能點」更難懂。 -->
+        <div v-if="phase !== 'connected'" class="sftp-offline-mask">
+          <div class="sftp-offline-box">
+            <n-icon :size="24"><CancelIcon /></n-icon>
+            <span class="sftp-offline-title">{{ t("sftp.offline_title") }}</span>
+            <span class="sftp-offline-hint">{{ t("sftp.offline_hint") }}</span>
+            <n-button size="small" type="primary" @click="reconnect">
+              {{ t("ssh.reconnect") }}
+            </n-button>
+          </div>
+        </div>
       <n-alert v-if="errorMsg" type="error" :bordered="false" style="margin-bottom:8px">
         {{ errorMsg }}
       </n-alert>
 
       <!-- 路徑列與操作 -->
-      <n-space align="center" class="sftp-pathbar" :class="{ 'term-dim': phase !== 'connected' }">
+      <n-space align="center" class="sftp-pathbar">
         <n-button size="small" :disabled="cwd === '/'" @click="goUp">
           <template #icon><n-icon><UpLevelIcon /></n-icon></template>
           {{ t("sftp.up") }}
@@ -674,7 +803,7 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
           <template #icon><n-icon><DownloadIcon /></n-icon></template>
           {{ t("sftp.batch_download") }}
         </n-button>
-        <n-button size="small" :loading="busy" @click="batchMove">
+        <n-button size="small" :loading="busy" @click="openMoveDlg">
           <template #icon><n-icon><MoveIcon /></n-icon></template>
           {{ t("sftp.batch_move") }}
         </n-button>
@@ -708,10 +837,81 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
         {{ t("sftp.filter_note", { shown: shownEntries.length, total: entries.length }) }}
       </div>
 
-      <div class="sftp-table" :class="{ 'sftp-full': fullHeight, 'term-dim': phase !== 'connected' }">
+      <!-- 名稱輸入（新增資料夾 / 重新命名）：應用程式自己的對話框 -->
+      <n-modal v-model:show="nameDlgShow" preset="card" style="width: 420px; max-width: 92vw"
+               :title="nameDlgTitle">
+        <n-input v-if="nameDlg" v-model:value="nameDlg.value" autofocus
+                 :placeholder="t('sftp.name_ph')" @keyup.enter="submitNameDlg" />
+        <template #footer>
+          <n-space justify="end">
+            <n-button @click="nameDlg = null">{{ t("common.cancel") }}</n-button>
+            <n-button type="primary" :loading="busy" @click="submitNameDlg">
+              {{ t("common.confirm") }}
+            </n-button>
+          </n-space>
+        </template>
+      </n-modal>
+
+      <!-- 資料夾有內容：刪掉整棵樹是破壞性的，要明確問過，並且把數量講出來 -->
+      <n-modal :show="!!confirmRecursive" preset="card" style="width: 460px; max-width: 92vw"
+               :title="t('sftp.delete_dir_title')" @update:show="(v: boolean) => {
+                 if (!v) confirmRecursive = null;
+               }">
+        <n-space vertical size="small">
+          <span>{{ confirmRecursive?.detail }}</span>
+          <n-alert type="warning" :bordered="false" :show-icon="true">
+            {{ t("sftp.delete_dir_warning") }}
+          </n-alert>
+        </n-space>
+        <template #footer>
+          <n-space justify="end">
+            <n-button @click="confirmRecursive = null">{{ t("common.cancel") }}</n-button>
+            <n-button type="error" :loading="busy" @click="doDeleteRecursive">
+              {{ t("sftp.delete_dir_confirm") }}
+            </n-button>
+          </n-space>
+        </template>
+      </n-modal>
+
+      <!-- 移動：可直接打路徑，也可以點目錄一層層瀏覽 -->
+      <n-modal v-model:show="moveDlg" preset="card" style="width: 560px; max-width: 94vw"
+               :title="t('sftp.move_title', { n: checkedKeys.length })">
+        <n-space vertical :size="10" style="width:100%">
+          <n-input-group>
+            <n-input v-model:value="moveDest" class="mono" :placeholder="t('sftp.move_path_ph')"
+                     @keyup.enter="browseMove(moveDest)" />
+            <n-button :loading="moveLoading" @click="browseMove(moveDest)">
+              {{ t("sftp.move_go") }}
+            </n-button>
+          </n-input-group>
+          <div class="move-tree">
+            <div class="move-row" @click="moveUp">
+              <n-icon :size="16"><UpLevelIcon /></n-icon><span>{{ t("sftp.up") }}</span>
+            </div>
+            <div v-for="d in moveDirs" :key="d.path" class="move-row" @click="browseMove(d.path)">
+              <n-icon :size="16" color="#18a058"><FilesIcon /></n-icon><span>{{ d.name }}</span>
+            </div>
+            <!-- 空目錄也要講出來，不然會以為是壞掉了 -->
+            <div v-if="!moveDirs.length && !moveLoading" class="move-empty">
+              {{ t("sftp.move_no_subdirs") }}
+            </div>
+          </div>
+        </n-space>
+        <template #footer>
+          <n-space justify="end">
+            <n-button @click="moveDlg = false">{{ t("common.cancel") }}</n-button>
+            <n-button type="primary" :loading="busy" @click="confirmMove">
+              {{ t("sftp.move_here", { dir: moveDest }) }}
+            </n-button>
+          </n-space>
+        </template>
+      </n-modal>
+
+      <div class="sftp-table" :class="{ 'sftp-full': fullHeight }">
         <n-data-table :columns="cols" :data="shownEntries" :loading="busy" size="small"
                       :row-key="(r: SftpEntry) => r.path"
                       :checked-row-keys="checkedKeys"
+                      :pagination="pagination"
                       :bordered="false" flex-height style="height:100%" virtual-scroll
                       @update:checked-row-keys="(k: any) => (checkedKeys = k as string[])" />
       </div>
@@ -771,6 +971,30 @@ html[data-theme="dark"] .sftp-panel { background: #10161f; border-color: rgba(20
 .conn-proto--sftp { color: #2080f0; background: rgba(32,128,240,.16); }
 /* 已中斷：反灰並停用互動，讓使用者一眼看出連線沒了（與 SSH 相同處理） */
 .term-dim { filter: grayscale(1) brightness(.55); pointer-events: none; transition: filter .25s; }
+/* 連線中斷：面板整片罩住。用 ::after 疊一層半透明底，內容維持在下面看得到
+   （知道原本有什麼），但整片不可互動 —— 逐塊 disabled 一定會漏掉某一塊。 */
+.sftp-panel.sftp-offline { position: relative; }
+.sftp-panel.sftp-offline > *:not(.sftp-offline-mask) {
+  filter: grayscale(1) brightness(.6);
+  pointer-events: none;
+  user-select: none;
+}
+.sftp-offline-mask {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(128, 128, 128, .18);
+  backdrop-filter: blur(1.5px);
+  border-radius: inherit;
+}
+.sftp-offline-box {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 20px 26px; border-radius: 10px;
+  background: var(--jt-card-bg, #fff);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .18);
+  max-width: 420px; text-align: center;
+}
+.sftp-offline-title { font-weight: 600; }
+.sftp-offline-hint { font-size: 12.5px; opacity: .75; line-height: 1.5; }
 :deep(.n-card > .n-card-header) { display: flex; align-items: center; padding-top: 12px; padding-bottom: 12px; }
 .sftp-saved-row { display: flex; align-items: center; margin-bottom: 18px; }
 .sftp-saved-label { width: 92px; flex: none; box-sizing: border-box; text-align: right;

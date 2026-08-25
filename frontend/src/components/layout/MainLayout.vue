@@ -259,6 +259,8 @@ const menuOptions = computed<MenuOption[]>(() => {
       { label: () => t("nav.oui_admin"),     key: "oui_admin",      icon: renderIcon(DevicesIcon) },
       { label: () => t("nav.hostname_precedence"), key: "hostname_precedence", icon: renderIcon(AddressesIcon) },
       { label: () => t("nav.anomaly"),       key: "anomaly",        icon: renderIcon(AnomalyIcon) },
+      { label: () => t("nav.fw_rule_changes"), key: "fw_rule_changes", icon: renderIcon(FirewallIcon) },
+      { label: () => t("nav.attack_surface"), key: "attack_surface", icon: renderIcon(FirewallIcon) },
       // 排在異常偵測後面：兩者都是「找問題」，但一個是量到的事實、一個是模型的
       // 推測，刻意分成兩頁而不是合併 —— 混在一起會分不出哪些結論可以直接相信。
       // LLM 沒啟用就整個藏起來（跟 AI 對話小工具同一個判斷）。
@@ -277,6 +279,7 @@ const menuOptions = computed<MenuOption[]>(() => {
       { label: () => t("nav.virt_admin"),    key: "virt_admin",     icon: renderIcon(VirtualizationIcon) },
       { label: () => t("nav.esxi_admin"),    key: "esxi_admin",     icon: renderIcon(VirtualizationIcon) },
       { label: () => t("nav.wazuh"),         key: "wazuh",          icon: renderIcon(WazuhIcon) },
+      { label: () => t("nav.zabbix"),        key: "zabbix",         icon: renderIcon(LibreNMSIcon) },
       { label: () => t("nav.graylog_dsv"),   key: "graylog_dsv",    icon: renderIcon(ExportIcon) },
       { label: () => t("nav.scan_agents"),   key: "scan_agents",    icon: renderIcon(ScanAgentsIcon) },
       { label: () => t("nav.certificates"),  key: "certificates",   icon: renderIcon(LockIcon) },

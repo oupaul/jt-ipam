@@ -42,6 +42,7 @@ class AnomalyReport:
     dangling_dns: list[dict[str, Any]] = field(default_factory=list)
     duplicate_ip_records: list[dict[str, Any]] = field(default_factory=list)
     suspicious_changes: list[dict[str, Any]] = field(default_factory=list)
+    fw_rule_rot: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,10 +55,12 @@ class AnomalyReport:
             "dangling_dns": self.dangling_dns,
             "duplicate_ip_records": self.duplicate_ip_records,
             "suspicious_changes": self.suspicious_changes,
+            "fw_rule_rot": self.fw_rule_rot,
             "total": (
                 len(self.ip_conflicts) + len(self.mac_drifts)
                 + len(self.ghost_ips) + len(self.unauthorized_ips)
                 + len(self.rogue_dhcp) + len(self.external_exposure)
+                + len(self.fw_rule_rot)
                 + len(self.dangling_dns) + len(self.duplicate_ip_records)
                 + len(self.suspicious_changes)
             ),
@@ -763,6 +766,7 @@ async def run_detection(
         dangling_dns=await detect_dangling_dns(session),
         duplicate_ip_records=await detect_duplicate_ip_records(session),
         suspicious_changes=await detect_suspicious_changes(session),
+        fw_rule_rot=await detect_fw_rule_rot(session),
     )
 
     if notify_admins:
@@ -777,16 +781,22 @@ async def run_detection(
         ).scalars().all()
 
         if ch.get("in_app") or ch.get("email"):
-            for category, tkey, items in (
-                ("IP 衝突", "notif.anom_ip_conflict", report.ip_conflicts),
-                ("MAC 變動", "notif.anom_mac_drift", report.mac_drifts),
-                ("失聯 IP", "notif.anom_ghost", report.ghost_ips),
-                ("未授權 IP", "notif.anom_unauthorized", report.unauthorized_ips),
-                ("非法 DHCP 伺服器", "notif.anom_rogue_dhcp", report.rogue_dhcp),
-                ("對外曝險", "notif.anom_exposure", report.external_exposure),
-                ("懸空 DNS", "notif.anom_dangling_dns", report.dangling_dns),
-                ("重複的 IP 紀錄", "notif.anom_dup_ip", report.duplicate_ip_records),
-                ("可疑的變更", "notif.anom_changes", report.suspicious_changes),
+            # tab：通知要能點進「那一類」的頁籤，不是只丟到頁面頂端讓人自己找
+            for category, tkey, tab, items in (
+                ("IP 衝突", "notif.anom_ip_conflict", "ip_conflicts", report.ip_conflicts),
+                ("MAC 變動", "notif.anom_mac_drift", "mac_drifts", report.mac_drifts),
+                ("失聯 IP", "notif.anom_ghost", "ghost_ips", report.ghost_ips),
+                ("未授權 IP", "notif.anom_unauthorized", "unauthorized_ips",
+                 report.unauthorized_ips),
+                ("非法 DHCP 伺服器", "notif.anom_rogue_dhcp", "rogue_dhcp", report.rogue_dhcp),
+                ("對外曝險", "notif.anom_exposure", "external_exposure",
+                 report.external_exposure),
+                ("懸空 DNS", "notif.anom_dangling_dns", "dangling_dns", report.dangling_dns),
+                ("重複的 IP 紀錄", "notif.anom_dup_ip", "duplicate_ip_records",
+                 report.duplicate_ip_records),
+                ("可疑的變更", "notif.anom_changes", "suspicious_changes",
+                 report.suspicious_changes),
+                ("防火牆規則劣化", "notif.anom_fw_rot", "fw_rule_rot", report.fw_rule_rot),
             ):
                 if not items:
                     continue
@@ -795,7 +805,9 @@ async def run_detection(
                     for admin in admins:
                         await push_notification(
                             session, user_id=admin.id, severity="warning", title=title,
-                            body="詳見「異常偵測」頁面。", link="/anomalies", object_type="anomaly",
+                            body="詳見「異常偵測」頁面。",
+                            # 路由是 /anomaly（單數）—— 舊值 /anomalies 是錯的，點了會 404
+                            link=f"/anomaly?tab={tab}", object_type="anomaly",
                             title_key=tkey, body_key="notif.anom_body", params={"count": len(items)},
                         )
                 if ch.get("email"):
@@ -807,3 +819,113 @@ async def run_detection(
 
     await session.commit()
     return report
+
+
+# ── 防火牆規則劣化（rule rot）──
+# 規則是資安邊界，但沒有人回頭看它們：埠轉發指向早已回收的位址、any-any 放行、
+# WAN 開管理埠。這裡全是確定性檢查 —— 這一頁的敵人是誤報，所以每一條都刻意保守：
+# 手動 NAT 不算懸空（沒連 IP 是常態）、停用中的不報（不在生效路徑）、
+# 管理埠只看 WAN 類介面（LAN 開 SSH 給 any 是日常）。
+
+_MGMT_PORTS = {"22", "23", "3389", "5900", "623"}
+_MGMT_SERVICES = {"ssh", "telnet", "rdp", "vnc"}
+
+
+def _is_any(v: Any) -> bool:
+    """規則的來源／目的是不是「任意」。pfSense 是物件（{"any": ...}），其餘是字串。"""
+    if v is None:
+        return False
+    if isinstance(v, dict):
+        return "any" in v or v.get("network") in ("any", "*")
+    return str(v).strip().lower() in ("any", "*", "all")
+
+
+async def detect_fw_rule_rot(session: AsyncSession) -> list[dict[str, Any]]:
+    from app.models.nat import NATTranslation
+    from app.models.pfsense import PfSenseFirewall
+
+    items: list[dict[str, Any]] = []
+
+    # (1) 懸空 NAT：防火牆同步來的、生效中的 port forward，目標解析不到 IPAM。
+    #     手動建立的（source_origin 空）不算 —— 手動 NAT 沒連 IP 是常態。
+    rows = (await session.execute(
+        select(NATTranslation).where(
+            NATTranslation.type == "port_forward",
+            NATTranslation.disabled.is_(False),
+            NATTranslation.source_origin.is_not(None),
+            NATTranslation.dst_ip_id.is_(None),
+        ).limit(100))).scalars().all()
+    for n in rows:
+        items.append({"kind": "dangling_nat", "name": n.name,
+                      "source": (n.source_origin or "").split(":")[0],
+                      "port": n.dst_port,
+                      "descr": (n.description or "")[:120],
+                      "detail": "埠轉發的目標位址不在 IPAM —— 目標可能已回收，或從未登記"})
+
+    # (2)(3) any-any 放行與 WAN 管理埠：pfSense 精簡規則（JSONB）。
+    #     OPNsense / FortiGate 的規則表欄位語意各異，先做 pfSense（資料形狀最穩定），
+    #     其餘兩家由規則異動偵測盯變更；誤報比漏報傷害大，逐一驗證過才納入。
+    fws = (await session.execute(
+        select(PfSenseFirewall).where(PfSenseFirewall.rules.is_not(None)))).scalars().all()
+    for fw in fws:
+        for r in (fw.rules or []):
+            if not isinstance(r, dict) or r.get("disabled"):
+                continue
+            if str(r.get("type") or "").lower() not in ("pass", "match"):
+                continue
+            iface = str(r.get("interface") or "").lower()
+            dport = str(r.get("destination_port") or "").strip().lower()
+            if _is_any(r.get("source")) and _is_any(r.get("destination")):
+                items.append({"kind": "any_any", "name": fw.name, "source": "pfsense",
+                              "interface": iface, "descr": (r.get("descr") or "")[:120],
+                              "detail": "any → any 放行 —— 等於這個介面沒有防火牆"})
+            if "wan" in iface and _is_any(r.get("source")) and (
+                    dport in _MGMT_PORTS or dport in _MGMT_SERVICES):
+                items.append({"kind": "mgmt_exposed", "name": fw.name, "source": "pfsense",
+                              "interface": iface, "port": dport,
+                              "descr": (r.get("descr") or "")[:120],
+                              "detail": "WAN 介面對任意來源開放管理埠"})
+    # (4) 別名劣化：別名成員落在「本 IPAM 管理且有開異常偵測」的網段內、卻沒有
+    #     IP 紀錄 —— 規則看起來沒變，但別名內容已經指向不明位址。
+    #     只看管理範圍內的成員：別名裡放外部位址（放行遠端端點、封鎖清單）是常態，
+    #     不設這個門檻會把每個外部 IP 都誤報成劣化。
+    from app.models.firewall import OPNsenseSyncedAlias
+    from app.models.pfsense import PfSenseSyncedAlias
+
+    nets = await _anomaly_networks(session)
+    if nets:
+        ipam_ips = {str(r[0]).split("/")[0] for r in
+                    (await session.execute(select(IPAddress.ip))).all()}
+
+        def _stale_members(members: list | None) -> list[str]:
+            out = []
+            for m in (members or [])[:500]:
+                text = str(m).strip()
+                if "/" in text:
+                    continue          # 網段成員不判定（涵蓋範圍太廣，逐一比對必誤報）
+                try:
+                    addr = ipaddress.ip_address(text)
+                except ValueError:
+                    continue
+                if text in ipam_ips:
+                    continue
+                if any(addr in n for n in nets):
+                    out.append(text)
+            return out[:10]
+
+        for alias in (await session.execute(
+                select(OPNsenseSyncedAlias).where(OPNsenseSyncedAlias.enabled.is_(True))
+        )).scalars().all():
+            stale = _stale_members(alias.content)
+            if stale:
+                items.append({"kind": "alias_rot", "name": alias.name, "source": "opnsense",
+                              "descr": (alias.description or "")[:120],
+                              "detail": f"別名成員 {', '.join(stale)} 在管理網段內但 IPAM 沒有紀錄"})
+        for alias in (await session.execute(select(PfSenseSyncedAlias))).scalars().all():
+            stale = _stale_members(alias.members)
+            if stale:
+                items.append({"kind": "alias_rot", "name": alias.name, "source": "pfsense",
+                              "descr": (alias.descr or "")[:120],
+                              "detail": f"別名成員 {', '.join(stale)} 在管理網段內但 IPAM 沒有紀錄"})
+
+    return items[:200]

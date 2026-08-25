@@ -52,6 +52,7 @@ SAMPLE_ARGS: dict[str, dict] = {
     "list_fortigate_policies": {}, "list_fortigate_addresses": {},
     "list_connection_targets": {},
     "wazuh_missing_agents": {}, "list_vms": {}, "list_wireless_links": {},
+    "list_attack_surface": {},
     "list_circuits": {}, "list_providers": {}, "list_asns": {}, "list_tenants": {},
     "list_contacts": {}, "list_ssids": {}, "list_cables": {}, "list_power": {},
     "list_wazuh_agents": {}, "cable_trace": {"cable_id": _U},
@@ -62,6 +63,7 @@ SAMPLE_ARGS: dict[str, dict] = {
     # ── 查無資料 → 預期 IPAMToolError 或空 dict ──
     "search_ip": {"ip": "10.0.0.1"},
     "get_ip_detail": {"ip": "10.0.0.1"},
+    "get_ip_history": {"ip": "10.0.0.1"},
     "check_ip_exposure": {"ip": "10.0.0.1"},
     "get_subnet_usage": {"subnet_id": _U},
     "trace_mac": {"mac": "00:11:22:33:44:55"},

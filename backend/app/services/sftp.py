@@ -19,8 +19,10 @@ from typing import Any
 # 沒有上限的話一個 20 GB 的檔案會把瀏覽器記憶體與後端一起拖垮。
 MAX_FILE_BYTES = 100 * 1024 * 1024
 
-# 一次列出的目錄項目上限。/proc 或幾十萬個檔案的目錄不該讓畫面與連線一起卡住。
-MAX_ENTRIES = 2000
+# 一次列出的目錄項目上限。原本壓在 2000 是怕畫面一次畫太多列而卡住 —— 前端改成分頁之後
+# 那個理由消失了，這裡只剩「不要讓單一訊息大到拖垮連線與記憶體」這一個目的，所以放寬到
+# 兩萬。真的有幾十萬個檔案的目錄（/proc、郵件佇列…）仍會截斷，畫面上會明講。
+MAX_ENTRIES = 20_000
 
 # 每個 chunk 的大小；太小會讓大檔的 frame 數爆掉，太大則單一 frame 佔太多記憶體
 CHUNK_BYTES = 256 * 1024
@@ -164,3 +166,70 @@ def friendly_connect_error(exc: BaseException, *, host: str, port: int) -> str:
         return tmpl.format(target=target)
     detail = str(exc).strip()
     return f"連不上 {target}：{detail}" if detail else f"連不上 {target}（{type(exc).__name__}）。"
+
+
+async def describe_rmdir_failure(
+    sftp: Any, path: str, exc: BaseException,
+) -> tuple[str, bool]:
+    """rmdir 失敗時，自己去查原因，回 (訊息, 目錄是否為空)。
+
+    為什麼要自己查：**SFTP v3 沒有「目錄非空」這個狀態碼**。伺服器對「刪一個有內容的
+    目錄」只能回通用的 SSH_FX_FAILURE，asyncssh 原封不動變成 `SFTPFailure("Failure")`，
+    使用者看到的就是「操作『/某/路徑』失敗：Failure」—— 沒說原因、也沒說下一步。
+    （訊息表裡的 SFTPDirNotEmpty 只在少數 v6 伺服器上才會出現。）
+
+    列一次目錄就知道是不是非空；是的話講出項目數，不是的話保留原本的失敗原因
+    （多半是權限），不要謊稱「不是空的」。
+    """
+    try:
+        entries = await sftp.readdir(path)
+    except Exception:
+        # 連列都列不了 → 沒有更多線索，保留原訊息
+        return friendly_error(exc, path=path), True
+
+    names = [_entry_name(e) for e in entries]
+    names = [n for n in names if n not in (".", "..")]
+    if names:
+        return (f"資料夾「{path}」不是空的（還有 {len(names)} 個項目），"
+                f"SFTP 不會刪掉有內容的資料夾。"), False
+    return friendly_error(exc, path=path), True
+
+
+def _entry_name(entry: Any) -> str:
+    return str(getattr(entry, "filename", entry))
+
+
+async def walk_for_delete(sftp: Any, root: str) -> list[tuple[str, str]]:
+    """列出「把 root 整棵刪掉」要依序做的動作：[("file"|"dir", 路徑), ...]。
+
+    兩個刻意的規則：
+    - **深度優先、內容先於自己**：順序反了每一層 rmdir 都會失敗。
+    - **符號連結只刪連結本身，不跟著走**。跟著走會刪到目錄樹以外的東西 ——
+      使用者以為只是刪一個資料夾，結果把連結指向的正式資料一起刪了。
+    """
+    plan: list[tuple[str, str]] = []
+    count = 0
+
+    async def walk(cur: str) -> None:
+        nonlocal count
+        for entry in await sftp.readdir(cur):
+            name = _entry_name(entry)
+            if name in (".", ".."):
+                continue
+            child = f"{cur.rstrip('/')}/{name}"
+            count += 1
+            if count > MAX_ENTRIES:
+                raise ValueError(
+                    f"「{root}」底下的項目太多（超過 {MAX_ENTRIES} 個），"
+                    "請改用遠端的 shell 刪除。")
+            if await sftp.islink(child):
+                plan.append(("file", child))      # 只移除連結本身
+            elif await sftp.isdir(child):
+                await walk(child)
+                plan.append(("dir", child))
+            else:
+                plan.append(("file", child))
+
+    await walk(root)
+    plan.append(("dir", root))
+    return plan

@@ -63,6 +63,7 @@ from app.api.v1.endpoints import (
     vrfs,
     wazuh,
     windows_dhcp,
+    zabbix,
     zyxel,
 )
 from app.api.v1.endpoints import (
@@ -144,6 +145,8 @@ api_v1_router.include_router(zyxel.view_router)
 api_v1_router.include_router(paloalto.router)
 api_v1_router.include_router(paloalto.view_router)
 api_v1_router.include_router(wazuh.router)
+api_v1_router.include_router(zabbix.router)
+api_v1_router.include_router(zabbix.view_router)
 api_v1_router.include_router(windows_dhcp.router)
 api_v1_router.include_router(audit.router)
 api_v1_router.include_router(users.router)

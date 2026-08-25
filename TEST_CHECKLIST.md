@@ -28,6 +28,10 @@ Release flow: run the checklist → all green → bump version → deploy
   `alembic downgrade -1` then `upgrade head` round-trip
 - [ ] No "model changed but migration forgotten": after upgrading to head the app
   starts without an asyncpg "column does not exist" error
+- [ ] **Constraint changes**: when a migration drops or adds a UNIQUE constraint, audit
+  every query that relied on it. `scalar_one_or_none()` on a column that can now repeat
+  becomes a 500 the moment a second row appears (v0.5.194: `users.email`), and code that
+  wrote the column unconditionally starts hitting IntegrityError
 
 ## 3. Backend integration tests (test DB + pytest, thorough)
 
@@ -37,6 +41,22 @@ Release flow: run the checklist → all green → bump version → deploy
   endpoints return 401/403)
 - [ ] Core CRUD: sections / subnets / addresses / devices / customers / locations / racks
 - [ ] Audit chain: write operations are audited and chain integrity verifies
+
+## 3b. Authentication realms & account identity
+
+Login spans local / LDAP / RADIUS / OIDC / SAML, and the same human legitimately owns
+accounts in more than one of them. Every defect here reaches the user as "I cannot log in",
+with the real cause hidden in a traceback.
+
+- [ ] Log in through **every configured realm**; a wrong password returns 401 with a generic
+  message (no account enumeration) while the server log records the specific reason
+- [ ] **Same person, two realms**: a local account and an LDAP/SSO account sharing one email
+  both log in, and neither overwrites the other's row (v0.5.194: the shared email hit the
+  UNIQUE index and returned 500 *after* the LDAP bind had already succeeded)
+- [ ] **Auto-provisioning**: first external login creates the account, second updates it;
+  a collision on any unique column degrades gracefully instead of failing the login
+- [ ] Lockout after repeated failures, then unlock; a deactivated account is refused
+- [ ] Logging in by email (not username) resolves to exactly one account per realm
 
 ## 4. Key API smoke (against prod after deploy, mostly read-only)
 
@@ -57,12 +77,29 @@ Release flow: run the checklist → all green → bump version → deploy
 
 ## 5b. Deploy-script flows (throwaway environment, **never run install on dev/prod**)
 
-- [ ] **Fresh install**: on a clean LXC/VM run `scripts/install-debian.sh`; the
-  service comes up and you can log in
+Every install problem customers have reported was invisible on an already-working
+box, because there the thing is already there: a pre-existing PostgreSQL cluster
+on a different major (so `pgvector` got installed for the wrong one), a `pnpm
+install` that failed silently and left no frontend, an installer that printed
+"Done" while nothing was running, and a backup unit whose `ReadWritePaths`
+directory did not exist yet — which systemd reports as `226/NAMESPACE`, an error
+that names nothing about the actual cause. **A clean-OS install is the only way
+to see what a customer sees.**
+
+- [ ] **Fresh install from a clean OS — required**: `scripts/test-fresh-install.sh
+  debian:12` exits 0. It starts a throwaway systemd container, copies the tree in,
+  runs `scripts/jt-ipam.sh install`, then checks the things that only break in the
+  field: the backend *answers* on its port, `jt-ipam-backup` and `jt-ipam-sync`
+  actually run to `Result=success`, the backup unit survives its directory being
+  deleted, and `doctor` agrees with reality
+- [ ] Run it for **the oldest supported distro and the newest** (`debian:12`,
+  `ubuntu:24.04`); PG-major and Node-version differences live there
 - [ ] **Upgrade**: against a previous-version environment run
-  `scripts/jt-ipam-upgrade.sh`; it upgrades cleanly and can roll back if needed
+  `scripts/jt-ipam.sh upgrade`; it upgrades cleanly and can roll back if needed
 - [ ] If this release added a directory / package / service / DB extension / env,
-  confirm **both scripts are in sync**
+  confirm **`install` and `upgrade` are both in sync** — and that `doctor` checks it
+- [ ] **`scripts/jt-ipam.sh doctor` on prod after deploying**: every line green, or
+  the `→ fix` line is one a customer could follow without asking us
 - [ ] **(A) Default admin credentials**: fresh install prints the `admin` account +
   random password at the end and saves it to `/etc/jt-ipam/.admin-initial-password`
   (root 0600); that password logs in
@@ -123,6 +160,30 @@ the reverse proxy dropped the WebSocket upgrade.
 - [ ] **Security**: download / analyze / apply all require admin + validate task ownership;
   spool files are 0600 in a 0700 dir; no plaintext secret or passphrase in logs/responses
 
+## 5e. AI chat / MCP tools — **every release that touches tools, prompts, or the data they read**
+
+Wrong AI answers do not look wrong: every number in them is real, just computed over the
+wrong set. Unit tests pass because each tool returns exactly what it was asked for — the
+defect is in *what the model was able to ask*.
+
+- [ ] **Scope**: for each tool returning per-object data, ask a question naming one subnet /
+  rack / location and confirm the answer contains only that scope. Regression to guard:
+  "which hosts in 198.51.100.0/24 have no Wazuh agent" answered with the whole system
+  because the tool had no subnet parameter at all (v0.5.194)
+- [ ] **Schema exposes the scope**: the tool description tells the model it MUST pass the
+  scope for a scoped question, and the reply carries `scope` so the answer can state coverage
+- [ ] **No silent truncation**: every list tool returns `count` (total in scope) next to
+  `returned`; ask something exceeding `limit` and confirm the answer says it is a partial list
+  instead of presenting one page as the total
+- [ ] **Permission tiers**: each new/changed tool sits in the right tier (mutating / admin /
+  global-read / per-object) and `allowed_tool_names()` hides it from accounts that cannot call
+  it. Verify through the actual AI chat with a restricted account, not only in unit tests
+- [ ] **Read-only stays read-only**: analysis/triage tools never write, never notify, never commit
+- [ ] **Prompt injection**: attacker-controlled text (mDNS hostname, firewall rule description)
+  stays fenced and truncated; the adversarial tests still pass
+- [ ] **Facts come from tools, not arithmetic**: usage / free / count answers are fetched, never
+  computed by the model from a CIDR
+
 ## 6. Manual page review (browser, after deploy)
 
 - [ ] Login / logout / theme switch (light / dark / auto)
@@ -175,6 +236,71 @@ the reverse proxy dropped the WebSocket upgrade.
   sync, `legacy_vmid` and `kind=ct` still correct, and 進階 → 虛擬化 (Proxmox VE) still lists only PVE
   while 虛擬化 (VMware) lists only VMware. Device / IP links from PVE VMs still resolve.
 - [ ] Delete instance; periodic `jt-ipam-sync` picks up enabled instances every ~5 min without errors.
+
+## 7c. Integration sync resilience — **applies to every integration, not just the one you changed**
+
+Real devices are partially readable. A firewall answering "9 of 10 endpoints OK" is the
+normal case, not an anomaly: firmware versions differ, and a read-only API account rarely
+reaches every resource. What must never happen is one unreadable endpoint taking the rest
+of the sync down with it (v0.5.195: an unreadable DHCP-lease path stopped ARP, policies,
+NAT and address objects from syncing at all, while the UI showed a single error line).
+
+- [ ] **Section isolation**: force one endpoint to fail (point it at a wrong path or revoke
+  that one permission) and confirm every other section still syncs
+- [ ] **Partial failure is visible**: the instance records what failed in `last_error`; a run
+  with failures is never reported to the user as fully successful
+- [ ] **No chain abort across instances**: one failing instance must not stop the sync round
+  for the others (`session.rollback()` before writing `last_error`, or the next write explodes too)
+- [ ] **Errors carry evidence**: a message like "response is not JSON" is useless in the field.
+  Include status code, `content-type` and the first ~120 bytes, and name the likely cause
+  (e.g. the device answered with its web UI, meaning that firmware lacks the endpoint or the
+  API account cannot read it)
+- [ ] **Connection test reflects reality**: the per-endpoint diagnostic shows the same result
+  the sync would get — never a green tick for something the sync cannot read
+
+## 7d. Probes run from a scan agent — **whenever the probe queue or the agent changes**
+
+Letting the server hand work to an agent turns that agent into something that runs network
+probes on request inside a customer network. The feature is only as safe as its narrowest check.
+
+- [ ] **Kind allowlist**: anything outside ping / tcp / traceroute / rdns is refused — by the
+  backend *and independently by the agent* (a compromised backend must not be able to widen it)
+- [ ] **Target validation**: shell metacharacters, command substitution and argument injection
+  (`-oProxyCommand=…`) are rejected; arguments are always passed as a list, never through a shell
+- [ ] **Limits hold**: target count, port count, per-agent pending jobs, and clamped
+  count/timeout values
+- [ ] **Ownership**: an agent can only finish a job it claimed itself
+- [ ] **Expiry**: with the agent stopped, a queued job expires instead of running late when the
+  agent returns — a probe answering minutes after the question is worse than no answer
+- [ ] **Round trip on a real agent**: create → claim → execute → report → read result, and the
+  UI states which agent produced the output
+
+## 7e. Audit chain anchoring — **whenever audit writes, anchoring or the sync schedule change**
+
+What this section tests is the thing the chain itself cannot catch. Verifying the chain is not enough.
+
+- [ ] **Tail truncation**: delete the last few rows after anchoring → must report
+  `anchored_row_missing`; `verify_chain` alone reports "intact" for the same case, which is
+  precisely why anchoring exists
+- [ ] **Content tampering**: change the anchored row's hash → `anchored_hash_changed`
+- [ ] **Shrinking count**: delete any middle row → `count_shrank` or `chain_broken`
+- [ ] **Incremental**: the second verification resumes from the last anchor rather than
+  rewalking the whole chain
+- [ ] **Anchor file**: appended line by line (never rewritten), mode 0600, one corrupt line does
+  not break reading; the same record also goes to journald (a copy survives file deletion)
+- [ ] **Alerting**: on failure every admin gets a severity=error notification naming which case it was
+
+## 7f. Zabbix integration — **whenever the Zabbix sync or coverage gap changes**
+
+- [ ] **Three URL forms**: `https://host`, `https://host/zabbix` and a full `api_jsonrpc.php` all connect
+- [ ] **Both auth modes**: API token and username/password each tested; the read response carries no secret
+- [ ] **Stamps existing addresses only**: a host in Zabbix that IPAM does not know must not create an IP
+- [ ] **Scope**: with `scope_subnet_ids` set, the same IP in an overlapping range is not stamped onto
+  another tenant's address; queries use `limit(1)` (`scalar_one_or_none` aborts the whole round)
+- [ ] **Hostname convergence**: two Zabbix hosts pointing at one IP must not overwrite each other every
+  round (the change log must not fill up)
+- [ ] **Coverage gap**: asking with a subnet scope answers only for those subnets; an empty scope
+  returns empty rather than falling back to global
 
 ## 8. Recent feature spot-checks
 

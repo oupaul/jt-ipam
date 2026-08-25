@@ -63,6 +63,12 @@ COLUMN_SECRETS: dict[str, list[tuple[str, str, str, Callable[[dict[str, Any]], b
         ("api_token", "api_token_enc", "api_token_nonce",
          _aad_id("fortigate_firewall:{id}:api_token")),
     ],
+    "zabbix_instances": [
+        ("api_token", "api_token_enc", "api_token_nonce",
+         _aad_id("zabbix_instance:{id}:api_token")),
+        ("api_password", "api_password_enc", "api_password_nonce",
+         _aad_id("zabbix_instance:{id}:api_password")),
+    ],
     "windows_dhcp_servers": [
         ("password", "password_enc", "password_nonce",
          _aad_id("windows_dhcp_server:{id}:password")),
@@ -105,7 +111,7 @@ _SETTINGS_V1: dict[str, dict[str, bytes]] = {
 # phpipam_migration 用 b64(ct)+b64(nonce) 且無 AAD
 _SETTINGS_B64PAIR = {"phpipam_migration": ("key_enc", "key_nonce")}
 
-_PLAIN = "__plain__"  # 匯出包內明文哨兵：{"__plain__": "<明文>"} 或 None
+_PLAIN = "__plain__"  # 匯出包內明文保留值：{"__plain__": "<明文>"} 或 None
 
 
 # ══════════════════════════════ COLUMN 機密 ══════════════════════════════
@@ -191,7 +197,7 @@ def apply_envelope_secrets(table: str, row: dict[str, Any], secrets: dict[str, A
 
 # ══════════════════════════════ system_settings 內嵌 ══════════════════════════════
 def transform_settings_out(key: str, value: Any) -> Any:
-    """匯出：把 system_settings 某 row 的 value（JSONB）內的機密字串換成明文哨兵。"""
+    """匯出：把 system_settings 某 row 的 value（JSONB）內的機密字串換成明文保留值。"""
     if not isinstance(value, dict):
         return value
     v = dict(value)
@@ -209,7 +215,7 @@ def transform_settings_out(key: str, value: Any) -> Any:
 
 
 def transform_settings_in(key: str, value: Any) -> Any:
-    """匯入：把明文哨兵以目標金鑰重加密回機密字串。"""
+    """匯入：把明文保留值以目標金鑰重加密回機密字串。"""
     if not isinstance(value, dict):
         return value
     v = dict(value)

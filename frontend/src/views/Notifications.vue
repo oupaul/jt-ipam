@@ -52,7 +52,8 @@ async function clickItem(n: Notification) {
       // ignore
     }
   }
-  if (n.link) void router.push(n.link);
+  // 只接受站內路徑（不吃 //host 這種外部導向）
+  if (n.link && n.link.startsWith("/") && !n.link.startsWith("//")) void router.push(n.link);
 }
 
 async function clearAll() {
@@ -75,9 +76,10 @@ onMounted(load);
 
 <template>
   <n-card :title="t('notifications.history_title')">
-    <template #header-extra>
+    <!-- 控制列：自標題列搬到內文最上方 -->
+    <n-space align="center" justify="end" style="margin-bottom: 10px">
       <n-button size="small" @click="clearAll">{{ t("notifications.mark_all_read") }}</n-button>
-    </template>
+    </n-space>
     <n-list v-if="items.length" hoverable clickable>
       <n-list-item
         v-for="n in items"

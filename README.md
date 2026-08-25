@@ -1,4 +1,4 @@
-# jt-ipam v0.5.164
+# jt-ipam v0.5.204
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/jasoncheng7115/jt-ipam)](https://github.com/jasoncheng7115/jt-ipam/commits/main)
@@ -11,9 +11,9 @@
 
 **🌐 [Project site / 專案介紹網站 →](https://jasoncheng7115.github.io/jt-ipam/?lang=en)**
 
-> A self-hosted, integration-focused IPAM, independently developed with an operation flow familiar to phpIPAM users, deeply integrated with multiple DNS servers, LibreNMS, OPNsense, pfSense, FortiGate, Windows DHCP Server, Proxmox VE, VMware ESXi / vCenter, Wazuh, and a local LLM.
+> A self-hosted, integration-focused IPAM, independently developed with an operation flow familiar to phpIPAM users, deeply integrated with multiple DNS servers, LibreNMS, OPNsense, pfSense, FortiGate, Windows DHCP Server, Proxmox VE, VMware ESXi / vCenter, Wazuh, Zabbix, and a local LLM.
 >
-> By Jason Tools Co., Ltd. · License: Apache-2.0 · 繁體中文: [README_zh-TW.md](README_zh-TW.md)
+> By Jason Tools Co., Ltd. · License: AGPL-3.0 · 繁體中文: [README_zh-TW.md](README_zh-TW.md)
 
 ---
 
@@ -23,10 +23,11 @@ Familiar to phpIPAM users so they are productive from day one, but built from sc
 
 - **DNS** — PowerDNS, BIND 9, OPNsense Unbound, Univention UCS, Microsoft Windows DNS (reads forward/reverse status, optional record push)
 - **LibreNMS** — device sync, ARP / FDB harvesting, online-status reconciliation, auto-onboarding to monitoring
-- **Infrastructure** — Proxmox VE, **VMware ESXi / vCenter (Beta)** — one setup covering both a standalone ESXi host and vCenter, read-only over the vSphere API for virtual machines, NICs and addresses, landing in the same virtualisation tables as Proxmox; Wazuh, OPNsense / pfSense (alias / rule / NAT sync), and **FortiGate (Beta)** — read-only over the FortiOS REST API (DHCP leases and ranges, ARP, IPsec tunnels and SSL-VPN sessions, policies, NAT, address objects; multi-VDOM)
+- **Zabbix** — read-only complement on the monitoring side: host-to-IP mapping, availability as an extra evidence source for effective status, maintenance windows, and a **monitoring coverage gap** (addresses IPAM has a hostname for that Zabbix is not watching). ARP/FDB stay with LibreNMS — they are not part of Zabbix's built-in data
+- **Infrastructure** — Proxmox VE, **VMware ESXi / vCenter (Beta)** — one setup covering both a standalone ESXi host and vCenter, read-only over the vSphere API for virtual machines, NICs and addresses, landing in the same virtualisation tables as Proxmox; Wazuh, OPNsense / pfSense (alias / rule / NAT sync), and **FortiGate** — read-only over the FortiOS REST API (DHCP leases and ranges, ARP, IPsec tunnels and SSL-VPN sessions, policies, NAT, address objects; multi-VDOM)
 - **DHCP** — each server is configured on its own: OPNsense (Kea/ISC) and pfSense sync leases and address ranges over their REST APIs; **Windows DHCP Server (Beta)** is read-only over WinRM + PowerShell (`Get-*` only, needs WinRM reachable — 5986/HTTPS by default). Addresses inside a pool are flagged in the IP list and detail view.
 - **Graylog** — exposes an IP→hostname/FQDN DSV lookup endpoint for Graylog's "DSV File from HTTP" data adapter
-- **Local AI** — natural-language queries and semantic search over LLM Server (self-hosted by default, so data never leaves the host; an OpenAI-compatible endpoint can be selected explicitly instead), plus an MCP server (stdio and Streamable HTTP transports) so external LLM clients can drive the IPAM; `gemma4:26b` works well in our testing
+- **Local AI** — natural-language queries and semantic search over LLM Server (self-hosted by default, so data never leaves the host; an OpenAI-compatible endpoint can be selected explicitly instead), plus an MCP server (stdio and Streamable HTTP transports) so external LLM clients can drive the IPAM; `gemma4:26b` works well in our testing Security-side AI: a **firewall rule-change sentinel** (per-sync snapshot diffs of all three firewall families; a permit rule appearing overnight notifies admins), **IP forensics in chat** (ask "who was this IP last week" and get the field-level change log, ARP/MAC bindings and per-source hostnames as an evidence timeline), and an **AI triage card for unauthorised IPs** (OUI vendor, hostnames and switch port assembled into "what this likely is and where to look next", with evidence fencing against prompt injection).
 
 Also built in: a **browser-based remote console** — an SSH terminal, an **SFTP file browser** (upload/download without a separate client), plus RDP and VNC desktops and a **BMC out-of-band serial console** (IPMI SOL) (RDP/VNC/BMC are **Beta**), in the browser — credentials are not stored by default, with an optional per-user **encrypted credential vault**, object-level RBAC, single-use ticket→WebSocket sessions and full audit (RDP/VNC use an optional dependency that is installed only when a prebuilt wheel is available, so the base install is unchanged), an **IP request approval workflow** (configurable multi-stage / parallel sign-off, with in-app + email notifications), **DNS record review** (find records with no matching IPAM address), a **scan agent** (ICMP/ARP/rDNS/NetBIOS/mDNS/OS probes; one is installed on the host automatically — scanning always runs through an agent), **central certificate storage & distribution** (upload a commercial / self-signed cert once; a pure-bash agent pulls it on a schedule and deploys it to nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and more, reloading the service — plus a **PowerShell agent for Windows / IIS** that imports into the Windows certificate store, repoints the HTTPS binding and verifies the switch over a real TLS connection, rolling back if it fails — with encrypted private keys, expiry alerts and manual renew), **floor plans + rack U-diagrams** (half-U, front/rear, SVG/PNG/draw.io export), **cable tracing** (multi-hop), an IP change log with stale-IP reclaim, and a universal table column-picker + multi-format export.
 
@@ -80,25 +81,35 @@ source — and it matters, because the "unauthorised IPs" anomaly check is defin
 
 | Source | When IPAM has no such address | Toggle | Default | Subnet placement |
 |---|---|---|---|---|
-| **Scan agent** | **Creates it** | none | always creates | only inside subnets assigned to that agent with scanning enabled |
-| **LibreNMS** | May create (device primary IP only, never ARP neighbours) | `auto_create_ips` | **on** | longest prefix; refuses when ambiguous |
-| **Proxmox VE** | May create | "trust addresses from virtualization" | **off** | longest prefix; refuses when ambiguous |
-| **VMware / ESXi** | May create | "trust addresses from virtualization" | **off** | longest prefix; refuses when ambiguous |
-| **OPNsense / pfSense** | May create (DHCP leases) | "create addresses IPAM does not have" | **off** | longest prefix; refuses when ambiguous |
-| AdGuard / Wazuh / DNS / Windows DHCP / FortiGate | **Match only, never create** | — | — | — |
+| **Scan agent** | Can create it | "Record unregistered IPs automatically" | **Off** | only inside subnets assigned to that agent with scanning enabled |
+| **LibreNMS** | May create (device primary IP only, never ARP neighbours) | "Auto-create discovered IPs" | **on by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
+| **Proxmox VE** | May create | "Trust addresses from virtualization" | **off by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
+| **VMware / ESXi** | May create | "Trust addresses from virtualization" | **off by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
+| **OPNsense / pfSense** | May create (DHCP leases) | "Create addresses IPAM does not have" | **off by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
+| AdGuard / Wazuh / Zabbix / DNS / Windows DHCP / FortiGate | **Match only, never create** | — | — | — |
 | CSV import / phpIPAM migration | Created from the imported data (an explicit user action) | — | — | as imported |
 
 **Shared rule**: every auto-creation path uses the same decision
-(`services/ip_autocreate.py`) — longest-prefix match on existing subnets, and
-**nothing is created when overlapping subnets make it ambiguous** (several tenants each
-holding `192.168.1.0/24` is this project's core scenario; filing a record under the wrong
-tenant is worse than not filing it). Setting an integration's subnet scope removes the
-ambiguity.
+(`services/ip_autocreate.py`) — **put the address in the smallest subnet that contains it;
+if which one is unclear, create nothing**.
+
+For example:
+- `10.1.1.5` falls inside both `10.0.0.0/8` and `10.1.1.0/24` → it goes into the **smaller**
+  `10.1.1.0/24`.
+- Tenants A and B **each have their own `192.168.1.0/24`** → there is no way to tell whose
+  machine this is, so **nothing is created**. Filing a record under the wrong tenant is worse
+  than having no record.
+- The address is inside no existing subnet → nothing is created (subnets are never invented).
+
+The second case disappears once you set that integration's subnet scope to your own
+subnets: only yours remain as candidates, the choice is clear, and records are created
+normally.
 
 > ⚠️ **Enabling auto-creation trades away part of your detection.** A machine that obtained
 > an address is not necessarily one that belongs in IPAM: once an unauthorised device is
 > recorded, it **no longer appears under "unauthorised IPs"**. Auto-created records are
-> flagged "Auto-recorded (unregistered)" in the IP list — review them regularly.
+> flagged "Auto-recorded (unregistered)" in the IP list (orange icon) and outlined in orange on the
+> subnet grid, where the legend carries an "Auto-recorded" count — review them regularly.
 
 ## Core entities
 
@@ -123,7 +134,10 @@ Security is a day-one requirement; every module and PR is checked against **OWAS
 - A03 — parameterized SQLAlchemy, strict Pydantic v2 validation, CSP + output escaping
 - A05 — HSTS, CSP, X-Frame-Options, Referrer-Policy
 - A07 — TOTP MFA, account lockout, HttpOnly+Secure+SameSite cookies, API-token TTL
-- A08 — SHA-256 audit chain
+- A08 — SHA-256 audit chain, verified every sync round and anchored outside the database
+  (`/var/lib/jt-ipam/audit-anchors.jsonl` + journald), because the chain alone cannot detect
+  the tail being cut off. `JT_IPAM_AUDIT_CHAIN_BASELINE_ID` sets the id verification starts
+  from, for deployments carrying older records that can no longer be made verifiable
 - A09 — structured audit logging
 - A10 — SSRF allow-listing for all outbound integrations; metadata / link-local blocked
 
@@ -157,7 +171,17 @@ The script installs `postgresql-16` / `python3.12` / `nginx` / `redis`, creates 
 
 Upgrade an existing install with `sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade` — **the script runs `git pull` itself**, then backup → deps → alembic → build → restart. See [`docs/INSTALL.md`](docs/INSTALL.md).
 
+> **Coming from 0.5.170 or earlier, run `upgrade` twice.** The upgrade script is itself updated by the `git pull`, but that run is still driven by the old copy (from 0.5.171 it hands over to the new one after pulling). Afterwards, `sudo bash /opt/jt-ipam/scripts/jt-ipam.sh doctor` will confirm the result and print a fix for anything it cannot verify.
+
 > **Optional: Docker Compose.** A secondary deploy path lives in [`deploy/docker/`](deploy/docker/) (`./gen-env.sh` then `docker compose up -d --build`; update later with `./update.sh`). systemd + apt remains the primary, fully-supported method.
+
+### Installed, but something looks off? Run the health check
+
+```bash
+sudo bash /opt/jt-ipam/scripts/jt-ipam.sh doctor
+```
+
+It checks the configuration file, whether the backend actually answers, the database and its `pgvector` extension, whether the schema is at the latest revision, whether the built frontend matches the backend version, the timers and the backup directory, the last sync result, and the local scan agent. **Anything it can't confirm comes with a command you can copy and run** (the `→` line) — no log archaeology required. Including this output makes a bug report much faster to act on.
 
 ### First login & resetting the admin password
 
@@ -261,9 +285,9 @@ jt-ipam/
 
 - **Phase 1 (done)** — phpIPAM-equivalent features + improvements (Section/Subnet/IP/VLAN/VRF/NAT/Devices/Racks/Locations/IP-Requests, TOTP/API-Token/RBAC, phpIPAM import, CSV/RIPE/TWNIC, visual subnet grid, forced TLS)
 - **Phase 2 (done)** — multi-vendor DNS + deep LibreNMS integration (device/ARP/FDB/effective-status) + anomaly detection + SHA-256 audit chain + pgvector AI semantic search
-- **Phase 3 (done)** — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox VE sync + Cytoscape topology + OIDC/SAML SSO + OPNsense / pfSense / FortiGate firewall sync + VMware ESXi / vCenter inventory + Wazuh agent inventory
+- **Phase 3 (done)** — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox VE sync + Cytoscape topology + OIDC/SAML SSO + OPNsense / pfSense / FortiGate firewall sync + VMware ESXi / vCenter inventory + Wazuh agent inventory + Zabbix monitoring coverage
 - **Phase 4 (done, scoped)** — MCP server + local-LLM natural language (LLM Server) + plugin mechanism
 
 ## License
 
-Apache-2.0. Commercial support: contact Jason Tools.
+AGPL-3.0-or-later. Commercial support: contact Jason Tools.

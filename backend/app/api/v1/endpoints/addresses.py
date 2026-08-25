@@ -21,7 +21,7 @@ from pydantic import Field
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser
+from app.api.v1.dependencies import CurrentUser, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.address import IPAddress
@@ -343,6 +343,26 @@ async def _effective_probes_for(session: AsyncSession, obj: IPAddress) -> list[s
     return effective_probes(list(sub.scan_method or []), list(obj.excluded_probes or []), agent_enabled)
 
 
+@router.get("/{address_id}/firewall", dependencies=[Depends(require_global_read)])
+async def get_address_firewall(
+    address_id: uuid.UUID,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """這個 IP 被哪些防火牆規則／NAT／別名管到（反向查詢）。
+
+    權限雙閘：IP 本身要可讀（物件級），且防火牆規則屬**全域基礎設施資料**，
+    依 RBAC 分類需 require_global_read —— 部門帳號看得到自己的 IP，
+    但規則內容不屬於它的可見範圍。
+    """
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "read")
+    from app.services.fw_lookup import rules_touching_ip
+    return await rules_touching_ip(session, str(obj.ip))
+
+
 @router.get("/{address_id}", response_model=IPAddressRead)
 async def get_address(
     address_id: uuid.UUID,
@@ -355,6 +375,10 @@ async def get_address(
     await _require_subnet_perm(session, user, obj.subnet_id, "read")
     out = IPAddressRead.model_validate(obj)
     out.mac_vendor = await vendor_for_mac(session, obj.mac)
+    # 虛擬化對應：IP 或 MAC 命中 VM 網卡 → 標示為虛擬機（顯示用，不寫回資料）
+    from app.services.fw_lookup import vm_match_for
+    out.virt_vm = await vm_match_for(session, ip=str(obj.ip).split("/")[0],
+                                     macs=[str(obj.mac)] if obj.mac else None)
     # SSH 連線管理：是否可對此 IP 開終端機（依權限算好給前端顯示按鈕）
     from app.services.permission import can_use_rdp, can_use_sftp, can_use_ssh, can_use_vnc
     out.ssh_available = await can_use_ssh(session, user=user, ip=obj)
@@ -489,26 +513,49 @@ async def get_address_relations(
     return {"chain": chain}
 
 
-@router.get("/{address_id}/history", response_model=list[IPChangeLogRead])
+@router.get("/{address_id}/history")
 async def get_address_history(
     address_id: uuid.UUID,
     user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
-) -> list[IPChangeLogRead]:
-    """單一 IP 的異動記錄（feature B），時間倒序；offset 分頁（前端「載入更多」）。"""
+    event_type: str | None = Query(None),
+    source: str | None = Query(None),
+) -> dict[str, Any]:
+    """單一 IP 的異動記錄（時間倒序）。
+
+    回傳帶 **總數與可用篩選值**，不只是一頁資料：實機單一 IP 最多有 1,838 筆，
+    只回一個陣列的話使用者無從得知自己看到的是全部還是冰山一角（與清單靜默截斷同一類問題）。
+    """
     obj = await session.get(IPAddress, address_id)
     if obj is None:
         raise HTTPException(status_code=404, detail="Address not found")
     await _require_subnet_perm(session, user, obj.subnet_id, "read")
 
-    rows = list((await session.execute(
-        select(IPChangeLog)
+    base = select(IPChangeLog).where(IPChangeLog.ip_id == address_id)
+    if event_type:
+        base = base.where(IPChangeLog.event_type == event_type)
+    if source:
+        base = base.where(IPChangeLog.source == source)
+
+    total = int(await session.scalar(
+        select(func.count()).select_from(base.subquery())) or 0)
+
+    # 篩選選項（含筆數）一律以「未篩選」為母體算，否則選了之後其他選項就消失了
+    facet_rows = (await session.execute(
+        select(IPChangeLog.event_type, IPChangeLog.source, func.count())
         .where(IPChangeLog.ip_id == address_id)
-        .order_by(IPChangeLog.created_at.desc())
-        .offset(offset)
-        .limit(limit)
+        .group_by(IPChangeLog.event_type, IPChangeLog.source)
+    )).all()
+    ev_counts: dict[str, int] = {}
+    src_counts: dict[str, int] = {}
+    for ev, src, c in facet_rows:
+        ev_counts[ev] = ev_counts.get(ev, 0) + int(c)
+        src_counts[src] = src_counts.get(src, 0) + int(c)
+
+    rows = list((await session.execute(
+        base.order_by(IPChangeLog.created_at.desc()).offset(offset).limit(limit)
     )).scalars().all())
 
     actor_ids = list({r.actor_user_id for r in rows if r.actor_user_id is not None})
@@ -524,7 +571,13 @@ async def get_address_history(
         m = IPChangeLogRead.model_validate(r)
         m.actor_username = name_map.get(r.actor_user_id) if r.actor_user_id else None
         out.append(m)
-    return out
+    return {
+        "items": out,
+        "total": total,          # 目前篩選條件下的總數
+        "returned": len(out),
+        "event_types": [{"value": k, "count": v} for k, v in sorted(ev_counts.items())],
+        "sources": [{"value": k, "count": v} for k, v in sorted(src_counts.items())],
+    }
 
 
 @router.get("/{address_id}/switch-port")
