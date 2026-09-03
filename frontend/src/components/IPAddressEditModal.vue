@@ -12,12 +12,16 @@ import {
   NForm, NFormItem, NInput, NSelect, NSwitch, NPopconfirm, NTag, NIcon, NPagination,
   NCollapse, NCollapseItem, NTimeline, NTimelineItem, NText, NEmpty, NSpin,
   NTooltip, NCheckbox, NCheckboxGroup, NButtonGroup, NDivider,
+  NInputGroup, NInputGroupLabel,
   useMessage,
 } from "naive-ui";
 import { useAuthStore } from "@/stores/auth";
 import { apiClient } from "@/api/client";
 import type { IPAddress } from "@/types";
-import { updateAddress, deleteAddress, createAddress, type IPAddressUpdate } from "@/api/addresses";
+import {
+  updateAddress, deleteAddress, createAddress, getDeviceSuggestion, applyDeviceSuggestion,
+  type IPAddressUpdate, type DeviceSuggestion,
+} from "@/api/addresses";
 import { getAddressHistory, getAddressSwitchPort, type HistoryFacet, type IPChangeLog,
   type SwitchPortInfo } from "@/api/ip_history";
 import { getHostnameSources, type HostnameSources } from "@/api/hostname";
@@ -30,7 +34,7 @@ import { fmtDateTime } from "@/utils/datetime";
 import { useCustomers } from "@/composables/useCustomers";
 import { useChangeLogDim } from "@/composables/useChangeLogDim";
 import { useRouter } from "vue-router";
-import { listDevices, type Device } from "@/api/basic";
+import { getDevice, listDevices, type Device } from "@/api/basic";
 import { getAddressRelations, type RelationNode } from "@/api/relations";
 import { listDhcpRanges } from "@/api/integrations";
 import RelationChain from "@/components/RelationChain.vue";
@@ -49,6 +53,18 @@ async function loadDevices() {
     const r = await listDevices();
     devices.value = r.items;
   } catch { /* silent */ }
+}
+
+/** 確保這一台在名稱查得到的清單裡。
+ *
+ *  `listDevices()` 只拿一頁（200 筆），所以剛建立、或排序落在後面的裝置不會在裡面，
+ *  名稱就會退回顯示一段 UUID。缺的那一台直接照 id 取回來即可 —— 不必也不該
+ *  為了顯示一個名稱去把整個裝置清單抓完。 */
+async function ensureDeviceLoaded(id: string | null | undefined) {
+  if (!id || devices.value.some((d) => d.id === id)) return;
+  try {
+    devices.value = [...devices.value, await getDevice(id)];
+  } catch { /* 沒權限或已刪除 —— 讓 deviceLabel 走它的退路 */ }
 }
 
 function deviceLabel(id: string | null | undefined): string {
@@ -228,6 +244,8 @@ const rootEl = ref<any>(null);
 const consoleCompact = ref(false);
 let cro: ResizeObserver | null = null;
 onMounted(() => {
+  void loadSuggestion();
+  void ensureDeviceLoaded(props.address?.device_id);
   const el = (rootEl.value?.$el ?? rootEl.value) as HTMLElement | undefined;
   if (el instanceof HTMLElement) {
     cro = new ResizeObserver(() => { consoleCompact.value = el.clientWidth < 900; });
@@ -299,6 +317,50 @@ const matchingDevice = computed<Device | null>(() => {
       || (!!ip && dname === ip);           // 舊行為：裝置名稱剛好是 IP 字串
   }) ?? null;
 });
+// ── 「還沒有裝置」時的建議：由後端判斷（它看得到 MAC、連接埠、同名 IP 有幾筆）。
+//    **只是建議** —— 不按就什麼都不會發生。
+const suggestion = ref<DeviceSuggestion | null>(null);
+const applyingSuggestion = ref(false);
+/** 要一併關聯的其他 IP —— **預設只勾 MAC 相同的那些**。
+ *
+ *  同主機名稱不等於同一台機器：DHCP 把位址回收給別台之後，IP 記錄上的舊主機名稱
+ *  還留著。實機上一台筆電的名字散在九筆 IP 上，裡面有 Proxmox 的 VM 和一顆 ESP32 ——
+ *  「全部掛上」那種開關等於把猜測當成事實。 */
+const linkIds = ref<string[]>([]);
+
+async function loadSuggestion() {
+  suggestion.value = null;
+  if (isCreate.value || !props.address?.id || form.value.device_id) return;
+  try {
+    suggestion.value = await getDeviceSuggestion(props.address.id);
+    linkIds.value = (suggestion.value?.siblings ?? [])
+      .filter((s) => s.same_mac).map((s) => s.id);
+  } catch { /* 建議缺了不影響編輯 */ }
+}
+
+/** 按下去才會建立／關聯。建完直接反映在表單上，不用再存一次。 */
+async function applySuggestion(create: boolean) {
+  const sug = suggestion.value;
+  if (!sug || !props.address?.id) return;
+  applyingSuggestion.value = true;
+  try {
+    const updated = await applyDeviceSuggestion(props.address.id, {
+      ...(create ? { create_name: sug.suggested_name ?? "" }
+                 : { device_id: sug.existing_device_id ?? "" }),
+      link_ip_ids: linkIds.value,
+    });
+    form.value.device_id = updated.device_id ?? null;
+    suggestion.value = null;
+    // 剛建出來的那一台不會在既有清單裡 —— 直接補進去，否則畫面只顯示得出 UUID
+    await ensureDeviceLoaded(updated.device_id);
+    emit("saved", updated);
+  } catch (e: any) {
+    msg.error(e?.response?.data?.detail ?? String(e));
+  } finally {
+    applyingSuggestion.value = false;
+  }
+}
+
 async function linkMatchingDevice() {
   if (!matchingDevice.value) return;
   form.value.device_id = matchingDevice.value.id;
@@ -335,6 +397,8 @@ const stateOptions = computed(() => [
   { label: labelState("offline"), value: "offline" },
   { label: labelState("dhcp"), value: "dhcp" },
   { label: labelState("used"), value: "used" },
+  { label: labelState("deprecated"), value: "deprecated" },
+  { label: labelState("quarantine"), value: "quarantine" },
 ]);
 
 watch(
@@ -419,6 +483,25 @@ function onHistoryToggle(names: Array<string | number>) {
   if (names.includes("history") && !historyLoaded.value) void loadHistory();
 }
 
+/** 防火牆逐來源證據，時間新的排前面。 */
+const fwSeen = computed<[string, string][]>(() => {
+  const raw = (props.address as any)?.arp_seen as Record<string, string> | undefined;
+  if (!raw) return [];
+  return Object.entries(raw).sort((a, b) => (a[1] < b[1] ? 1 : -1));
+});
+
+const FW_VENDOR: Record<string, string> = {
+  opnsense: "OPNsense", pfsense: "pfSense", fortigate: "FortiGate",
+  paloalto: "Palo Alto", librenms: "LibreNMS",
+};
+
+/** `arp:opnsense` → 「ARP 表（OPNsense）」 */
+function fwSeenLabel(key: string): string {
+  const [kind, vendor] = key.split(":", 2);
+  if (!vendor) return key;
+  return `${t(`system_settings.src_kind_${kind}`)}（${FW_VENDOR[vendor] ?? vendor}）`;
+}
+
 function eventLabel(e: string): string {
   const key = `ipChanges.event.${e}`;
   const out = t(key);
@@ -475,6 +558,8 @@ watch([swName, swPort], ([a, b]) => {
 
 // 換 IP 時清掉舊快取
 watch(() => props.address?.id, () => {
+  void loadSuggestion();
+  void ensureDeviceLoaded(props.address?.device_id);
   history.value = [];
   historyLoaded.value = false;
   historyTotal.value = 0;
@@ -884,6 +969,22 @@ async function remove() {
           </n-descriptions-item>
           <n-descriptions-item :label="t('addresses.last_seen_scanner')">{{ fmtDateTime(props.address?.last_seen_scanner) }}</n-descriptions-item>
           <n-descriptions-item :label="t('addresses.last_seen_librenms')">{{ fmtDateTime(props.address?.last_seen_librenms) }}</n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.last_seen_arp')">
+            {{ fmtDateTime(props.address?.last_seen_arp) }}
+            <n-tooltip v-if="props.address?.last_seen_arp" trigger="hover">
+              <template #trigger><span class="arp-caveat">?</span></template>
+              <div style="max-width: 300px">{{ t("live_dot.arp_only_hint") }}</div>
+            </n-tooltip>
+          </n-descriptions-item>
+          <n-descriptions-item v-if="props.address?.last_seen_wazuh"
+                               :label="t('addresses.last_seen_wazuh')">
+            {{ fmtDateTime(props.address?.last_seen_wazuh) }}
+          </n-descriptions-item>
+          <!-- 防火牆給的證據逐來源列出。以前這些全被寫成「掃描代理」，於是沒有代理的站台
+               也看得到掃描代理的時間 —— 現在照實顯示是哪一台防火牆、哪一種表看到的。 -->
+          <n-descriptions-item v-for="[k, v] in fwSeen" :key="k" :label="fwSeenLabel(k)">
+            {{ fmtDateTime(v) }}
+          </n-descriptions-item>
           <n-descriptions-item :label="t('addresses.last_seen_dns')">{{ fmtDateTime(props.address?.last_seen_dns) }}</n-descriptions-item>
           <n-descriptions-item :label="t('common.created_at')">{{ fmtDateTime(props.address?.created_at) }}</n-descriptions-item>
           <n-descriptions-item :label="t('common.updated_at')" :span="2">{{ fmtDateTime(props.address?.updated_at) }}</n-descriptions-item>
@@ -1023,13 +1124,16 @@ async function remove() {
             <!-- 交換器位置：拆成兩格。單一輸入框會讓人照著唯讀畫面打成 sw@port，
                  但實際儲存格式是「交換器 / 埠」，打錯就顯示成一整團字串 -->
             <n-form-item :label="t('addresses.switch_port')" style="flex: 1 1 320px">
-              <n-space :size="6" :wrap-item="false" style="width: 100%">
+              <!-- 一行到底：交換器｜@｜埠。先前用 n-space 排，欄寬不夠時會把第二個
+                   輸入框擠到下一行，「@」孤零零留在右邊 —— 看起來像壞掉。
+                   input-group 會自己縮，不會換行。 -->
+              <n-input-group>
                 <n-input v-model:value="swName" :placeholder="t('addresses.switch_name_ph')"
-                         style="flex: 1 1 55%" />
-                <span style="align-self: center; color: #18a058; font-weight: 700">@</span>
+                         style="width: 58%" />
+                <n-input-group-label style="padding: 0 8px">@</n-input-group-label>
                 <n-input v-model:value="swPort" :placeholder="t('addresses.switch_port_ph')"
-                         style="flex: 1 1 45%" />
-              </n-space>
+                         style="width: 42%" />
+              </n-input-group>
               <template #feedback>
                 <span style="font-size: 11.5px; opacity: .7">
                   {{ t("addresses.switch_port_hint") }}
@@ -1056,6 +1160,38 @@ async function remove() {
                 <template #icon><n-icon><LinkIcon /></n-icon></template>
                 {{ t("addresses.link_matching_device", { name: matchingDevice.name }) }}
               </n-button>
+              <template v-if="!form.device_id && suggestion">
+                <n-button v-if="suggestion.existing_device_id" size="tiny" dashed type="primary"
+                          :loading="applyingSuggestion" @click="applySuggestion(false)">
+                  <template #icon><n-icon><LinkIcon /></n-icon></template>
+                  {{ t("addresses.suggest_link", { name: suggestion.existing_device_name }) }}
+                </n-button>
+                <n-button v-else-if="suggestion.suggested_name && suggestion.can_create"
+                          size="tiny" dashed type="primary"
+                          :loading="applyingSuggestion" @click="applySuggestion(true)">
+                  <template #icon><n-icon><PlusIcon /></n-icon></template>
+                  {{ t("addresses.suggest_create", { name: suggestion.suggested_name }) }}
+                </n-button>
+                <template v-if="suggestion.siblings.length
+                            && (suggestion.existing_device_id || suggestion.can_create)">
+                  <div class="sug-note">
+                    {{ t("addresses.suggest_siblings_hint", { n: suggestion.siblings.length }) }}
+                  </div>
+                  <n-checkbox-group v-model:value="linkIds" class="sug-siblings">
+                    <n-space vertical :size="2">
+                      <n-checkbox v-for="s in suggestion.siblings" :key="s.id" :value="s.id"
+                                  size="small">
+                        <span class="sug-ip">{{ s.ip }}</span>
+                        <span class="sug-mac">{{ s.mac || "—" }}</span>
+                        <span class="sug-vendor">{{ s.mac_vendor || "" }}</span>
+                        <n-tag v-if="s.same_mac" size="tiny" type="success" :bordered="false">
+                          {{ t("addresses.suggest_same_mac") }}
+                        </n-tag>
+                      </n-checkbox>
+                    </n-space>
+                  </n-checkbox-group>
+                </template>
+              </template>
             </n-space>
           </n-form-item>
           <n-form-item :label="t('scan_probes.excluded')">
@@ -1194,4 +1330,11 @@ async function remove() {
 .conn-sol-badge { background: #909399; }
 /* 異動記錄超過 N 天（系統設定）的項目以淡色顯示 */
 .log-dim { opacity: .45; }
+
+/* ARP 時間旁的提醒標記：這個時間不代表機器當下活著 */
+.arp-caveat {
+  display: inline-block; margin-left: 6px; width: 14px; height: 14px; line-height: 14px;
+  text-align: center; border-radius: 50%; font-size: 10px; cursor: help;
+  background: rgba(251, 191, 36, .18); color: #b45309;
+}
 </style>

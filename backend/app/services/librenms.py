@@ -23,7 +23,7 @@ from sqlalchemy import true as sa_true
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.safe_http import UnsafeOutboundURL, safe_request
+from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models.address import IPAddress
 from app.models.librenms import (
@@ -98,7 +98,7 @@ async def _api_get(instance: LibreNMSInstance, path: str, *, timeout: float = 30
     except UnsafeOutboundURL as exc:
         raise LibreNMSError(f"SSRF guard rejected URL: {exc}") from exc
     except httpx.HTTPError as exc:
-        raise LibreNMSError(f"transport: {exc.__class__.__name__}") from exc
+        raise LibreNMSError(f"transport: {transport_detail(exc)}") from exc
     if resp.status_code != 200:
         raise LibreNMSError(f"LibreNMS {path}: {resp.status_code} {resp.text[:200]}")
     return resp.json()  # type: ignore[no-any-return]
@@ -535,8 +535,10 @@ async def sync_arp(
             existing.last_seen_at = now
             updated += 1
 
-        # 只要 LibreNMS ARP 有看到這個 IP，就 stamp last_seen_librenms
-        # （effective_status 計算靠這個）。補 MAC 是額外副作用。
+        # ARP 看到這個 IP → 蓋 `last_seen_arp`（**不是** last_seen_librenms）。
+        # 兩者可信度差很多：LibreNMS 的 ARP API 不回任何時間欄位，我們只能因為
+        # 「這筆還在清單裡」就蓋上同步當下的時間 —— 來源設備（例如 AP）的 ARP 快取
+        # 不老化的話，機器早就關了也會一直看起來是「剛剛才看到」。補 MAC 是額外副作用。
         ipa = (
             await session.execute(
                 select(IPAddress).where(IPAddress.ip == ip).where(
@@ -545,7 +547,7 @@ async def sync_arp(
             )
         ).scalar_one_or_none()
         if ipa is not None:
-            ipa.last_seen_librenms = now
+            ipa.last_seen_arp = now
             from app.services.arp_precedence import consider_mac
             # 舊值要在覆寫前先取：寫死 None 的話，異動記錄的舊值永遠空白，
             # 看不出「從哪個 MAC 換成哪個」——真的換網卡時反而查不出來
@@ -874,18 +876,27 @@ async def recompute_effective_status(
     - 兩者都從沒見過 → unknown
     """
     from datetime import timedelta
+
+    from app.services import arp_seen as arp_seen_svc
+    from app.services.system_config import get_liveness_config
+    cfg = await get_liveness_config(session)
+    sources = set(cfg["sources"])
     now = datetime.now(UTC)
-    cutoff = now - timedelta(minutes=30)
+    # 閾值跟著系統設定走（原本寫死 30 分鐘，和設定頁講的不一致）
+    cutoff = now - timedelta(minutes=int(cfg["minutes"]))
 
     rows = list(
         (await session.execute(select(IPAddress))).scalars().all()
     )
+    today = now.date()
+    observations: list[dict[str, Any]] = []
     updated = 0
     for ip in rows:
         s_seen = ip.last_seen_scanner
         l_seen = ip.last_seen_librenms
-        # ARP 也算 librenms 證據
-        if not l_seen and ip.mac:
+        a_seen = ip.last_seen_arp
+        # 從沒對應過 ARP 記錄的舊資料：補一次起點（之後由 sync_arp 維護）
+        if not a_seen and ip.mac:
             arp = (
                 await session.execute(
                     select(ARPEntry.last_seen_at)
@@ -894,21 +905,56 @@ async def recompute_effective_status(
                 )
             ).scalar_one_or_none()
             if arp:
-                l_seen = arp
-                ip.last_seen_librenms = arp
+                a_seen = arp
+                ip.last_seen_arp = arp
+
+        # 只有被勾選的來源算數；每個來源會不會過期由 services/evidence.py 的契約決定
+        # （LibreNMS 的 ARP 不會過期 → 不在預設之內；防火牆自己的 ARP 表會逾時淘汰
+        #  → 逐廠牌各自一個來源，預設採信）
+        use_s = "scanner" in sources
+        use_l = "librenms" in sources
+        use_a = "arp" in sources or "arp:librenms" in sources
+        use_w = "wazuh" in sources
+        use_z = "zabbix" in sources
+        s_fresh = use_s and bool(s_seen and s_seen >= cutoff)
+        l_fresh = use_l and bool(l_seen and l_seen >= cutoff)
+        a_fresh = use_a and bool(a_seen and a_seen >= cutoff)
+        w_seen = ip.last_seen_wazuh
+        w_fresh = use_w and bool(w_seen and w_seen >= cutoff)
+        z_seen = ip.last_seen_zabbix
+        z_fresh = use_z and bool(z_seen and z_seen >= cutoff)
+        # 防火牆逐來源證據（arp:/vpn:/lease:）—— 會過期的才有資格宣稱上線
+        d_seen, d_src = arp_seen_svc.newest_aging(ip, sources)
+        d_fresh = bool(d_seen and d_seen >= cutoff)
 
         new_status: str
-        if (s_seen and s_seen >= cutoff) or (l_seen and l_seen >= cutoff):
-            if (s_seen and s_seen >= cutoff) and (l_seen and l_seen >= cutoff):
-                new_status = "online"
-            elif s_seen and s_seen >= cutoff:
-                new_status = "online (scanner)"
-            else:
-                new_status = "online (librenms)"
-        elif s_seen or l_seen:
+        if s_fresh or l_fresh or w_fresh or z_fresh or d_fresh:
+            # 會老化的證據：掃描代理實際探測、LibreNMS／Wazuh 的裝置狀態、
+            # 防火牆表上此刻還在的項目
+            fresh_srcs = [n for n, ok in (
+                ("scanner", s_fresh), ("librenms", l_fresh), ("wazuh", w_fresh),
+                ("zabbix", z_fresh), (d_src or "", d_fresh),
+            ) if ok and n]
+            new_status = "online" if len(fresh_srcs) > 1 else f"online ({fresh_srcs[0]})"
+        elif a_fresh:
+            # **只有 ARP 撐著**：算上線，但標成獨立等級。ARP 只證明某個 MAC↔IP 對應
+            # 曾被學到，不證明機器現在活著 —— 來源設備快取不老化就會一直是這個狀態。
+            new_status = "online (arp)"
+        elif ((use_s and s_seen) or (use_l and l_seen) or (use_a and a_seen)
+              or (use_w and w_seen) or (use_z and z_seen) or d_seen):
+            # 有被採信的來源看過它，但都過期 → 離線
             new_status = "offline"
         else:
             new_status = "unknown"
+
+        # 逐日觀測：長條圖要能區分「當天真的看到」與「只是沿用上一筆轉換」。
+        # arp_only 的日子不算可用 —— ARP 沒有時間概念（見 models/ip_liveness）。
+        observations.append({
+            "ip_id": ip.id, "day": today,
+            "up": bool(s_fresh or l_fresh or w_fresh or z_fresh or d_fresh),
+            "down": new_status == "offline",
+            "arp_only": new_status == "online (arp)",
+        })
 
         if ip.effective_status != new_status:
             prev = ip.effective_status
@@ -925,6 +971,22 @@ async def recompute_effective_status(
                         field="effective_status", old=prev, new=new_status,
                         source="librenms",
                     )
+    # 逐日觀測一次寫入：同一天同一個 IP 只有一列，旗標用 OR 累積
+    # （一天內先看到上線、後判定離線，兩者都要留下）
+    if observations:
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from app.models.ip_liveness import IPLivenessDay
+        stmt = pg_insert(IPLivenessDay).values(observations)
+        await session.execute(stmt.on_conflict_do_update(
+            index_elements=["ip_id", "day"],
+            set_={
+                "up": IPLivenessDay.up.op("OR")(stmt.excluded.up),
+                "down": IPLivenessDay.down.op("OR")(stmt.excluded.down),
+                "arp_only": IPLivenessDay.arp_only.op("OR")(stmt.excluded.arp_only),
+            },
+        ))
+
     return updated
 
 

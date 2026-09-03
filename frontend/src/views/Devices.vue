@@ -16,6 +16,7 @@ import {
   listLocations, listRacks, type Location, type Rack,
 } from "@/api/basic";
 import { getRackDiagram, type RackDiagram } from "@/api/racks";
+import { resolveRackLocation } from "@/utils/rackLocation";
 import {
   DevicesIcon, PlusIcon, EditIcon, DeleteIcon, RefreshIcon, SaveIcon, CancelIcon, EyeIcon, LinkIcon, RacksIcon,
 } from "@/icons";
@@ -271,7 +272,12 @@ function onLocationChange() {
   const rackStillValid = racks.value.find((r) => r.id === form.value.rack_id)?.location_id === form.value.location_id;
   if (!rackStillValid) { form.value.rack_id = null; uPickerDiagram.value = null; }
 }
-function onRackChange() { uPickerDiagram.value = null; }
+function onRackChange(rackId: string | null) {
+  uPickerDiagram.value = null;
+  // 選了機櫃就把地點帶出來 —— 機櫃本來就屬於某個地點，不該再要求使用者選一次。
+  const rack = racks.value.find((r) => r.id === rackId);
+  if (rack?.location_id) form.value.location_id = rack.location_id;
+}
 
 // ── 迷你機櫃 U 位挑選器 ──
 const showUPicker = ref(false);
@@ -331,10 +337,10 @@ async function submit() {
     msg.error(t("devices.error_name_required"));
     return;
   }
-  if (form.value.rack_id && !form.value.location_id) {
-    msg.error(t("devices.error_location_for_rack"));
-    return;
-  }
+  // 機櫃本身就掛在地點上 —— 能推的就別叫使用者再講一次（見 utils/rackLocation）
+  const loc = resolveRackLocation(form.value.rack_id, form.value.location_id, racks.value);
+  if (!loc.ok) { msg.error(t("devices.error_location_mismatch")); return; }
+  form.value.location_id = loc.location_id;
   try {
     const payload = {
       name: form.value.name,
@@ -559,7 +565,8 @@ onMounted(async () => {
       <n-input v-model:value="filterQ" :placeholder="t('devices.search_ph')" clearable
                style="width: 220px" @update:value="onFilterInput" />
 
-        <n-select v-model:value="subnetFilter" clearable filterable size="small"
+        <!-- 尺寸跟著同一列的搜尋框與按鈕走：漏寫 size 會退回元件預設，同一列就出現兩種高度 -->
+        <n-select v-model:value="subnetFilter" clearable filterable
                   style="width: 220px" :options="subnetOptions"
                   :placeholder="t('devices.filter_subnet_all')"
                   @update:value="() => refresh()" />
@@ -684,10 +691,8 @@ onMounted(async () => {
           </n-form-item>
           <n-form-item :label="t('devices.rack')">
             <n-select v-model:value="form.rack_id" :options="filteredRackOpts" filterable clearable
-                      :placeholder="form.location_id
-                        ? t('devices.rack_placeholder')
-                        : t('devices.rack_pick_location_first')"
-                      :disabled="!form.location_id" style="width: 100%"
+                      :placeholder="t('devices.rack_placeholder')"
+                      style="width: 100%"
                       @update:value="onRackChange" />
           </n-form-item>
         </div>

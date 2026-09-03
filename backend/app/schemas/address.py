@@ -72,7 +72,12 @@ class IPAddressBase(StrictModel):
     @field_validator("state")
     @classmethod
     def _state_valid(cls, v: str) -> str:
-        allowed = {"active", "reserved", "offline", "dhcp", "used"}
+        # active/used/dhcp/offline 是既有字彙（混了觀測與意圖，維持相容不動）；
+        # deprecated/quarantine 是生命週期用的意圖標記：
+        #   deprecated — 準備退場，不要再拿來配新服務
+        #   quarantine — 有疑慮（資安事件／衝突），暫時不得使用
+        allowed = {"active", "reserved", "offline", "dhcp", "used",
+                   "deprecated", "quarantine"}
         if v not in allowed:
             raise ValueError(f"state must be one of {sorted(allowed)}")
         return v
@@ -166,6 +171,16 @@ class IPAddressRead(IPAddressBase):
     effective_probes: list[str] | None = None
     last_seen_scanner: datetime | None
     last_seen_librenms: datetime | None
+    # ARP 證據獨立回傳：它沒有時間概念，前端要能標成弱證據而不是混進 LibreNMS
+    last_seen_arp: datetime | None = None
+    #: Wazuh agent 的 keep-alive（manager 端維護，會過期 → 可宣稱上線）
+    last_seen_wazuh: datetime | None = None
+    #: Zabbix 最後一次回報可用（server 端輪詢維護）
+    last_seen_zabbix: datetime | None = None
+    #: 防火牆給的逐來源觀測時間：`{"arp:opnsense": "…", "lease:pfsense": "…"}`。
+    #: 這些原本全都被寫進 last_seen_scanner，畫面上就變成沒有掃描代理卻顯示
+    #: 「上線 (scanner)」（見 services/arp_seen.py）。
+    arp_seen: dict[str, str] = {}
     last_seen_dns: datetime | None
     effective_status: str | None
     # 所屬 subnet 是否啟用掃描；前端用來判定「沒掃描的網段不該標離線紅燈」

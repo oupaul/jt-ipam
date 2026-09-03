@@ -1,6 +1,10 @@
-"""Palo Alto (PAN-OS) 整合 endpoints（Beta，實驗性，admin only）。
+"""Palo Alto（PAN-OS）整合 endpoints（admin only）。
 
-`/test` 回「連線診斷」—— 先換 API key，再逐端點回報通不通與筆數。
+與 OPNsense / pfSense / FortiGate 各自獨立 —— 不做跨廠牌抽象，因為每家的 API
+形狀差太多（PAN-OS 甚至同時有 REST 與 XML 兩套）。
+
+`/test` 回「連線診斷」：**逐端點**回報通不通與筆數，並顯示偵測到的 REST 版本段。
+沒有實機的情況下，那是唯一能對齊欄位的辦法。
 """
 
 from __future__ import annotations
@@ -22,7 +26,9 @@ from app.schemas.paloalto import PaloAltoCreate, PaloAltoRead, PaloAltoUpdate
 from app.services import paloalto as svc
 from app.services.background_tasks import spawn_task
 
-router = APIRouter(prefix="/paloalto", tags=["paloalto"], dependencies=[Depends(require_ops_admin)])
+router = APIRouter(prefix="/paloalto", tags=["paloalto"],
+                   dependencies=[Depends(require_ops_admin)])
+# 政策 / 位址物件屬「全域基礎設施資料」→ 唯讀檢視給具全域讀取權者
 view_router = APIRouter(prefix="/paloalto", tags=["paloalto"],
                         dependencies=[Depends(require_global_read)])
 
@@ -34,6 +40,8 @@ async def _get_or_404(session: AsyncSession, fw_id: uuid.UUID) -> PaloAltoFirewa
     return fw
 
 
+# 實例清單掛 view_router（全域讀取）：唯讀檢視頁要用它列出可選的防火牆。
+# 回應不含 API 金鑰（PaloAltoRead 沒有該欄位）。
 @view_router.get("", response_model=Paginated[PaloAltoRead])
 async def list_firewalls(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -55,15 +63,16 @@ async def create_firewall(
     payload: PaloAltoCreate, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> PaloAltoRead:
-    data = payload.model_dump(exclude={"password"})
+    data = payload.model_dump(exclude={"api_key"})
     data["api_url"] = str(data["api_url"]).rstrip("/")
-    fw = PaloAltoFirewall(**data, password_enc=b"placeholder", password_nonce=b"placeholder")
+    fw = PaloAltoFirewall(**data, api_key_enc=b"placeholder", api_key_nonce=b"placeholder")
     session.add(fw)
     try:
         await session.flush()
     except IntegrityError as exc:
         raise HTTPException(409, detail="Name already exists") from exc
-    fw.password_enc, fw.password_nonce = svc.encrypt_password(fw.id, payload.password)
+    # 金鑰的 AAD 綁這一列的 id → 必須先 flush 拿到 id 才能加密
+    fw.api_key_enc, fw.api_key_nonce = svc.encrypt_api_key(fw.id, payload.api_key)
     await session.flush()
     await append_audit(
         session, actor_user_id=str(user.id),
@@ -85,13 +94,17 @@ async def update_firewall(
 ) -> PaloAltoRead:
     fw = await _get_or_404(session, fw_id)
     data = payload.model_dump(exclude_unset=True)
-    password = data.pop("password", None)
+    key = data.pop("api_key", None)
+    # PATCH 的 None 是「不修改」，所以「改回自動偵測」需要自己的旗標
+    if data.pop("clear_api_version", False):
+        fw.api_version = None
+        data.pop("api_version", None)
     for k, v in data.items():
         if k == "api_url" and v is not None:
             v = str(v).rstrip("/")
         setattr(fw, k, v)
-    if password:
-        fw.password_enc, fw.password_nonce = svc.encrypt_password(fw.id, password)
+    if key:
+        fw.api_key_enc, fw.api_key_nonce = svc.encrypt_api_key(fw.id, key)
     await append_audit(
         session, actor_user_id=str(user.id),
         actor_ip=request.client.host if request.client else None,
@@ -106,7 +119,11 @@ async def update_firewall(
 
 
 async def cleanup_shared_rows(session: AsyncSession, fw_id: uuid.UUID) -> None:
-    """清掉這台 Palo Alto 寫進共用表的列（`nat_translations` 沒有 cascade）。"""
+    """清掉這台寫進**共用表**的列（不 commit，交易邊界由呼叫端決定）。
+
+    政策／位址物件有外鍵 cascade 可以依靠；`nat_translations` 是多來源共用表、
+    沒有 cascade，必須自己清 —— 而且**只能清自己的列**，所以條件要帶 `source_origin`。
+    """
     from app.models.nat import NATTranslation
     await session.execute(delete(NATTranslation).where(
         NATTranslation.source_origin == f"paloalto:{fw_id}",
@@ -136,6 +153,7 @@ async def test_firewall(
     fw_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
+    """連線診斷：偵測 REST 版本段、列出 vsys，並逐端點回報是否可讀與筆數。"""
     fw = await _get_or_404(session, fw_id)
     try:
         return await svc.diagnose(fw)
@@ -181,12 +199,18 @@ async def trigger_sync(
 async def list_policies(
     fw_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
+    vsys: str | None = Query(None),
 ) -> dict[str, Any]:
     stmt = select(PaloAltoPolicy).where(PaloAltoPolicy.firewall_id == fw_id)
-    rows = (await session.execute(stmt.order_by(PaloAltoPolicy.name))).scalars().all()
+    if vsys:
+        stmt = stmt.where(PaloAltoPolicy.vsys == vsys)
+    # 依 position 排序：PAN-OS 由上而下比對，順序本身就是語意，按名稱排會看不出優先權
+    rows = (await session.execute(stmt.order_by(
+        PaloAltoPolicy.vsys, PaloAltoPolicy.position))).scalars().all()
     return {"items": [{
-        "id": str(r.id), "vsys": r.vsys, "name": r.name, "action": r.action,
-        "disabled": r.disabled, "from_zone": r.from_zone, "to_zone": r.to_zone,
+        "id": str(r.id), "vsys": r.vsys, "name": r.name, "position": r.position,
+        "action": r.action, "disabled": r.disabled,
+        "from_zone": r.from_zone, "to_zone": r.to_zone,
         "source": r.source, "destination": r.destination,
         "application": r.application, "service": r.service, "description": r.description,
     } for r in rows]}
@@ -196,10 +220,15 @@ async def list_policies(
 async def list_addresses(
     fw_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
+    vsys: str | None = Query(None),
 ) -> dict[str, Any]:
     stmt = select(PaloAltoAddressObject).where(PaloAltoAddressObject.firewall_id == fw_id)
-    rows = (await session.execute(stmt.order_by(PaloAltoAddressObject.name))).scalars().all()
+    if vsys:
+        stmt = stmt.where(PaloAltoAddressObject.vsys == vsys)
+    rows = (await session.execute(stmt.order_by(
+        PaloAltoAddressObject.vsys, PaloAltoAddressObject.name))).scalars().all()
     return {"items": [{
-        "id": str(r.id), "vsys": r.vsys, "name": r.name, "obj_type": r.obj_type,
-        "value": r.value, "description": r.description,
+        "id": str(r.id), "vsys": r.vsys, "name": r.name, "kind": r.kind,
+        "obj_type": r.obj_type, "value": r.value, "members": r.members,
+        "description": r.description,
     } for r in rows]}

@@ -454,6 +454,43 @@ async def set_change_log_dim_days(
 GRAYLOG_DSV_KEY = "graylog_dsv"
 
 
+RACK_EMBED_KEY = "rack_embed"
+
+
+async def get_rack_embed(session: AsyncSession) -> dict[str, Any]:
+    """機櫃示意圖對外嵌入設定：enabled / token。
+
+    與 Graylog DSV 同一個模式（單一 token + 逐物件 expose 開關），刻意不共用同一把
+    token：撤銷嵌入網址時不該把 Graylog 的查表一起打掉。
+    """
+    row = await session.get(SystemSetting, RACK_EMBED_KEY)
+    v = dict(row.value) if (row and isinstance(row.value, dict)) else {}
+    return {"enabled": bool(v.get("enabled", False)), "token": str(v.get("token") or "")}
+
+
+async def set_rack_embed(
+    session: AsyncSession, *, enabled: bool, regenerate_token: bool = False,
+    updated_by_user_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    import secrets as _secrets
+
+    from sqlalchemy.orm.attributes import flag_modified
+
+    row = await session.get(SystemSetting, RACK_EMBED_KEY)
+    if row is None:
+        row = SystemSetting(key=RACK_EMBED_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    cur = dict(row.value or {})
+    cur["enabled"] = bool(enabled)
+    if regenerate_token or not cur.get("token"):
+        cur["token"] = _secrets.token_urlsafe(32)
+    row.value = cur
+    row.updated_by = updated_by_user_id
+    flag_modified(row, "value")
+    await session.flush()
+    return dict(cur)
+
+
 async def get_graylog_dsv(session: AsyncSession) -> dict[str, Any]:
     """Graylog DSV 查表設定：enabled / token / fmt(csv|tsv) / path(URL slug)。"""
     row = await session.get(SystemSetting, GRAYLOG_DSV_KEY)
@@ -1062,6 +1099,29 @@ async def set_notification_matrix(
 AUTOLINK_KEY = "ip_device_autolink"
 
 
+#: 哪些證據可以用來判定「上線」。ARP 預設不勾 —— 它證明的是「某個 MAC↔IP 對應被學到過」，
+#: 不是機器現在活著；而且 LibreNMS 的 ARP API 連時間都不回，來源設備的快取不老化就會
+#: 永遠看起來「剛剛才看到」（實機上讓一台關機的 VM 顯示 52 天全綠）。
+ONLINE_GRACE_KEY = "online_grace_minutes"
+
+
+async def get_liveness_config(session: AsyncSession) -> dict[str, Any]:
+    """上線判定：閾值（分鐘）＋哪些來源算數。"""
+    from app.services.evidence import LIVENESS_SOURCES, default_liveness_sources
+    row = await session.get(SystemSetting, ONLINE_GRACE_KEY)
+    v = row.value if row and isinstance(row.value, dict) else {}
+    try:
+        minutes = int(v.get("minutes") or 30)
+    except (TypeError, ValueError):
+        minutes = 30
+    raw = v.get("sources")
+    if isinstance(raw, list):
+        sources = [str(x) for x in raw if str(x) in LIVENESS_SOURCES]
+    else:
+        sources = default_liveness_sources()
+    return {"minutes": min(43200, max(1, minutes)), "sources": sources}
+
+
 async def get_autolink_config(session: AsyncSession) -> dict[str, Any]:
     """是否讓每輪同步依網卡 MAC 把 IP 掛回所屬裝置，以及限定的子網路範圍。
 
@@ -1099,3 +1159,36 @@ async def set_autolink_config(
     flag_modified(row, "value")
     await session.commit()
     return await get_autolink_config(session)
+
+
+# ── 憑證到期通知的全域預設天數 ───────────────────────────────
+CERT_EXPIRY_KEY = "cert_expiry_alert"
+CERT_EXPIRY_DEFAULT_DAYS = 21
+
+
+async def get_cert_expiry_days(session: AsyncSession) -> int:
+    """到期前幾天開始通知的**全域預設**。逐張憑證可以各自覆寫。"""
+    from app.models.system_setting import SystemSetting
+
+    row = await session.get(SystemSetting, CERT_EXPIRY_KEY)
+    val = row.value if row and isinstance(row.value, dict) else {}
+    try:
+        days = int(val.get("days", CERT_EXPIRY_DEFAULT_DAYS))
+    except (TypeError, ValueError):
+        days = CERT_EXPIRY_DEFAULT_DAYS
+    return max(1, min(365, days))
+
+
+async def set_cert_expiry_days(
+    session: AsyncSession, *, days: int, updated_by_user_id: Any = None,
+) -> int:
+    from app.models.system_setting import SystemSetting
+
+    clean = max(1, min(365, int(days)))
+    row = await session.get(SystemSetting, CERT_EXPIRY_KEY)
+    if row is None:
+        row = SystemSetting(key=CERT_EXPIRY_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    row.value = {"days": clean}
+    row.updated_by = updated_by_user_id
+    return clean

@@ -5,7 +5,7 @@
  * 或下載下來少了幾個 chunk，兩者在畫面上看起來都一樣正常。
  */
 import { test, expect } from "@playwright/test";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +21,17 @@ const SFTP_PORT = process.env.E2E_SFTP_PORT || "2222";
 test.skip(!ADMIN_PASS || !TARGET_IP_ID || !SFTP_ROOT,
   "需要 E2E_ADMIN_PASS、E2E_SFTP_IP_ID 與 E2E_SFTP_ROOT");
 test.setTimeout(180_000);
+
+// 測試自己產生的東西要自己收乾淨。累積下來的檔案會把清單撐到一頁裝不下，
+// 於是「剛上傳的那一列看得見嗎」這種斷言會為了完全無關的理由失敗 ——
+// 今天為此誤判了三次，每次都以為是產品壞了。
+test.afterAll(() => {
+  if (!SFTP_ROOT) return;
+  for (const name of readdirSync(SFTP_ROOT)) {
+    if (!/^(drop-[ab]|dropdir|mixed|uploaded|deldir|repro|hol|slow|big)-/.test(name)) continue;
+    rmSync(join(SFTP_ROOT, name), { recursive: true, force: true });
+  }
+});
 
 async function login(page: any) {
   await page.goto("/login");
@@ -174,6 +185,85 @@ test("拖曳多個檔案進來會全部上傳到目前目錄", async ({ page }) 
   await expect(page.locator("table").getByText(bn)).toBeVisible({ timeout: 30_000 });
   expect(readFileSync(`${SFTP_ROOT}/${a}`, "utf-8"), "第一個檔案沒落地或內容不對").toBe("A\n");
   expect(readFileSync(`${SFTP_ROOT}/${bn}`, "utf-8"), "第二個檔案沒落地或內容不對").toBe("B\n");
+});
+
+test("資料夾＋檔案一起拖：整個資料夾連同內容上傳，檔案也完整落地", async ({ page }) => {
+  await connect(page);
+  // 客戶實機情境：從桌面同時拖一個資料夾和一個檔案進來。
+  // macOS 交出來的資料夾 `File.size` 是 256，只有 `webkitGetAsEntry()` 分得出來。
+  const stamp = Date.now();
+  const folder = `dropdir-${stamp}`;
+  const name = `mixed-${stamp}.bin`;
+  const size = 700_000;
+
+  const dt = await page.evaluateHandle(([dirName, fname, n]) => {
+    // 用原型換掉：`DataTransferItemList` 每次取用都給新的包裝物件，
+    // 直接對取出來的項目指派會安靜消失。
+    const dir = {
+      isFile: false, isDirectory: true, name: dirName,
+      createReader: () => {
+        let done = false;
+        return {
+          readEntries: (ok: (e: unknown[]) => void) => {
+            if (done) { ok([]); return; }
+            done = true;
+            ok([
+              { isFile: true, isDirectory: false, name: "inside.txt",
+                file: (cb: (f: File) => void) => cb(new File(["hello\n"], "inside.txt")) },
+              { isFile: false, isDirectory: true, name: "nested",
+                createReader: () => {
+                  let d2 = false;
+                  return { readEntries: (ok2: (e: unknown[]) => void) => {
+                    if (d2) { ok2([]); return; }
+                    d2 = true;
+                    ok2([{ isFile: true, isDirectory: false, name: "deep.txt",
+                           file: (cb: (f: File) => void) => cb(new File(["deep\n"], "deep.txt")) }]);
+                  } };
+                } },
+            ]);
+          },
+        };
+      },
+    };
+    const bytes = new Uint8Array(n as number);
+    for (let i = 0; i < bytes.length; i += 1) bytes[i] = i % 251;
+    const plain = new File([bytes], fname as string);
+    const kinds: Record<string, unknown> = { [dirName as string]: dir };
+    Object.defineProperty(DataTransferItem.prototype, "webkitGetAsEntry", {
+      configurable: true,
+      value(this: DataTransferItem) {
+        const f = this.getAsFile();
+        const named = f ? kinds[f.name] : null;
+        return named ?? { isFile: true, isDirectory: false, name: f?.name,
+                          file: (cb: (x: File) => void) => cb(f as File) };
+      },
+    });
+    const d = new DataTransfer();
+    d.items.add(new File([new Uint8Array(256)], dirName as string));
+    d.items.add(plain);
+    return d;
+  }, [folder, name, size]);
+
+  await page.locator(".sftp-panel").dispatchEvent("dragenter", { dataTransfer: dt });
+  await page.locator(".sftp-panel").dispatchEvent("drop", { dataTransfer: dt });
+
+  // 1) 資料夾連同巢狀內容都要出現在遠端
+  await expect(page.locator("table").last().getByText(folder)).toBeVisible({ timeout: 60_000 });
+  expect(readFileSync(`${SFTP_ROOT}/${folder}/inside.txt`, "utf-8")).toBe("hello\n");
+  expect(readFileSync(`${SFTP_ROOT}/${folder}/nested/deep.txt`, "utf-8")).toBe("deep\n");
+  // 2) 一起拖進來的檔案要完整落地 —— 位元組數與內容都要對，不能是 0 位元組
+  const got = readFileSync(`${SFTP_ROOT}/${name}`);
+  expect(got.length, "檔案落地了但大小不對（0 位元組＝上傳迴圈中途斷掉）").toBe(size);
+  for (const off of [0, 1, 255, 256, 262_143, 262_144, size - 1]) {
+    expect(got[off], `第 ${off} 個位元組不對`).toBe(off % 251);
+  }
+  // 3) 連線必須還活著
+  await expect(page.getByText("連線已中斷")).toHaveCount(0);
+  await page.getByRole("button", { name: /重新整理/ }).click();
+  // 重新整理後還能列出東西就夠了 —— 落地的正確性上面已經逐位元組比對過。
+  // 不要對「某一列在第幾個 <table> 裡」下斷言：Naive 的表格會依欄位固定與捲動
+  // 拆成多個 table，列數一多就換位置，測試會為了無關的原因失敗。
+  await expect(page.locator(".sftp-panel").getByText(folder).first()).toBeVisible({ timeout: 20_000 });
 });
 
 test("上傳檔案選取框可以複選", async ({ page }) => {

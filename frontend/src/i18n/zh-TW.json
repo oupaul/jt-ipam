@@ -223,7 +223,13 @@
     "device_hint": "選擇此代理所在的裝置",
     "device_help": "對應後，清單與現況頁的代理名稱可點進該裝置詳細資料；來源 IP 若在 IPAM 有對應位址也可點進去。",
     "go_device": "前往裝置：{name}",
-    "cert_deleted": "憑證已刪除"
+    "cert_deleted": "憑證已刪除",
+    "warn_days_title": "到期通知：{name}",
+    "warn_days_label": "到期前幾天通知",
+    "warn_days_use_default": "沿用全域預設（{n} 天）",
+    "warn_days_default": "到期通知：沿用預設 {n} 天",
+    "warn_days_set": "到期通知：提前 {n} 天",
+    "warn_days_hint": "不同憑證的更新流程長短不同：手動申請的商業憑證需要提前準備，自動續簽的不必太早提醒。未設定則沿用系統設定裡的全域預設。"
   },
   "nav": {
     "dashboard": "儀表板",
@@ -302,7 +308,10 @@
     "esxi_admin": "整合 VMware",
     "fw_rule_changes": "防火牆規則異動",
     "attack_surface": "對外開放服務",
-    "zabbix": "整合 Zabbix"
+    "zabbix": "整合 Zabbix",
+    "event_rules": "事件規則",
+    "paloalto": "整合 Palo Alto",
+    "paloalto_fw": "防火牆 (Palo Alto)"
   },
   "topbar": {
     "search": "搜尋…",
@@ -396,7 +405,9 @@
     "disconnected_err": "連線發生錯誤",
     "disconnected_hint": "請點右上「重新連線」重試",
     "username": "帳號",
-    "password": "密碼"
+    "password": "密碼",
+    "show": "顯示",
+    "hide": "隱藏"
   },
   "scan_agent": {
     "outdated": "可更新",
@@ -423,7 +434,8 @@
     "source_label": "來源",
     "src_scanner": "掃描代理",
     "src_librenms": "LibreNMS",
-    "src_wazuh": "Wazuh"
+    "src_wazuh": "Wazuh",
+    "src_zabbix": "Zabbix"
   },
   "scan_probes": {
     "title": "掃描項目",
@@ -677,7 +689,8 @@
     "err_username": "請輸入帳號",
     "err_ticket": "無法建立連線（權限或網路問題）",
     "err_ws": "WebSocket 連線失敗",
-    "err_generic": "連線發生錯誤"
+    "err_generic": "連線發生錯誤",
+    "cred_manual": "使用其他帳密（手動輸入）"
   },
   "rdp": {
     "connect": "RDP 連線",
@@ -801,7 +814,8 @@
     "unlock": "解鎖",
     "assign_perms": "權限指派",
     "deactivate": "停用",
-    "reactivate": "啟用"
+    "reactivate": "啟用",
+    "admin_external_hint": "這是外部帳號（LDAP / SSO）。若站台設定了「管理員群組對應」，這個開關會在每次登入時依目錄的群組重新判定；沒有設定對應時才由這裡決定。"
   },
   "ipChanges": {
     "title": "IP 異動記錄",
@@ -895,7 +909,16 @@
     "foot_newline": "換行",
     "foot_local": "AI 對話可能出錯，敬請留意",
     "assistant": "AI 助手",
-    "related": "相關"
+    "related": "相關",
+    "stop": "停止",
+    "stopped": "（已停止產生回答）",
+    "phase_connecting": "連線中…",
+    "phase_thinking": "模型思考中…",
+    "phase_thinking_n": "模型思考中…（已 {n}k 字）",
+    "phase_composing": "整理查到的資料…",
+    "phase_answering": "產生回答中…",
+    "phase_round": "第 {n} 輪查詢",
+    "phase_elapsed": "已 {n} 秒"
   },
   "perm": {
     "title": "權限指派",
@@ -1030,7 +1053,37 @@
     "fit": "全貌",
     "zoom_in": "放大",
     "zoom_out": "縮小",
-    "online_only": "只畫上線"
+    "online_only": "只畫上線",
+    "fdb": "存取層 (FDB)",
+    "kind_l2": "存取層（交換器埠）",
+    "kind_l2_uplink": "交換器骨幹",
+    "kind_l2_behind": "在此埠後面（非直連）",
+    "via_fdb": "交換器 MAC 表（FDB）",
+    "field_peer_port": "對端埠",
+    "field_direct": "直接連接",
+    "field_port_mac_count": "此埠上的 MAC 數",
+    "direct_yes": "是（此埠上只有這一台）",
+    "direct_no": "否（此埠後面還有其他機器）",
+    "view_auto": "自動（混合）",
+    "view_switch": "以交換器為中心",
+    "view_l2": "只看存取層（FDB）",
+    "view_l3": "只看子網路",
+    "vms": "虛擬機",
+    "kind_vm_host": "虛擬機所在主機",
+    "type_vm": "虛擬機",
+    "via_virtualization": "虛擬化平台",
+    "field_host": "實體主機",
+    "field_cluster": "叢集",
+    "field_memory": "記憶體 (MB)",
+    "unplaced_group": "同網段・查不出接在哪台交換器",
+    "asserted_only": "只看已登記",
+    "asserted_only_hint": "只留下有人在 IPAM 裡登記過的連線（實體佈線、無線連線、IP 與裝置的連結），把所有推導出來的線都拿掉 —— 一眼看出「確定的部分」有多少。",
+    "field_evidence": "依據",
+    "ev_asserted": "有人登記",
+    "ev_monitored": "第三方監控回報",
+    "ev_learned": "被動學到（FDB／ARP）",
+    "ev_inferred": "名稱推測",
+    "kind_inferred": "推測（非登記或觀測）"
   },
   "hostnameSrc": {
     "auto": "自動 (跟全域順序)",
@@ -1039,14 +1092,14 @@
     "pin_label": "固定主機名稱來源",
     "pin_hint": "選某來源後此 IP 永遠以它的主機名稱為準；「自動」則依全域順序解析。",
     "page_title": "主機名稱來源順序",
-    "page_subtitle": "多個來源 (手動 / DNS / LibreNMS / OPNsense / 掃描 / Proxmox VE / Wazuh / AdGuard) 回報同一個 IP 的主機名稱時，由上而下誰先有值就用誰。可拖拉調整順序。",
+    "page_subtitle": "多個來源回報同一個 IP 的主機名稱時，由上而下誰先有值就用誰（清單即目前實際採用的所有來源）。可拖拉調整順序。",
     "drag_hint": "拖拉調整順序 (最上面優先)；右側開關可停用某來源，停用後該來源不參與名稱比對。",
     "enabled": "啟用",
     "disabled": "停用",
     "arp_title": "ARP / MAC 來源順序",
-    "arp_subtitle": "多個來源 (掃描 / OPNsense / LibreNMS / AdGuard / Proxmox VE) 替同一 IP 回報 MAC 時，排越前面者可覆寫排後面者；右側開關可停用某來源。拖拉調整。",
+    "arp_subtitle": "多個來源替同一個 IP 回報 MAC 時，排越前面者可覆寫排後面者；右側開關可停用某來源。拖拉調整。",
     "dev_title": "裝置名稱來源順序",
-    "dev_subtitle": "多個來源 (LibreNMS / DNS / Proxmox VE 名稱 / OPNsense / LibreNMS sysName) 提供同一台裝置名稱時，排越前面者優先採用；手動最高且不可停用。拖拉調整。",
+    "dev_subtitle": "多個來源提供同一台裝置名稱時，排越前面者優先採用；手動最高且不可停用。拖拉調整。",
     "save": "儲存順序",
     "saved": "順序已更新",
     "src": {
@@ -1062,10 +1115,14 @@
       "adguard": "AdGuard",
       "snmp": "LibreNMS (sysName)",
       "windows_dhcp": "Windows DHCP",
-      "fortigate": "FortiGate"
+      "fortigate": "FortiGate",
+      "pfsense": "pfSense",
+      "paloalto": "Palo Alto",
+      "zabbix": "Zabbix",
+      "esxi": "VMware ESXi / vCenter"
     },
     "model_title": "裝置型號來源順序",
-    "model_subtitle": "多個來源（LibreNMS hardware / Proxmox VE / OPNsense）提供同一台裝置型號時，排越前面優先採用；手動最高且不可停用。拖拉調整。"
+    "model_subtitle": "多個來源提供同一台裝置型號時，排越前面優先採用；手動最高且不可停用。拖拉調整。"
   },
   "addresses": {
     "search_placeholder": "搜尋所有欄位 (IP / 主機名稱 / MAC / 描述 / 擁有者 / 交換器位置 / 備註)",
@@ -1146,7 +1203,16 @@
     "virt_vm_tag": "虛擬機",
     "switch_name_ph": "交換器名稱",
     "switch_port_ph": "埠（如 eth1/0/6）",
-    "switch_port_hint": "此欄由 LibreNMS 同步維護；手動填的值會在下次同步時被覆寫。"
+    "switch_port_hint": "此欄由 LibreNMS 同步維護；手動填的值會在下次同步時被覆寫。",
+    "last_seen_arp": "最後出現 (ARP)",
+    "source_arp": "僅 ARP",
+    "state_deprecated": "準備退場",
+    "state_quarantine": "隔離中",
+    "suggest_link": "關聯到既有裝置「{name}」",
+    "suggest_create": "建立裝置「{name}」並關聯",
+    "suggest_siblings_hint": "另有 {n} 筆 IP 用同一個主機名稱。⚠️ 同名不代表同一台 —— DHCP 位址回收後舊主機名稱會留著，請比對 MAC 再勾選：",
+    "suggest_same_mac": "MAC 相同",
+    "last_seen_wazuh": "Wazuh 代理 keep-alive"
   },
   "subnets": {
     "title": "子網路",
@@ -1377,7 +1443,8 @@
     "physical": "實體",
     "filter_subnet": "子網路",
     "filter_subnet_all": "全部子網路",
-    "vm_tag": "虛擬機"
+    "vm_tag": "虛擬機",
+    "error_location_mismatch": "這台機櫃不在你選的地點，兩者請擇一修正"
   },
   "locations": {
     "site": "場域",
@@ -1447,7 +1514,12 @@
     "dimensions": "寬度 × 深度",
     "page_title": "機房 / 機櫃",
     "rack_side_left": "左",
-    "rack_side_right": "右"
+    "rack_side_right": "右",
+    "embed_label": "對外嵌入",
+    "embed_hint": "開啟後，這個機櫃的示意圖可用一個網址（含權杖）給別的系統以圖片嵌入，例如 LibreNMS 儀表板。圖上會顯示裝置名稱與位置，預設關閉。",
+    "embed_copy": "複製嵌入網址",
+    "embed_copied": "已複製。這串網址等同一把鑰匙，請勿貼到公開場合。",
+    "embed_disabled_hint": "嵌入功能尚未在系統設定中啟用"
   },
   "requests": {
     "title": "IP 申請",
@@ -1812,7 +1884,11 @@
     "triage_btn": "AI 判讀",
     "triage_title": "AI 鑑識：{ip}",
     "fw_rot": "防火牆規則劣化",
-    "explain_fw_rule_rot": "生效中的規則裡「已經不對勁」的部分：埠轉發指向 IPAM 沒有的位址（目標可能已回收）、any → any 放行（等於該介面沒有防火牆）、WAN 介面對任意來源開放管理埠（SSH／RDP／VNC／IPMI）。手動建立的 NAT 與停用中的規則不列入。"
+    "explain_fw_rule_rot": "生效中的規則裡「已經不對勁」的部分：埠轉發指向 IPAM 沒有的位址（目標可能已回收）、any → any 放行（等於該介面沒有防火牆）、WAN 介面對任意來源開放管理埠（SSH／RDP／VNC／IPMI）。手動建立的 NAT 與停用中的規則不列入。",
+    "arp_only": "僅 ARP 看得到",
+    "explain_arp_only_liveness": "這些 IP 看起來在線，但唯一的證據是 ARP 記錄 —— 而 ARP 沒有時間資訊，來源設備（AP／路由器）的快取不會過期。機器就算已經關機，這裡仍會顯示上線。要確認實際狀態，請用掃描代理探測，或改由 LibreNMS／Zabbix 納管。",
+    "stale_link": "裝置關聯可能過期",
+    "explain_stale_device_links": "這些 IP 掛著某台裝置，但**位址在關聯之後又換過 MAC** —— 多半是位址被回收給另一台機器（DHCP 常見），關聯已經指到錯的裝置。系統刻意不自動解除：要不要拆是人的判斷。請比對現在的 MAC 與那台裝置，再決定改掛或清空。"
   },
   "webhooks": {
     "events_label": "事件 (* = 全部)",
@@ -1954,7 +2030,12 @@
     "expand_ref": "展開",
     "rule_disabled": "已停用",
     "from": "來源",
-    "to": "目的"
+    "to": "目的",
+    "vm_status_running": "執行中",
+    "vm_status_stopped": "已停止",
+    "vm_status_paused": "已暫停",
+    "vm_status_suspended": "已休眠",
+    "vm_status_unknown": "未知"
   },
   "physical": {
     "cabling": "佈線",
@@ -2396,7 +2477,9 @@
     "ago_hours": "{n} 小時前",
     "ago_days": "{n} 天前",
     "no_records": "沒有 scanner / LibreNMS / DNS 紀錄",
-    "online_threshold": "上線閾值：{n} 分鐘"
+    "online_threshold": "上線閾值：{n} 分鐘",
+    "arp_only_label": "上線（僅 ARP）",
+    "arp_only_hint": "只有 ARP 看到它。ARP 記錄沒有時間資訊，來源設備的快取不會過期，所以機器就算已經關機，這裡仍可能顯示上線。"
   },
   "llm_settings": {
     "title": "LLM / AI 全域設定",
@@ -2554,7 +2637,12 @@
     "wz_instance": "Wazuh 來源",
     "wz_sca": "資安組態評估",
     "wz_sca_counts": "通過 {pass} ／ 未通過 {fail}",
-    "wz_sca_worst": "此機共 {n} 個基準，顯示分數最低的一個"
+    "wz_sca_worst": "此機共 {n} 個基準，顯示分數最低的一個",
+    "vm_name": "虛擬機",
+    "vm_node": "所在主機",
+    "vm_cluster": "叢集",
+    "vm_vcpu": "虛擬處理器",
+    "vm_memory": "記憶體 (MB)"
   },
   "relations": {
     "title": "關係圖（上下層物件）",
@@ -2697,7 +2785,33 @@
     "title": "系統設定（全域）",
     "grp_display": "顯示與地圖",
     "grp_liveness": "上線判定",
-    "grp_security": "資安"
+    "grp_security": "資安",
+    "liveness_sources": "採計的證據來源",
+    "src_scanner": "掃描代理探測",
+    "src_librenms": "LibreNMS 裝置狀態",
+    "src_arp": "ARP 記錄（LibreNMS，不建議）",
+    "liveness_sources_hint": "只有勾選的來源會被拿來判定上線。標「不會過期」的來源不建議勾：它們證明的是某個對應被學到過，不是機器現在活著 —— LibreNMS 的 ARP API 不回時間、DHCP 租約可能是好幾天前拿的，機器關機後仍會一直顯示上線。防火牆自己的 ARP 表與 VPN 連線會逾時淘汰，所以預設採信。",
+    "grp_lifecycle": "IP 生命週期",
+    "cooldown_days": "釋放後冷卻天數",
+    "cooldown_days_hint": "IP 被釋放（刪除）後，這段期間內不會被重新配發，也擋下手動建立。原因是外面還有東西指著它：DNS 記錄與快取、防火牆規則、ACL、憑證 SAN、監控設定。太早配給別台機器，症狀會是最難查的那種。預設 30 天；0 = 停用。管理員可對個別位址提前解除（會留下紀錄）。",
+    "grp_rack_embed": "機櫃圖對外嵌入",
+    "rack_embed_enabled": "啟用嵌入",
+    "rack_embed_hint": "啟用後，已個別開放的機櫃可用一個網址（含權杖）給別的系統以圖片嵌入，例如 LibreNMS 儀表板。還要在「機櫃」頁逐櫃開啟才會生效。",
+    "rack_embed_token": "存取權杖",
+    "rack_embed_token_hint": "這串等同一把鑰匙，任何拿到的人都能看到已開放機櫃的示意圖（含裝置名稱與位置）。請勿貼到公開場合。",
+    "rack_embed_regen": "重新產生權杖",
+    "rack_embed_regen_confirm": "重新產生後，所有既有的嵌入網址會立刻失效，需要重新貼一次。確定嗎？",
+    "rack_embed_regenerated": "已重新產生權杖，舊網址即刻失效",
+    "grp_cert_alert": "憑證到期通知",
+    "cert_expiry_days": "到期前幾天通知（預設）",
+    "cert_expiry_days_hint": "全域預設。每張憑證可以在「憑證派送」頁各自覆寫 —— 手動申請的商業憑證需要提前準備，自動續簽的不必太早提醒。",
+    "src_wazuh": "Wazuh 代理 keep-alive",
+    "src_kind_arp": "ARP 表",
+    "src_kind_vpn": "VPN 連線",
+    "src_kind_lease": "DHCP 租約",
+    "src_no_aging": "不會過期",
+    "src_kind_base": "探測／監控",
+    "src_zabbix": "Zabbix 主機可用性"
   },
   "oui_admin": {
     "title": "MAC 製造商資料庫 (OUI)",
@@ -2916,7 +3030,8 @@
     "guide_ts_term": "方框字／顏色亂（例如 glances）",
     "guide_ts_term_d": "把序列登入的 TERM 設成 xterm-256color（serial-getty 預設常是 vt220）。",
     "guide_ts_size": "畫面範圍很小、四周留黑",
-    "guide_ts_size_d": "序列無法自動傳視窗大小，按工具列的「符合視窗」（送 stty 對齊），或自行 stty rows N cols N。"
+    "guide_ts_size_d": "序列無法自動傳視窗大小，按工具列的「符合視窗」（送 stty 對齊），或自行 stty rows N cols N。",
+    "guide_s4_link": "逐欄建議值 →"
   },
   "notif": {
     "ipreq_approved": "IP 申請已核准",
@@ -2995,7 +3110,9 @@
     "import_done": "匯入完成。",
     "import_failed": "匯入失敗。",
     "col_table": "資料表",
-    "col_errored": "錯誤"
+    "col_errored": "錯誤",
+    "import_partial": "匯入完成，但有 {n} 列沒有寫入",
+    "import_partial_hint": "這些列是整筆沒有進去（不是少了某個欄位）。請看下方各表的「失敗」欄位確認是哪一張表，並把下列訊息回報給我們。"
   },
   "windows_dhcp": {
     "title": "Windows DHCP 伺服器",
@@ -3116,7 +3233,9 @@
     "sort_by": "排序",
     "sort_sla": "可用率",
     "sort_asc": "遞增",
-    "sort_desc": "遞減"
+    "sort_desc": "遞減",
+    "observed_from": "{d} 起為實際逐日觀測",
+    "observed_hint": "這天之前的日子沒有逐日記錄，只能依狀態轉換推估：沒有轉換不代表當時一直正常，也可能是沒有任何來源在看它。"
   },
   "certOs": {
     "linux": "Linux",
@@ -3382,7 +3501,7 @@
     "upload_partial_fail": "已上傳 {ok} 個；這幾個沒有成功：{names}",
     "uploading_progress": "上傳中 {done}/{total}：{name}",
     "drop_here": "放開以上傳到 {dir}",
-    "drop_dirs_skipped": "略過 {n} 個資料夾 —— 目前只能拖曳檔案。",
+    "drop_dirs_skipped": "有 {n} 個資料夾無法展開，已略過（這個瀏覽器沒有提供資料夾內容）",
     "name_ph": "請輸入名稱",
     "move_title": "移動 {n} 項到…",
     "move_path_ph": "直接輸入目的地絕對路徑，或在下方點選",
@@ -3395,7 +3514,16 @@
     "deleted_recursive": "已刪除 {n} 個項目。",
     "batch_dirs_not_empty": "這些資料夾不是空的，沒有刪除：{names}。請逐一點「刪除」，再選擇是否連同內容一起刪。",
     "offline_title": "連線已中斷",
-    "offline_hint": "這份清單是斷線前的內容，可能已經和遠端不一致。重新連線後才能繼續操作檔案。"
+    "offline_hint": "這份清單是斷線前的內容，可能已經和遠端不一致。重新連線後才能繼續操作檔案。",
+    "sort_dirs_first": "資料夾優先",
+    "sort_mixed": "檔案資料夾一起排",
+    "sort_mode_hint": "「資料夾優先」時，資料夾永遠排在檔案前面（升冪降冪都一樣），與檔案總管相同；「一起排」則只看目前排序的欄位，像 ls。這個選擇會存進你的偏好，換裝置也一樣。",
+    "unreadable_item": "讀不到這個項目（資料夾請先壓縮成單一檔案再上傳）",
+    "offline_code": "關閉代碼 {code}　（1000＝正常結束；1006＝連線被中途切斷，通常是中間的反向代理閒置逾時）",
+    "upload_bytes": "上傳中：{name}　{sent} / {total}（{pct}%）",
+    "offline_upload": "中斷時正在上傳：{name}　已送出 {sent} / {total}",
+    "drop_too_many": "有 {n} 個項目沒有收進來（一次最多 {max} 個檔案）",
+    "err_no_ack": "資料送不到伺服器：第一段資料送出後 15 秒仍未被確認收到。伺服器是好的（它已回覆可以上傳），問題出在這台電腦到伺服器之間 —— 常見於 VPN／代理伺服器把較大的封包丟掉，或瀏覽器擴充功能干擾。可先試無痕視窗（停用擴充功能）或換一條網路。"
   },
   "fw_autocreate": {
     "label": "自動建立 IPAM 沒有的位址",
@@ -3418,7 +3546,7 @@
     "rules": "規則數",
     "diff": "異動內容",
     "baseline": "（初次快照，作為比對基準）",
-    "hint": "規則異動偵測會在每輪同步比對三家防火牆（OPNsense／pfSense／FortiGate）的規則，只有真的變更才記錄一筆並通知管理員。半夜多出一條放行規則是防火牆被入侵或留後門的經典徵兆——這一頁就是查證用的完整記錄。",
+    "hint": "規則異動偵測會在每輪同步比對各家防火牆（OPNsense／pfSense／FortiGate／Palo Alto）的規則，只有真的變更才記錄一筆並通知管理員。半夜多出一條放行規則是防火牆被入侵或留後門的經典徵兆——這一頁就是查證用的完整記錄。",
     "empty": "還沒有記錄到任何規則異動。",
     "ai": "AI 解讀",
     "ai_btn": "AI 解讀",
@@ -3435,7 +3563,8 @@
     "ack_ph": "說明（例：開放 443 對應工單 #123）",
     "d_add": "新增",
     "d_del": "移除",
-    "d_chg": "修改"
+    "d_chg": "修改",
+    "kind": "類型"
   },
   "surface": {
     "title": "對外開放服務清單",
@@ -3503,5 +3632,56 @@
     "gap": "監控涵蓋缺口",
     "gap_scoped": "在限定的子網路範圍內，有 {n} 個已知主機名稱的位址沒有被這台 Zabbix 監控。",
     "gap_global": "全站有 {n} 個已知主機名稱的位址沒有被這台 Zabbix 監控（此實例未設限定子網路範圍）。"
+  },
+  "event_rules": {
+    "title": "事件規則",
+    "intro": "事件 → 條件 → 動作。例如「新增的網段描述含 Production 才通知」、「發現未授權 IP 且落在伺服器網段才告警」。條件是結構化欄位（不是可執行的運算式），也刻意不支援正規表示式 —— 規則由人輸入，能執行的東西就是風險。",
+    "events": "訂閱事件",
+    "events_ph": "可自行輸入；* = 所有事件",
+    "conditions": "條件（全部成立才算命中）",
+    "conditions_hint": "欄位用點號路徑，例如 data.subnet.cidr、data.count。沒有條件＝只看事件名稱。",
+    "no_conditions": "（無條件）",
+    "actions_col": "動作",
+    "act_notify": "通知管理員",
+    "act_webhook": "送到 Webhook",
+    "add_condition": "新增條件",
+    "add_action": "新增動作",
+    "field_ph": "data.subnet.cidr",
+    "value_ph": "比對值",
+    "notify_title_ph": "通知標題（留空用規則名稱）",
+    "webhook_id_ph": "Webhook 訂閱 ID",
+    "matches": "命中次數",
+    "test": "試跑",
+    "run_test": "執行試跑",
+    "test_event": "事件名稱",
+    "test_payload": "事件內容（JSON）",
+    "test_hint": "只計算會不會命中，不會真的送出通知或 Webhook。",
+    "would_match": "這份內容會命中這條規則",
+    "would_not_match": "這份內容不會命中",
+    "event_name": "事件名稱符合",
+    "actual": "實際值",
+    "bad_json": "事件內容不是合法的 JSON"
+  },
+  "paloalto": {
+    "title": "Palo Alto",
+    "view_title": "防火牆 (Palo Alto)",
+    "intro": "透過 PAN-OS API 唯讀同步 Palo Alto（只讀取，不會更動防火牆上的任何設定）。需要一把唯讀角色的 API 金鑰，且後端要連得到該設備的管理介面。",
+    "key": "API 金鑰",
+    "key_keep": "API 金鑰（留空表示不更改）",
+    "key_hint": "請在 PAN-OS 建立唯讀管理員後，以 /api/?type=keygen 取得 API 金鑰。金鑰以 X-PAN-KEY 標頭傳送。",
+    "api_version": "REST 版本",
+    "api_version_hint": "留空＝自動偵測（建議）。PAN-OS 的 REST 網址帶版本段（/restapi/v11.1/…），填錯會讓所有端點回 404。",
+    "vsys_ph": "留空＝自動探索全部 vsys（或自行列出：vsys1, vsys2）",
+    "vsys_auto": "自動（全部）",
+    "pull_what": "要拉取的資料",
+    "policies": "安全政策",
+    "addresses": "位址物件",
+    "diagnose": "測試連線",
+    "diag_summary": "{total} 個端點中有 {ok} 個可讀取",
+    "diag_rows": "{n} 筆",
+    "pick_firewall": "選擇 Palo Alto",
+    "all_vsys": "全部 vsys",
+    "none_configured": "尚未設定 Palo Alto —— 請到「管理 → 整合 Palo Alto」新增。",
+    "col_application": "應用程式（App-ID）"
   }
 }

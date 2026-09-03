@@ -24,6 +24,7 @@ from app.api.v1.endpoints import (
     dhcp,
     dns,
     esxi,
+    event_rules,
     firewall,
     fortigate,
     import_external,
@@ -117,6 +118,7 @@ api_v1_router.include_router(search.router)
 api_v1_router.include_router(ip_requests.router)
 api_v1_router.include_router(ip_changes.router)
 api_v1_router.include_router(rack_diagram.router)
+api_v1_router.include_router(rack_diagram.admin_router)
 api_v1_router.include_router(migration.router)
 api_v1_router.include_router(ai_audit.router)
 api_v1_router.include_router(investigate.router)
@@ -138,11 +140,12 @@ api_v1_router.include_router(firewall.router)
 api_v1_router.include_router(dhcp.router)
 api_v1_router.include_router(pfsense.router)
 api_v1_router.include_router(pfsense.view_router)
+api_v1_router.include_router(event_rules.router)
 api_v1_router.include_router(fortigate.router)
+api_v1_router.include_router(paloalto.router)
 api_v1_router.include_router(fortigate.view_router)
 api_v1_router.include_router(zyxel.router)
 api_v1_router.include_router(zyxel.view_router)
-api_v1_router.include_router(paloalto.router)
 api_v1_router.include_router(paloalto.view_router)
 api_v1_router.include_router(wazuh.router)
 api_v1_router.include_router(zabbix.router)

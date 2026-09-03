@@ -6,10 +6,12 @@
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
-  NCard, NSpace, NIcon, NSelect, NInput, NInputNumber, NSwitch, NCheckbox, NButton, NTag, useMessage,
+  NCard, NSpace, NIcon, NSelect, NInput, NInputNumber, NSwitch, NCheckbox, NCheckboxGroup,
+  NButton, NPopconfirm, NTag, useMessage,
 } from "naive-ui";
 const origin = window.location.origin;
 import { AdminIcon, SaveIcon, RefreshIcon } from "@/icons";
+import { getRackEmbedConfig, setRackEmbedConfig, type RackEmbedConfig } from "@/api/racks";
 import { getLdap, putLdap, testLdap, testLdapAuth, type LdapConfig,
   getAuditForward, putAuditForward, testAuditForward, type AuditForward,
   getOidcConfig, putOidcConfig, testOidc, type OidcConfig,
@@ -25,9 +27,11 @@ import { apiErrMsg } from "@/api/client";
 import {
   getMapProvider, setMapProvider, getRackNameAlign, setRackNameAlign,
   getOnlineGrace, setOnlineGrace,
+  getIpCooldown, setIpCooldown,
+  getCertExpiryDays, setCertExpiryDays,
   getGeoipConfig, setGeoipConfig, updateGeoipDbNow,
   getGoogleMapsKeyStatus, setGoogleMapsApiKey, clearGoogleMapsApiKey,
-  type GeoIPConfig, type RackNameAlign,
+  type GeoIPConfig, type RackNameAlign, type LivenessSource,
 } from "@/api/basic";
 
 const { t } = useI18n();
@@ -97,15 +101,111 @@ async function changeRackAlign(a: RackNameAlign) {
   try { await setRackNameAlign(a); msg.success(t("common.ok")); } catch (e) { msg.error(apiErrMsg(e)); }
 }
 
-// 上線判定閾值（分鐘）
+// 上線判定：閾值（分鐘）＋採信哪些證據
 const grace = ref(30);
+// LibreNMS 的 ARP 預設不勾 —— 它沒有時間概念，來源設備的快取不老化就會讓關機的
+// 機器一直顯示上線。候選清單由後端給（只列這個站台真的有的整合）。
+const livenessSrc = ref<string[]>(["scanner", "librenms"]);
+const livenessAvail = ref<LivenessSource[]>([]);
+
+const VENDOR_LABEL: Record<string, string> = {
+  opnsense: "OPNsense", pfsense: "pfSense",
+  fortigate: "FortiGate", paloalto: "Palo Alto",
+};
+
+/** `arp:opnsense` → 「ARP 表（OPNsense）」；沒有廠牌後綴的用既有翻譯。 */
+function srcLabel(key: string): string {
+  if (!key.includes(":")) return t(`system_settings.src_${key}`);
+  const [kind, vendor] = key.split(":", 2);
+  return `${t(`system_settings.src_kind_${kind}`)}（${VENDOR_LABEL[vendor] ?? vendor}）`;
+}
+
+/** 分組顯示時，種類已經在列首寫過了 → 每一格只寫廠牌名。 */
+function vendorLabel(key: string): string {
+  // 舊的籠統 "arp" 就是 LibreNMS 的 ARP（同一件事的舊鍵）→ 併進 ARP 那一列，
+  // 放在「探測／監控」會既不同類、又因為字長而把那一列撐出換行。
+  if (key === "arp") return "LibreNMS";
+  const vendor = key.split(":", 2)[1] ?? key;
+  return VENDOR_LABEL[vendor] ?? vendor;
+}
+
+/** 這個來源歸在哪一組。 */
+function srcKind(key: string): string {
+  if (key === "arp") return "arp";
+  return key.includes(":") ? key.split(":", 1)[0] : "base";
+}
+
+//: 分組的順序＝可信度由高到低（探測 → 防火牆的 ARP／VPN → 不會過期的租約與 ARP 記錄）
+const SRC_KINDS = ["base", "arp", "vpn", "lease"] as const;
+
+const livenessGroups = computed(() =>
+  SRC_KINDS.map((kind) => ({
+    kind,
+    title: kind === "base"
+      ? t("system_settings.src_kind_base")
+      : t(`system_settings.src_kind_${kind}`),
+    // 會過期的排前面：那些才是預設採信的，不建議的（不會過期）擺最後
+    items: livenessAvail.value.filter((s) => srcKind(s.key) === kind)
+      .slice().sort((a, b) => Number(b.aging) - Number(a.aging)),
+  })).filter((g) => g.items.length));
+// IP 生命週期：釋放後的冷卻天數
+const cooldownDays = ref(30);
+// 憑證到期通知的全域預設。每張憑證可各自覆寫（憑證頁的鈴鐺按鈕）——
+// 這裡只是「沒特別設定時用哪個」。
+const certExpiryDays = ref(21);
+async function changeCertExpiry(n: number | null) {
+  if (n == null) return;
+  certExpiryDays.value = n;
+  try { await setCertExpiryDays(n); msg.success(t("common.ok")); } catch (e) { msg.error(apiErrMsg(e)); }
+}
+async function changeCooldown(v: number | null) {
+  const n = v ?? 0;
+  cooldownDays.value = n;
+  try { await setIpCooldown(n); msg.success(t("common.ok")); } catch (e) { msg.error(apiErrMsg(e)); }
+}
+
+async function changeSources(v: (string | number)[]) {
+  const list = v.map(String);
+  livenessSrc.value = list;
+  try { await setOnlineGrace(grace.value, list); msg.success(t("common.ok")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
+}
 async function changeGrace(v: number | null) {
   const n = v ?? 30;
   grace.value = n;
-  try { await setOnlineGrace(n); msg.success(t("common.ok")); } catch (e) { msg.error(apiErrMsg(e)); }
+  try { await setOnlineGrace(n, livenessSrc.value); msg.success(t("common.ok")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
 }
 
 // GeoIP
+// 機櫃圖對外嵌入：這裡只管系統層的總開關與權杖，要公開哪一櫃在機櫃頁逐櫃決定
+const rackEmbed = ref<RackEmbedConfig | null>(null);
+const showRackToken = ref(false);
+const rackEmbedToken = computed(() => rackEmbed.value?.token ?? "");
+async function loadRackEmbed() {
+  try { rackEmbed.value = await getRackEmbedConfig(); } catch { rackEmbed.value = null; }
+}
+async function changeRackEmbed(v: boolean) {
+  try {
+    rackEmbed.value = await setRackEmbedConfig(v);
+    msg.success(t("common.saved"));
+  } catch { msg.error(t("errors.server")); }
+}
+async function regenRackToken() {
+  try {
+    rackEmbed.value = await setRackEmbedConfig(rackEmbed.value?.enabled ?? true, true);
+    // 舊網址立刻失效，這件事一定要講出來，否則別人的儀表板會突然破圖而找不到原因
+    msg.success(t("system_settings.rack_embed_regenerated"));
+  } catch { msg.error(t("errors.server")); }
+}
+async function copyRackToken() {
+  if (!rackEmbedToken.value) return;
+  try {
+    await navigator.clipboard.writeText(rackEmbedToken.value);
+    msg.success(t("common.copied"));
+  } catch { msg.error(t("errors.server")); }
+}
+
 const geoip = ref<GeoIPConfig | null>(null);
 const geoipAccount = ref("");
 const geoipKey = ref("");
@@ -314,12 +414,18 @@ async function doTestAf() {
 }
 
 onMounted(() => {
+  void loadRackEmbed();
   getUiDisplay().then((d) => { changeLogDimDays.value = d.change_log_dim_days; }).catch(() => {});
   getConsoleSecurity().then((c) => { rdpClipPaste.value = c.rdp_clipboard_paste; }).catch(() => {});
   getMapProvider().then((p) => { mapProvider.value = p; }).catch(() => {});
   getGoogleMapsKeyStatus().then((s) => { gmapsKeyStatus.value = s; }).catch(() => {});
   getRackNameAlign().then((a) => { rackAlign.value = a; }).catch(() => {});
-  getOnlineGrace().then((m) => { grace.value = m; }).catch(() => {});
+  getOnlineGrace().then((c) => {
+    grace.value = c.minutes; livenessSrc.value = c.sources; livenessAvail.value = c.available;
+  })
+    .catch(() => {});
+  getIpCooldown().then((d) => { cooldownDays.value = d; }).catch(() => {});
+  getCertExpiryDays().then((d) => { certExpiryDays.value = d; }).catch(() => {});
   void loadGeoip();
   void loadLdap();
   void loadLdapGroups();
@@ -360,17 +466,15 @@ async function doPreviewAutolink() {
 </script>
 
 <template>
-  <n-card>
-    <template #header>
-      <n-space align="center" :wrap-item="false">
-        <n-icon :size="22"><AdminIcon /></n-icon>
-        <span>{{ t("system_settings.title") }}</span>
-      </n-space>
-    </template>
+  <div class="ss-page">
+    <div class="ss-title">
+      <n-icon :size="22"><AdminIcon /></n-icon>
+      <span>{{ t("system_settings.title") }}</span>
+    </div>
     <div class="ss-wrap">
       <!-- 資安：連線管理 -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("system_settings.grp_security") }}</h3>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_security") }}</span></template>
         <div class="ss-grid">
           <div class="fld">
             <label>{{ t("settings.system.rdp_clip_paste") }}</label>
@@ -378,11 +482,11 @@ async function doPreviewAutolink() {
             <div class="hint">{{ t("settings.system.rdp_clip_paste_hint") }}</div>
           </div>
         </div>
-      </section>
+      </n-card>
 
       <!-- 顯示與地圖 -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("system_settings.grp_display") }}</h3>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_display") }}</span></template>
         <div class="ss-grid">
           <div class="fld">
             <label>{{ t("settings.system.map_provider") }}</label>
@@ -417,21 +521,96 @@ async function doPreviewAutolink() {
           </div>
           <div class="hint">{{ t("settings.system.gmaps_api_key_hint") }}</div>
         </div>
-      </section>
+      </n-card>
 
       <!-- 上線判定 -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("system_settings.grp_liveness") }}</h3>
-        <div class="fld" style="max-width: 320px">
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_liveness") }}</span></template>
+        <div class="fld fld-narrow-input">
           <label>{{ t("settings.prefs.online_grace_minutes") }}</label>
           <n-input-number :value="grace" :min="1" :max="43200" style="width: 100%" @update:value="changeGrace" />
           <div class="hint">{{ t("settings.prefs.online_grace_minutes_hint") }}</div>
         </div>
-      </section>
+        <div class="fld" style="margin-top: 12px">
+          <label>{{ t("system_settings.liveness_sources") }}</label>
+          <!-- 依「證據種類」分組：同一種類的來源長度相近，網格才對得齊；
+               混在一起自由換行會因為字數不一而每列參差（使用者回報）。 -->
+          <n-checkbox-group :value="livenessSrc" @update:value="changeSources">
+            <div v-for="g in livenessGroups" :key="g.kind" class="ss-src-row">
+              <span class="ss-src-kind">{{ g.title }}</span>
+              <div class="ss-src-grid">
+                <n-checkbox v-for="s in g.items" :key="s.key" :value="s.key" class="ss-src-item">
+                  <span class="ss-src-name">{{ g.kind === "base" ? srcLabel(s.key) : vendorLabel(s.key) }}</span>
+                  <!-- 不會過期的證據勾了等於「看過一次就永遠上線」→ 講明白，不要只靠說明文字 -->
+                  <n-tag v-if="!s.aging" size="tiny" :bordered="false" type="warning"
+                         class="ss-src-tag">
+                    {{ t("system_settings.src_no_aging") }}
+                  </n-tag>
+                </n-checkbox>
+              </div>
+            </div>
+          </n-checkbox-group>
+          <div class="hint">{{ t("system_settings.liveness_sources_hint") }}</div>
+        </div>
+      </n-card>
+
+      <!-- IP 生命週期 -->
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_lifecycle") }}</span></template>
+        <div class="fld fld-narrow-input">
+          <label>{{ t("system_settings.cooldown_days") }}</label>
+          <n-input-number :value="cooldownDays" :min="0" :max="3650" style="width: 100%"
+                          @update:value="changeCooldown" />
+          <div class="hint">{{ t("system_settings.cooldown_days_hint") }}</div>
+        </div>
+      </n-card>
+
+      <!-- 憑證到期通知 -->
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_cert_alert") }}</span></template>
+        <div class="fld fld-narrow-input">
+          <label>{{ t("system_settings.cert_expiry_days") }}</label>
+          <n-input-number :value="certExpiryDays" :min="1" :max="365" style="width: 100%"
+                          @update:value="changeCertExpiry" />
+          <div class="hint">{{ t("system_settings.cert_expiry_days_hint") }}</div>
+        </div>
+      </n-card>
+
+      <!-- 機櫃圖對外嵌入 -->
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_rack_embed") }}</span></template>
+        <div class="ss-grid">
+          <div class="fld">
+            <label>{{ t("system_settings.rack_embed_enabled") }}</label>
+            <n-switch :value="rackEmbed?.enabled ?? false" @update:value="changeRackEmbed" />
+            <div class="hint">{{ t("system_settings.rack_embed_hint") }}</div>
+          </div>
+          <div v-if="rackEmbed?.enabled" class="fld">
+            <label>{{ t("system_settings.rack_embed_token") }}</label>
+            <n-input :value="rackEmbedToken" readonly
+                     :type="showRackToken ? 'text' : 'password'" style="width: 100%" />
+            <n-space size="small" style="margin-top: 6px">
+              <n-button size="small" @click="showRackToken = !showRackToken">
+                {{ showRackToken ? t("common.hide") : t("common.show") }}
+              </n-button>
+              <n-button size="small" @click="copyRackToken">{{ t("common.copy") }}</n-button>
+              <n-popconfirm @positive-click="regenRackToken">
+                <template #trigger>
+                  <n-button size="small" type="warning" ghost>
+                    {{ t("system_settings.rack_embed_regen") }}
+                  </n-button>
+                </template>
+                {{ t("system_settings.rack_embed_regen_confirm") }}
+              </n-popconfirm>
+            </n-space>
+            <div class="hint">{{ t("system_settings.rack_embed_token_hint") }}</div>
+          </div>
+        </div>
+      </n-card>
 
       <!-- GeoIP -->
-      <section v-if="geoip" class="ss-group">
-        <h3 class="ss-h">{{ t("settings.system.geoip") }}</h3>
+      <n-card v-if="geoip" class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("settings.system.geoip") }}</span></template>
         <div class="ss-grid">
           <div class="fld">
             <label>{{ t("settings.system.geoip_account") }}</label>
@@ -478,11 +657,11 @@ async function doPreviewAutolink() {
           {{ t("settings.system.geoip_hint") }}<br>
           {{ t("settings.system.geoip_freq_advice") }}
         </div>
-      </section>
+      </n-card>
 
       <!-- 外部認證 / LDAP（AD） -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("settings.system.ldap_title") }}</h3>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("settings.system.ldap_title") }}</span></template>
         <div class="fld">
           <n-space align="center">
             <n-switch v-model:value="ldap.enabled" />
@@ -572,11 +751,11 @@ async function doPreviewAutolink() {
           <div class="hint" style="margin-top:4px">{{ t("settings.system.ldap_authtest_hint") }}</div>
         </div>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.ldap_hint") }}</div>
-      </section>
+      </n-card>
 
       <!-- 單一登入 (OIDC) -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("settings.system.oidc_title") }}</h3>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("settings.system.oidc_title") }}</span></template>
         <div class="fld">
           <n-space align="center">
             <n-switch v-model:value="oidc.enabled" />
@@ -629,11 +808,11 @@ async function doPreviewAutolink() {
           </n-button>
         </n-space>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.oidc_hint") }}</div>
-      </section>
+      </n-card>
 
       <!-- 單一登入 (SAML 2.0) -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("settings.system.saml_title") }}</h3>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("settings.system.saml_title") }}</span></template>
         <div class="fld">
           <n-space align="center">
             <n-switch v-model:value="saml.enabled" />
@@ -693,11 +872,11 @@ async function doPreviewAutolink() {
              style="font-size:13px; align-self:center">{{ t("settings.system.saml_sp_metadata") }}</a>
         </n-space>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.saml_hint") }}</div>
-      </section>
+      </n-card>
 
       <!-- 稽核轉送到 Graylog -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("settings.system.af_title") }}</h3>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("settings.system.af_title") }}</span></template>
         <div class="fld">
           <n-space align="center">
             <n-switch v-model:value="af.enabled" />
@@ -733,11 +912,11 @@ async function doPreviewAutolink() {
           </n-button>
         </n-space>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.af_hint") }}</div>
-      </section>
+      </n-card>
       <!-- 依網卡 MAC 自動掛裝置。預設關閉：升級之後突然多出一個每 5 分鐘自動改
            資料的作業，本身就是不該發生的事。開啟前可以先預覽會動到什麼。 -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("autolink.title") }}</h3>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("autolink.title") }}</span></template>
         <div class="ss-grid">
           <div class="fld">
             <label>{{ t("autolink.enable") }}</label>
@@ -775,21 +954,62 @@ async function doPreviewAutolink() {
           <div v-if="autolinkPreview.samples.length > 8">…</div>
         </div>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("autolink.rules_hint") }}</div>
-      </section>
+      </n-card>
     </div>
-  </n-card>
+  </div>
 </template>
 
 <style scoped>
-.ss-wrap { display: flex; flex-direction: column; gap: 24px; max-width: 780px; }
-.ss-group { border: 1px solid var(--n-border-color, rgba(127,127,127,.18)); border-radius: 14px;
-  padding: 20px 22px 22px; background: rgba(127,127,127,0.028); box-shadow: 0 1px 3px rgba(15,23,42,.05); }
-.ss-h { margin: 0; font-size: 16px; font-weight: 700; padding-left: 12px; line-height: 1.25;
-  border-left: 4px solid #18a058; }
-/* 統一卡片內每個區塊的垂直間距，避免欄位標題緊貼上一個元素 */
-.ss-group > * + * { margin-top: 16px; }
+/* 每個分類各自一張卡片，寬度撐滿內容區（原本全部擠在一張大卡片、右側留白） */
+.ss-page { display: flex; flex-direction: column; gap: 16px; }
+.ss-title { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 600;
+  padding: 2px 2px 0; }
+.ss-wrap { display: flex; flex-direction: column; gap: 16px; max-width: none; }
+/* 卡片外觀（底色／邊框／深色模式）交給 n-card，不要自己刻 —— 自己刻就會與其他頁面不一致 */
+.ss-group { border-radius: 14px; }
+.ss-h { display: inline-block; font-size: 16px; font-weight: 700; padding-left: 12px;
+  line-height: 1.25; border-left: 4px solid #18a058; }
+/* 統一卡片內的垂直節奏。
+   原本只對「卡片內容的直接子元素」下間距，但很多區塊是包在 grid / div 裡的，
+   於是開關與底下的欄位就貼在一起（使用者回報：轉送稽核記錄那格最明顯）。
+   這裡改成三條規則一起管：卡片第一層、相鄰的欄位、以及開關列與後面的東西。 */
+.ss-group :deep(.n-card__content) > * + * { margin-top: 16px; }
+/* 相鄰欄位之間（含被 grid / div 包住的） */
+.ss-group :deep(.fld + .fld) { margin-top: 14px; }
+.ss-group :deep(.fld + div),
+.ss-group :deep(div + .fld) { margin-top: 14px; }
+/* 開關列之後一定要留白：開關本身沒有下邊界，視覺上會黏住下一個欄位的標題 */
+.ss-group :deep(.n-switch) { margin-bottom: 2px; }
+.ss-group :deep(.fld > .n-space) { margin-bottom: 6px; }
+/* 按鈕列與底下的說明文字 */
+.ss-group :deep(.n-button + .hint),
+.ss-group :deep(.ss-row + .hint) { margin-top: 10px; }
 .ss-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+/* 寬螢幕改三欄，把右邊的空間用掉 */
+@media (min-width: 1500px) { .ss-grid { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 640px) { .ss-grid { grid-template-columns: 1fr; } }
+/* 單一數字欄位：只把輸入框收窄，說明文字仍用滿卡片寬度。
+   先前是把整格限成 320px，說明被擠成窄長一條、右邊整片空白（使用者回報）。 */
+.ss-src-row { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; }
+/* 種類之間畫一條淡線：只靠左邊的標題分辨，兩組黏在一起時看起來像同一堆 */
+.ss-src-row + .ss-src-row { border-top: 1px solid var(--n-border-color, rgba(127, 127, 127, .18)); }
+.ss-src-kind {
+  flex: 0 0 96px; font-size: 12.5px; color: var(--n-text-color-3, #8a8a8a);
+  line-height: 22px; text-align: right; font-weight: 500;
+}
+/* 固定欄寬的網格：每一格一樣寬，列與列才對得齊 */
+.ss-src-grid {
+  flex: 1 1 auto; display: grid; gap: 8px 14px;
+  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); max-width: 940px;
+}
+.ss-src-item { line-height: 22px; }
+.ss-src-name { vertical-align: middle; }
+.ss-src-tag { margin-left: 4px; vertical-align: middle; }
+@media (max-width: 900px) {
+  .ss-src-row { flex-direction: column; gap: 2px; }
+  .ss-src-kind { text-align: left; flex-basis: auto; }
+}
+.fld-narrow-input :deep(.n-input-number) { max-width: 260px; }
 .fld label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 5px; }
 .hint { font-size: 11px; opacity: 0.65; margin-top: 4px; }
 .ss-row { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }

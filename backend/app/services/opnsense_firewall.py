@@ -31,11 +31,12 @@ import httpx
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.safe_http import UnsafeOutboundURL, safe_request
+from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models.address import IPAddress
 from app.models.firewall import OPNsenseAliasMapping, OPNsenseFirewall
 from app.models.subnet import Subnet
+from app.services import arp_seen as arp_seen_svc
 from app.services.hostname import apply_observation
 from app.services.ip_autocreate import (
     SubnetCandidates,
@@ -97,7 +98,7 @@ async def _api_get(fw: OPNsenseFirewall, path: str, *, timeout: float = 15.0) ->
     except UnsafeOutboundURL as exc:
         raise OPNsenseError(f"SSRF guard rejected URL: {exc}") from exc
     except httpx.HTTPError as exc:
-        raise OPNsenseError(f"transport: {exc.__class__.__name__}") from exc
+        raise OPNsenseError(f"transport: {transport_detail(exc)}") from exc
     if resp.status_code != 200:
         raise OPNsenseError(f"OPNsense GET {path}: {resp.status_code} {resp.text[:200]}")
     return resp.json()  # type: ignore[no-any-return]
@@ -158,7 +159,7 @@ async def _api_post(
     except UnsafeOutboundURL as exc:
         raise OPNsenseError(f"SSRF guard rejected URL: {exc}") from exc
     except httpx.HTTPError as exc:
-        raise OPNsenseError(f"transport: {exc.__class__.__name__}") from exc
+        raise OPNsenseError(f"transport: {transport_detail(exc)}") from exc
     if resp.status_code not in (200, 201):
         raise OPNsenseError(f"OPNsense POST {path}: {resp.status_code} {resp.text[:200]}")
     return resp.json()  # type: ignore[no-any-return]
@@ -330,13 +331,17 @@ async def sync_mapping(
 
 async def _stamp_ip_seen(
     session: AsyncSession, ip: str,
-    *, mac: str | None = None, hostname: str | None = None,
+    *, evidence: str, mac: str | None = None, hostname: str | None = None,
     subnet_ids: list[uuid.UUID] | None = None, dhcp: bool = False,
+    permanent: bool = False, seen_at: datetime | None = None,
     create_in: SubnetCandidates | None = None,
 ) -> bool:
-    """找到 jt-ipam IPAddress 就 stamp last_seen_scanner，回傳是否找到（或已建立）。
+    """找到 jt-ipam IPAddress 就記下觀測時間，回傳是否找到（或已建立）。
 
-    OPNsense 給的資料相當於我們自己 scanner 的證據，所以塞 last_seen_scanner。
+    `evidence` 是證據契約裡的來源名稱（`arp:opnsense` / `lease:opnsense` /
+    `vpn:opnsense`）。**不再寫 `last_seen_scanner`** —— 那個欄位屬於掃描代理，
+    防火牆的資料塞進去會讓畫面顯示「上線 (scanner)」但站台根本沒有代理，
+    而且三種可信度差很多的證據混在一起就沒辦法分別採信（見 services/arp_seen.py）。
     DHCP/ARP 是當下事實 → 有 MAC / hostname 就覆寫舊值。
     dhcp=True（來自 DHCP lease）→ 自動標記 in_dhcp_lease。
     subnet_ids 給定時只在該防火牆關聯的子網路內找 IP（避免重疊網段同 IP 撈到別人，
@@ -359,7 +364,7 @@ async def _stamp_ip_seen(
         ipa = IPAddress(subnet_id=sid, ip=ip, state="used", discovery_source="opnsense")
         session.add(ipa)
         await session.flush()      # autoflush=False：先取得 id，後面的觀測寫入才有對象
-    ipa.last_seen_scanner = datetime.now(UTC)
+    arp_seen_svc.stamp(ipa, evidence, seen_at, permanent=permanent)
     if dhcp:
         ipa.in_dhcp_lease = True
     if mac:
@@ -572,7 +577,8 @@ async def sync_dhcp_leases(
             seen += 1
             leased_ips.add(ip)
             existed = await _ip_exists(session, ip, scope_ids)
-            if await _stamp_ip_seen(session, ip, mac=mac, hostname=host,
+            if await _stamp_ip_seen(session, ip, evidence="lease:opnsense",
+                                    mac=mac, hostname=host,
                                     subnet_ids=scope_ids, dhcp=True, create_in=create_in):
                 matched += 1
                 if not existed:
@@ -619,13 +625,31 @@ async def sync_arp_table(
         rows = data
     seen = matched = 0
     scope_ids = list(fw.scope_subnet_ids) if fw.scope_subnet_ids else None
+    # 每一筆帶 `expires`＝剩餘秒數，從 max_age 往下數（FreeBSD 預設 1200 秒，
+    # 實機兩台都是 1200）。**用整批的最大值當 max_age**，站台調過 net.link.ether.inet.max_age
+    # 也還是對得上；抓不到就退回 1200。
+    max_age = 1200.0
+    for r in rows:
+        try:
+            max_age = max(max_age, float(r.get("expires")))
+        except (TypeError, ValueError):
+            continue
     for r in rows:
         ip = (r.get("ip") or "").strip()
         mac = (r.get("mac") or "").strip() or None
         if not ip:
             continue
         seen += 1
-        if await _stamp_ip_seen(session, ip, mac=mac, subnet_ids=scope_ids):
+        # 靜態／永久項目不會因為機器關機而消失 → 不能拿來宣稱上線
+        perm = str(r.get("permanent") or r.get("type") or "").strip().lower() in (
+            "1", "true", "yes", "permanent", "static")
+        # 已過期但還列在表上的條目：那是「曾經看過」，不是「現在還在」
+        if str(r.get("expired") or "").strip().lower() in ("1", "true", "yes"):
+            perm = True
+        # 條目自己說了它是什麼時候被更新的 —— 用那個時間，不要一律蓋「現在」
+        when = arp_seen_svc.seen_from_remaining(r.get("expires"), max_age)
+        if await _stamp_ip_seen(session, ip, evidence="arp:opnsense", mac=mac,
+                                subnet_ids=scope_ids, permanent=perm, seen_at=when):
             matched += 1
     return {"seen": seen, "matched": matched}
 
@@ -1183,7 +1207,7 @@ async def sync_openvpn_sessions(
         if not ip:
             continue
         seen += 1
-        if await _stamp_ip_seen(session, ip):
+        if await _stamp_ip_seen(session, ip, evidence="vpn:opnsense"):
             matched += 1
     return {"seen": seen, "matched": matched}
 

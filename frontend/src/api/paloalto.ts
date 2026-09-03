@@ -1,17 +1,18 @@
 import { apiClient } from "@/api/client";
 import type { Paginated } from "@/types";
 
-// Palo Alto (PAN-OS) 防火牆整合（Beta，實驗性）。路徑帶 /api/v1 前綴（baseURL 為 /）。
-// 走官方 REST API（設定物件）+ XML op API（ARP），無實機驗證過。
+// Palo Alto（PAN-OS）整合。路徑帶 /api/v1 前綴（baseURL 為 /）。
 
 export interface PaloAltoFirewall {
   id: string;
   name: string;
   api_url: string;
-  username: string;
-  vsys: string;
   enabled: boolean;
   verify_tls: boolean;
+  /** REST URI 的版本段（如 v11.1）。留空＝自動偵測 */
+  api_version: string | null;
+  vsys_list: string[] | null;
+  sync_dhcp: boolean;
   sync_arp: boolean;
   sync_policies: boolean;
   sync_nat: boolean;
@@ -26,11 +27,14 @@ export interface PaloAltoFirewall {
 export interface PaloAltoWrite {
   name: string;
   api_url: string;
-  username: string;
-  password?: string;
-  vsys?: string;
+  api_key?: string;
   enabled?: boolean;
   verify_tls?: boolean;
+  api_version?: string | null;
+  /** PATCH 的 null 是「不修改」→ 要改回自動偵測得用這個旗標 */
+  clear_api_version?: boolean;
+  vsys_list?: string[] | null;
+  sync_dhcp?: boolean;
   sync_arp?: boolean;
   sync_policies?: boolean;
   sync_nat?: boolean;
@@ -40,24 +44,27 @@ export interface PaloAltoWrite {
   scope_subnet_ids?: string[];
 }
 
-/** 連線診斷：先換 API key，再逐端點回報是否可讀與筆數 */
+/** 連線診斷：逐端點回報是否可讀與筆數（沒有實機時，這是唯一能對齊欄位的辦法） */
 export interface PaloAltoDiagnosis {
-  vsys: string;
+  api_url: string;
+  api_version: string;
+  vsys: string[];
   ok_count: number;
   checks: { endpoint: string; ok: boolean; rows?: number; error?: string }[];
 }
 
 export interface PaloAltoPolicy {
-  id: string; vsys: string; name: string;
-  action: string | null; disabled: boolean | null;
+  id: string; vsys: string; name: string; position: number;
+  action: string | null; disabled: boolean;
   from_zone: string | null; to_zone: string | null;
   source: string | null; destination: string | null;
   application: string | null; service: string | null; description: string | null;
 }
 
 export interface PaloAltoAddressObject {
-  id: string; vsys: string; name: string;
-  obj_type: string | null; value: string | null; description: string | null;
+  id: string; vsys: string; name: string; kind: string;
+  obj_type: string | null; value: string | null;
+  members: string[] | null; description: string | null;
 }
 
 export async function listPaloAlto(): Promise<Paginated<PaloAltoFirewall>> {
@@ -72,7 +79,9 @@ export async function createPaloAlto(p: PaloAltoWrite): Promise<PaloAltoFirewall
   return data;
 }
 
-export async function updatePaloAlto(id: string, p: Partial<PaloAltoWrite>): Promise<PaloAltoFirewall> {
+export async function updatePaloAlto(
+  id: string, p: Partial<PaloAltoWrite>,
+): Promise<PaloAltoFirewall> {
   const { data } = await apiClient.patch<PaloAltoFirewall>(`/api/v1/paloalto/${id}`, p);
   return data;
 }
@@ -91,12 +100,18 @@ export async function syncPaloAlto(id: string): Promise<{ task_id: string }> {
   return data;
 }
 
-export async function listPaloAltoPolicies(id: string): Promise<PaloAltoPolicy[]> {
-  const { data } = await apiClient.get<{ items: PaloAltoPolicy[] }>(`/api/v1/paloalto/${id}/policies`);
+export async function listPaloAltoPolicies(
+  id: string, vsys?: string,
+): Promise<PaloAltoPolicy[]> {
+  const { data } = await apiClient.get<{ items: PaloAltoPolicy[] }>(
+    `/api/v1/paloalto/${id}/policies`, { params: vsys ? { vsys } : undefined });
   return data.items ?? [];
 }
 
-export async function listPaloAltoAddresses(id: string): Promise<PaloAltoAddressObject[]> {
-  const { data } = await apiClient.get<{ items: PaloAltoAddressObject[] }>(`/api/v1/paloalto/${id}/addresses`);
+export async function listPaloAltoAddresses(
+  id: string, vsys?: string,
+): Promise<PaloAltoAddressObject[]> {
+  const { data } = await apiClient.get<{ items: PaloAltoAddressObject[] }>(
+    `/api/v1/paloalto/${id}/addresses`, { params: vsys ? { vsys } : undefined });
   return data.items ?? [];
 }

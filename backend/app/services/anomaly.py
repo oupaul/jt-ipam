@@ -43,12 +43,16 @@ class AnomalyReport:
     duplicate_ip_records: list[dict[str, Any]] = field(default_factory=list)
     suspicious_changes: list[dict[str, Any]] = field(default_factory=list)
     fw_rule_rot: list[dict[str, Any]] = field(default_factory=list)
+    arp_only_liveness: list[dict[str, Any]] = field(default_factory=list)
+    stale_device_links: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ip_conflicts": self.ip_conflicts,
             "mac_drifts": self.mac_drifts,
             "ghost_ips": self.ghost_ips,
+            "arp_only_liveness": self.arp_only_liveness,
+            "stale_device_links": self.stale_device_links,
             "unauthorized_ips": self.unauthorized_ips,
             "rogue_dhcp": self.rogue_dhcp,
             "external_exposure": self.external_exposure,
@@ -60,9 +64,9 @@ class AnomalyReport:
                 len(self.ip_conflicts) + len(self.mac_drifts)
                 + len(self.ghost_ips) + len(self.unauthorized_ips)
                 + len(self.rogue_dhcp) + len(self.external_exposure)
-                + len(self.fw_rule_rot)
+                + len(self.fw_rule_rot) + len(self.arp_only_liveness)
                 + len(self.dangling_dns) + len(self.duplicate_ip_records)
-                + len(self.suspicious_changes)
+                + len(self.suspicious_changes) + len(self.stale_device_links)
             ),
         }
 
@@ -234,11 +238,28 @@ async def detect_ghost_ips(
                 & (
                     (IPAddress.last_seen_librenms.is_(None))
                     | (IPAddress.last_seen_librenms < cutoff)
+                )
+                # ARP 還看得到就不算「失聯」——它是弱證據，但仍是證據。
+                # 「只有 ARP 看得到」另有專屬偵測項（arp_only_liveness）。
+                & (
+                    (IPAddress.last_seen_arp.is_(None))
+                    | (IPAddress.last_seen_arp < cutoff)
                 ),
             )
             .limit(500)
         )
     ).scalars().all()
+    # 防火牆自己的 ARP／VPN 表也是會過期的證據 —— 那邊看得到就不是「失聯」。
+    # （這些原本混在 last_seen_scanner 裡，拆開之後如果不補這一關，所有只被防火牆
+    #  看到的 IP 會一夜之間全被報成失聯。）在 Python 過濾而不是寫進 SQL：JSONB 裡的
+    # 時間是字串，硬轉型會被一筆壞資料炸掉整個偵測。
+    from app.services.arp_seen import newest_aging
+    from app.services.evidence import DETAILED_SOURCES
+    keep = []
+    for r in rows:
+        fw_seen, _ = newest_aging(r, set(DETAILED_SOURCES))
+        if fw_seen is None or fw_seen < cutoff:
+            keep.append(r)
     return [
         {
             "ip_address_id": str(r.id),
@@ -247,7 +268,7 @@ async def detect_ghost_ips(
             "last_seen_scanner": r.last_seen_scanner.isoformat() if r.last_seen_scanner else None,
             "last_seen_librenms": r.last_seen_librenms.isoformat() if r.last_seen_librenms else None,
         }
-        for r in rows
+        for r in keep
     ]
 
 
@@ -268,6 +289,52 @@ def _is_noise_address(ip: str) -> bool:
         addr.is_link_local or addr.is_multicast or addr.is_loopback
         or addr.is_unspecified or addr.is_reserved
     )
+
+
+async def detect_arp_only_liveness(
+    session: AsyncSession, *, days: int = 3,
+) -> list[dict[str, Any]]:
+    """看起來在線、但**只有 ARP 這一個來源**在說話的 IP。
+
+    為什麼這值得單獨列出來：ARP 記錄沒有時間概念（LibreNMS 的 ARP API 不回任何時間
+    欄位），我們只能因為「這筆還在清單裡」就當成剛看到。來源設備（AP／路由器）的
+    ARP 快取不老化的話，機器關掉幾十天，這個 IP 還是會一直顯示上線 —— 實機上就發生過
+    一台早就關掉的 VM 被畫成 52 天全綠。
+
+    判準刻意保守：ARP 在 `days` 天內看得到，而掃描代理與 LibreNMS 裝置狀態**從來沒有**
+    看過它。兩者只要有一個看過，就代表有會老化的證據可以驗證，不必列進來吵人。
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    subnet_ids = await _anomaly_subnet_ids(session)
+    if not subnet_ids:
+        return []
+    rows = (
+        await session.execute(
+            select(IPAddress)
+            .where(
+                IPAddress.subnet_id.in_(subnet_ids),
+                IPAddress.last_seen_arp.is_not(None),
+                IPAddress.last_seen_arp >= cutoff,
+                IPAddress.last_seen_scanner.is_(None),
+                IPAddress.last_seen_librenms.is_(None),
+            )
+            .limit(500)
+        )
+    ).scalars().all()
+    # 防火牆的 ARP／VPN 表會逾時淘汰 → 有它撐著就不是「只有 ARP 在說話」
+    from app.services.arp_seen import newest_aging
+    from app.services.evidence import DETAILED_SOURCES
+    rows = [r for r in rows if newest_aging(r, set(DETAILED_SOURCES))[0] is None]
+    return [
+        {
+            "ip_address_id": str(r.id),
+            "ip": str(r.ip).split("/")[0],
+            "hostname": r.hostname,
+            "mac": str(r.mac) if r.mac else None,
+            "last_seen_arp": r.last_seen_arp.isoformat() if r.last_seen_arp else None,
+        }
+        for r in rows
+    ]
 
 
 async def _anomaly_networks(session: AsyncSession) -> list[Any]:
@@ -383,6 +450,11 @@ async def detect_rogue_dhcp(
     try:
         from app.models.fortigate import FortiGateFirewall
         _fw_models.append(FortiGateFirewall)
+    except Exception:
+        pass
+    try:
+        from app.models.paloalto import PaloAltoFirewall
+        _fw_models.append(PaloAltoFirewall)
     except Exception:
         pass
     for model in _fw_models:
@@ -752,6 +824,60 @@ async def detect_suspicious_changes(session: AsyncSession) -> list[dict[str, Any
     return out
 
 
+async def detect_stale_device_links(session: AsyncSession) -> list[dict[str, Any]]:
+    """IP 掛著某台裝置，但那個位址後來換了 MAC —— 關聯多半已經過期。
+
+    這是「把 IP 掛到裝置」這件事本來就有的殘留風險：關聯一旦寫下去就不再重新評估，
+    位址日後被別台機器拿去用（DHCP 尤其常見），關聯會**安靜地變成錯的** ——
+    畫面上看起來一切正常，只是指到了另一台機器。
+
+    刻意做成事後偵測而不是在寫入端多加判斷：寫入端再怎麼聰明也只是猜，
+    而這裡有真正的證據 —— **異動記錄裡，MAC 的變更發生在關聯之後**。
+
+    只用記錄下來的事實，不推論：
+    - 只看有 `device_id` 的 IP
+    - 找出「設定 device_id」的最後一次時間
+    - 那之後若有 `mac` 欄位的變更 → 提出來讓人確認（不自動解除關聯：那同樣是猜）
+    """
+    from app.models.device import Device
+    from app.models.ip_change_log import IPChangeLog
+
+    link_q = (
+        select(IPChangeLog.ip_id.label("ip_id"),
+               func.max(IPChangeLog.created_at).label("linked_at"))
+        .where(IPChangeLog.field == "device_id", IPChangeLog.new_value.isnot(None))
+        .group_by(IPChangeLog.ip_id)
+    ).subquery()
+    rows = (await session.execute(
+        select(IPAddress.id, IPAddress.ip, IPAddress.hostname, IPAddress.mac,
+               Device.id, Device.name, link_q.c.linked_at,
+               func.max(IPChangeLog.created_at))
+        .join(link_q, link_q.c.ip_id == IPAddress.id)
+        .join(Device, Device.id == IPAddress.device_id)
+        .join(IPChangeLog, IPChangeLog.ip_id == IPAddress.id)
+        .where(IPChangeLog.field == "mac")
+        .group_by(IPAddress.id, IPAddress.ip, IPAddress.hostname, IPAddress.mac,
+                  Device.id, Device.name, link_q.c.linked_at)
+        .having(func.max(IPChangeLog.created_at) > link_q.c.linked_at)
+        .limit(200)
+    )).all()
+
+    out: list[dict[str, Any]] = []
+    for ip_id, ip, hostname, mac, dev_id, dev_name, linked_at, mac_changed_at in rows:
+        out.append({
+            "kind": "stale_device_link",
+            "ip_id": str(ip_id),
+            "ip": str(ip).split("/")[0],
+            "hostname": hostname,
+            "mac": str(mac) if mac else None,
+            "device_id": str(dev_id),
+            "device": dev_name,
+            "linked_at": linked_at.isoformat() if linked_at else None,
+            "mac_changed_at": mac_changed_at.isoformat() if mac_changed_at else None,
+        })
+    return out
+
+
 async def run_detection(
     session: AsyncSession, *, notify_admins: bool = True,
 ) -> AnomalyReport:
@@ -767,6 +893,8 @@ async def run_detection(
         duplicate_ip_records=await detect_duplicate_ip_records(session),
         suspicious_changes=await detect_suspicious_changes(session),
         fw_rule_rot=await detect_fw_rule_rot(session),
+        arp_only_liveness=await detect_arp_only_liveness(session),
+        stale_device_links=await detect_stale_device_links(session),
     )
 
     if notify_admins:

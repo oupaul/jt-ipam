@@ -1,12 +1,14 @@
 <script setup lang="ts">
 /**
- * Palo Alto (PAN-OS) 防火牆檢視（唯讀，Beta，實驗性）：政策 / 位址物件。
- * 資料由 Palo Alto 整合同步進來；本頁不連防火牆、也不修改任何設定。
+ * Palo Alto（PAN-OS）防火牆檢視（唯讀）：安全政策 / 位址物件，可依 vsys 篩選。
+ * 資料由 Palo Alto 整合同步進來；本頁不呼叫防火牆、也不修改任何設定。
+ *
+ * 政策依 `position` 排序，不是按名稱：PAN-OS 由上而下比對，順序本身就是語意。
  */
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
-  NCard, NDataTable, NSpace, NSelect, NTag, NIcon, NEmpty, NTabs, NTabPane,
+  NCard, NDataTable, NSpace, NSelect, NIcon, NEmpty, NTabs, NTabPane, NTag,
   useMessage, type DataTableColumns,
 } from "naive-ui";
 import { FirewallIcon } from "@/icons";
@@ -22,11 +24,18 @@ const msg = useMessage();
 
 const firewalls = ref<PaloAltoFirewall[]>([]);
 const fwId = ref<string | null>(null);
+const vsys = ref<string | null>(null);
 const policies = ref<PaloAltoPolicy[]>([]);
 const addresses = ref<PaloAltoAddressObject[]>([]);
 const loading = ref(false);
 
 const fwOptions = computed(() => firewalls.value.map((f) => ({ label: f.name, value: f.id })));
+const vsysOptions = computed(() => {
+  const set = new Set<string>();
+  for (const p of policies.value) set.add(p.vsys);
+  for (const a of addresses.value) set.add(a.vsys);
+  return [...set].sort().map((v) => ({ label: v, value: v }));
+});
 
 async function loadFirewalls() {
   try {
@@ -40,42 +49,49 @@ async function loadData() {
   loading.value = true;
   try {
     [policies.value, addresses.value] = await Promise.all([
-      listPaloAltoPolicies(fwId.value),
-      listPaloAltoAddresses(fwId.value),
+      listPaloAltoPolicies(fwId.value, vsys.value ?? undefined),
+      listPaloAltoAddresses(fwId.value, vsys.value ?? undefined),
     ]);
   } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 
-watch(fwId, () => { void loadData(); });
+watch([fwId, vsys], () => { void loadData(); });
 onMounted(async () => { await loadFirewalls(); await loadData(); });
 
 const policyCols = computed<DataTableColumns<PaloAltoPolicy>>(() => autoSort([
-  { title: t("common.name"), key: "name", minWidth: 140, ellipsis: { tooltip: true } },
-  { title: t("fortigate.col_action"), key: "action", width: 90, render: (r) => r.action ?? "—" },
-  {
-    title: t("common.status"), key: "disabled", width: 90,
-    render: (r) => r.disabled ? t("common.disabled") : t("common.enabled"),
-  },
-  { title: "From / To", key: "from_zone", minWidth: 130,
-    render: (r) => `${r.from_zone ?? "—"} → ${r.to_zone ?? "—"}` },
-  { title: t("fortigate.col_src"), key: "source", minWidth: 130, ellipsis: { tooltip: true },
-    render: (r) => r.source ?? "—" },
-  { title: t("fortigate.col_dst"), key: "destination", minWidth: 130, ellipsis: { tooltip: true },
-    render: (r) => r.destination ?? "—" },
-  { title: "Application", key: "application", minWidth: 130, ellipsis: { tooltip: true },
-    render: (r) => r.application ?? "—" },
-  { title: t("fortigate.col_service"), key: "service", minWidth: 110, ellipsis: { tooltip: true },
-    render: (r) => r.service ?? "—" },
+  { title: "vsys", key: "vsys", width: 100 },
+  { title: "#", key: "position", width: 60 },
+  { title: t("common.name"), key: "name", minWidth: 150, ellipsis: { tooltip: true } },
+  { title: t("fortigate.col_action"), key: "action", width: 90,
+    render: (r) => r.action
+      ? { allow: "✔ allow", deny: "✘ deny", drop: "✘ drop" }[r.action] ?? r.action : "—" },
+  { title: t("common.status"), key: "disabled", width: 90,
+    render: (r) => r.disabled ? t("common.disabled") : t("common.enabled") },
+  { title: t("fortigate.col_src"), key: "from_zone", minWidth: 150, ellipsis: { tooltip: true },
+    render: (r) => `${r.from_zone ?? "—"} / ${r.source ?? "—"}` },
+  { title: t("fortigate.col_dst"), key: "to_zone", minWidth: 150, ellipsis: { tooltip: true },
+    render: (r) => `${r.to_zone ?? "—"} / ${r.destination ?? "—"}` },
+  // App-ID 是 PAN-OS 規則的核心語意（服務埠只是輔助）→ 一定要顯示
+  { title: t("paloalto.col_application"), key: "application", minWidth: 130,
+    ellipsis: { tooltip: true }, render: (r) => r.application ?? "—" },
+  { title: t("fortigate.col_service"), key: "service", minWidth: 110,
+    ellipsis: { tooltip: true }, render: (r) => r.service ?? "—" },
   { title: t("sections.description"), key: "description", minWidth: 120,
     ellipsis: { tooltip: true }, render: (r) => r.description ?? "—" },
 ]));
 
 const addrCols = computed<DataTableColumns<PaloAltoAddressObject>>(() => autoSort([
+  { title: "vsys", key: "vsys", width: 100 },
   { title: t("common.name"), key: "name", minWidth: 160, ellipsis: { tooltip: true } },
-  { title: t("common.type"), key: "obj_type", width: 110, render: (r) => r.obj_type ?? "—" },
-  { title: t("fortigate.col_value"), key: "value", minWidth: 200, ellipsis: { tooltip: true },
-    render: (r) => r.value ?? "—" },
+  { title: t("common.type"), key: "kind", width: 120,
+    render: (r) => r.kind === "group" ? t("fortigate.kind_group") : (r.obj_type ?? "—") },
+  { title: t("fortigate.col_value"), key: "value", minWidth: 180, ellipsis: { tooltip: true },
+    render: (r) => r.kind === "group"
+      ? (r.members ?? []).join(", ") || "—"
+      : (r.value ?? "—") },
+  { title: t("sections.description"), key: "description", minWidth: 140,
+    ellipsis: { tooltip: true }, render: (r) => r.description ?? "—" },
 ]));
 </script>
 
@@ -85,24 +101,26 @@ const addrCols = computed<DataTableColumns<PaloAltoAddressObject>>(() => autoSor
       <n-space align="center" :wrap-item="false">
         <n-icon :size="22"><FirewallIcon /></n-icon>
         <span>{{ t("paloalto.view_title") }}</span>
-        <n-tag type="warning" size="small" :bordered="false">Beta</n-tag>
+        <n-tag size="small" type="warning" :bordered="false">Beta</n-tag>
       </n-space>
     </template>
 
     <n-space style="margin-bottom: 12px" align="center">
       <n-select v-model:value="fwId" :options="fwOptions" style="width: 220px"
                 :placeholder="t('paloalto.pick_firewall')" />
+      <n-select v-model:value="vsys" :options="vsysOptions" clearable style="width: 180px"
+                :placeholder="t('paloalto.all_vsys')" />
     </n-space>
 
     <n-empty v-if="!firewalls.length" :description="t('paloalto.none_configured')" />
     <n-tabs v-else type="line">
-      <n-tab-pane name="policies" :tab="t('fortigate.policies')">
+      <n-tab-pane name="policies" :tab="t('paloalto.policies')">
         <n-data-table :columns="policyCols" :data="policies" :loading="loading"
-                      :bordered="false" :scroll-x="1150" />
+                      :bordered="false" :scroll-x="1240" />
       </n-tab-pane>
-      <n-tab-pane name="addresses" :tab="t('fortigate.addresses')">
+      <n-tab-pane name="addresses" :tab="t('paloalto.addresses')">
         <n-data-table :columns="addrCols" :data="addresses" :loading="loading"
-                      :bordered="false" :scroll-x="700" />
+                      :bordered="false" :scroll-x="900" />
       </n-tab-pane>
     </n-tabs>
   </n-card>

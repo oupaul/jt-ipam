@@ -13,6 +13,7 @@ import {
   createDevice, updateDevice, type Device, listLocations, listRacks, type Location, type Rack,
 } from "@/api/basic";
 import { getRackDiagram, type RackDiagram } from "@/api/racks";
+import { resolveRackLocation } from "@/utils/rackLocation";
 import { listAddresses } from "@/api/addresses";
 import { EditIcon, PlusIcon, SaveIcon, CancelIcon, RacksIcon } from "@/icons";
 import { useCustomers } from "@/composables/useCustomers";
@@ -108,7 +109,13 @@ function onLocationChange() {
   const ok = racks.value.find((r) => r.id === form.value.rack_id)?.location_id === form.value.location_id;
   if (!ok) { form.value.rack_id = null; uPickerDiagram.value = null; }
 }
-function onRackChange() { uPickerDiagram.value = null; }
+function onRackChange(rackId: string | null) {
+  uPickerDiagram.value = null;
+  // 選了機櫃就把地點帶出來 —— 機櫃本來就屬於某個地點，不該再要求使用者選一次。
+  // 反過來要求「先選地點」只是把一個查得到的答案丟回去問人。
+  const rack = racks.value.find((r) => r.id === rackId);
+  if (rack?.location_id) form.value.location_id = rack.location_id;
+}
 
 // ── 機櫃 U 位挑選器（半 U 感知）──
 const showUPicker = ref(false);
@@ -162,7 +169,10 @@ function pickU(u: number) {
 
 async function submit() {
   if (!form.value.name.trim()) { msg.error(t("devices.error_name_required")); return; }
-  if (form.value.rack_id && !form.value.location_id) { msg.error(t("devices.error_location_for_rack")); return; }
+  // 機櫃本身就掛在地點上 —— 能推的就別叫使用者再講一次（見 utils/rackLocation）
+  const loc = resolveRackLocation(form.value.rack_id, form.value.location_id, racks.value);
+  if (!loc.ok) { msg.error(t("devices.error_location_mismatch")); return; }
+  form.value.location_id = loc.location_id;
   try {
     const payload = {
       name: form.value.name, fqdn: form.value.fqdn || null, type: form.value.type,
@@ -216,8 +226,8 @@ async function submit() {
         </n-form-item>
         <n-form-item :label="t('devices.rack')">
           <n-select v-model:value="form.rack_id" :options="filteredRackOpts" filterable clearable
-                    :placeholder="form.location_id ? t('devices.rack_placeholder') : t('devices.rack_pick_location_first')"
-                    :disabled="!form.location_id" style="width: 100%" @update:value="onRackChange" />
+                    :placeholder="t('devices.rack_placeholder')"
+                    style="width: 100%" @update:value="onRackChange" />
         </n-form-item>
       </div>
       <div class="dev-row">

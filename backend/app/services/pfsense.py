@@ -18,10 +18,11 @@ from sqlalchemy import delete, func, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.safe_http import UnsafeOutboundURL, safe_request
+from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models.address import IPAddress
 from app.models.pfsense import PfSenseFirewall, PfSenseSyncedAlias
+from app.services import arp_seen as arp_seen_svc
 from app.services.hostname import apply_observation
 from app.services.ip_autocreate import (
     SubnetCandidates,
@@ -75,7 +76,7 @@ async def _api_get(fw: PfSenseFirewall, path: str, *, timeout: float = 15.0) -> 
     except UnsafeOutboundURL as exc:
         raise PfSenseError(f"SSRF guard rejected URL: {exc}") from exc
     except httpx.HTTPError as exc:
-        raise PfSenseError(f"transport: {exc.__class__.__name__}") from exc
+        raise PfSenseError(f"transport: {transport_detail(exc)}") from exc
     if resp.status_code != 200:
         raise PfSenseError(f"pfSense GET {path}: {resp.status_code} {resp.text[:200]}")
     body = resp.json()
@@ -91,13 +92,20 @@ async def test_connection(fw: PfSenseFirewall) -> dict[str, Any]:
 
 
 # ─────────────────── IP stamp（重疊網段安全）───────────────────
+#: pfSense 也是 FreeBSD → ARP 的 max_age 預設同樣是 1200 秒
+_PF_ARP_MAX_AGE = 1200.0
+
+
 async def _stamp_ip_seen(
-    session: AsyncSession, ip: str, *, mac: str | None = None, hostname: str | None = None,
+    session: AsyncSession, ip: str, *, evidence: str,
+    mac: str | None = None, hostname: str | None = None,
     subnet_ids: list[uuid.UUID] | None = None, dhcp: bool = False,
+    permanent: bool = False, seen_at: datetime | None = None,
     create_in: SubnetCandidates | None = None,
 ) -> bool:
-    """找到 jt-ipam IPAddress 就 stamp last_seen_scanner（pfSense 證據等同 scanner）。
+    """找到 jt-ipam IPAddress 就記下觀測時間（逐來源，見 services/arp_seen.py）。
 
+    `evidence` 是證據契約裡的來源名稱（`arp:pfsense` / `lease:pfsense`）。
     `create_in` 有值＝防火牆開了自動建立，對不到時可在這些候選子網路內建一筆。
     """
     ip = _valid_ip(ip)
@@ -118,7 +126,7 @@ async def _stamp_ip_seen(
         ipa = IPAddress(subnet_id=sid, ip=ip, state="used", discovery_source="pfsense")
         session.add(ipa)
         await session.flush()      # autoflush=False：先取得 id，後面的觀測寫入才有對象
-    ipa.last_seen_scanner = datetime.now(UTC)
+    arp_seen_svc.stamp(ipa, evidence, seen_at, permanent=permanent)
     if dhcp:
         ipa.in_dhcp_lease = True
     if mac:
@@ -190,7 +198,8 @@ async def sync_dhcp_leases(session: AsyncSession, fw: PfSenseFirewall) -> int:
             continue
         ipstr = str(ip).split("/")[0]
         leased_ips.add(ipstr)
-        if await _stamp_ip_seen(session, ipstr, mac=_mac_of(d), hostname=_host_of(d),
+        if await _stamp_ip_seen(session, ipstr, evidence="lease:pfsense",
+                                mac=_mac_of(d), hostname=_host_of(d),
                                 subnet_ids=scope_ids, dhcp=True, create_in=create_in):
             seen += 1
     # 撤銷：scope 內原本標 in_dhcp_lease、但這次租約已消失的 IP（只在有設 scope 時做，
@@ -320,8 +329,19 @@ async def sync_arp_table(session: AsyncSession, fw: PfSenseFirewall) -> int:
         ip = _ip_of(d)
         if not ip:
             continue
-        if await _stamp_ip_seen(session, str(ip).split("/")[0], mac=_mac_of(d),
-                                hostname=_host_of(d), subnet_ids=scope_ids):
+        # 靜態項目不會隨機器關機消失 → 不能拿來宣稱上線
+        perm = str(d.get("permanent") or d.get("type") or "").strip().lower() in (
+            "1", "true", "yes", "permanent", "static")
+        if str(d.get("expired") or "").strip().lower() in ("1", "true", "yes"):
+            perm = True          # 已過期還列著＝「曾經看過」，不是「現在還在」
+        # 條目自己帶時間就用它（OPNsense 實機是 `expires` 剩餘秒數、FortiOS 是 `age`）。
+        # pfSense 的 REST 套件版本之間欄位不一定有 —— 兩種都試，都沒有就退回同步當下時間，
+        # 那時這筆的意思只剩「這一輪還在表裡」（ARP 逾時之內，仍然是有界的）。
+        when = (arp_seen_svc.seen_from_remaining(d.get("expires"), _PF_ARP_MAX_AGE)
+                or arp_seen_svc.seen_from_age(d.get("age")))
+        if await _stamp_ip_seen(session, str(ip).split("/")[0], evidence="arp:pfsense",
+                                mac=_mac_of(d), hostname=_host_of(d),
+                                subnet_ids=scope_ids, permanent=perm, seen_at=when):
             seen += 1
     return seen
 

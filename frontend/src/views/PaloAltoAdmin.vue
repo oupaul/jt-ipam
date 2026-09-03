@@ -1,8 +1,10 @@
 <script setup lang="ts">
 /**
- * Palo Alto (PAN-OS) 整合（Beta，實驗性）—— 與 FortiGate/Zyxel/pfSense/OPNsense 各自獨立設定。
- * 走官方 REST API（設定物件）+ XML op API（ARP）唯讀拉取，只打 GET/show，不會更動
- * 防火牆上任何設定。帳密用來換一次性 API key，不落地保存 key 本身。
+ * Palo Alto（PAN-OS）整合 —— 與 OPNsense / pfSense / FortiGate 各自獨立設定。
+ * 唯讀拉取（只讀，不會更動防火牆任何設定）。
+ *
+ * 「測試連線」回逐端點診斷：PAN-OS 的 REST URI 帶版本段（`/restapi/v11.1/…`），
+ * 對不上就整批 404，所以診斷會把偵測到的版本一起顯示出來。
  */
 import { computed, h, onMounted, ref } from "vue";
 import { fmtDateTime } from "@/utils/datetime";
@@ -31,13 +33,13 @@ import { apiErrMsg } from "@/api/client";
 const { t } = useI18n();
 const msg = useMessage();
 
-const COLS = ["name", "api_url", "vsys", "enabled", "sync_flags", "last_sync_at", "last_error", "actions"];
+const COLS = ["name", "api_url", "enabled", "vsys", "sync_flags", "last_sync_at", "last_error", "actions"];
 const { visibleKeys: vis, setVisible: setVis, reset: resetVis } = useColumnPrefs("paloalto", COLS, COLS);
 const picker = computed(() => [
   { key: "name", label: t("cols.name") },
   { key: "api_url", label: "API URL" },
-  { key: "vsys", label: "vsys" },
   { key: "enabled", label: t("cols.status") },
+  { key: "vsys", label: "vsys" },
   { key: "sync_flags", label: t("cols.sync_items") },
   { key: "last_sync_at", label: t("cols.last_sync") },
   { key: "last_error", label: t("cols.last_error") },
@@ -55,9 +57,10 @@ const diagOpen = ref(false);
 
 function blankForm() {
   return {
-    name: "", api_url: "", username: "", password: "", vsys: "vsys1",
+    name: "", api_url: "", api_key: "", vsysText: "", api_version: "",
     enabled: true, verify_tls: true,
-    sync_arp: true, sync_policies: false, sync_nat: false, sync_addresses: false,
+    sync_dhcp: false, sync_arp: true,
+    sync_policies: false, sync_nat: false, sync_addresses: false,
     sync_interval_seconds: 300, description: "",
     scope_subnet_ids: [] as string[],
   };
@@ -89,9 +92,12 @@ function openCreate() {
 function openEdit(r: PaloAltoFirewall) {
   editing.value = r;
   form.value = {
-    name: r.name, api_url: r.api_url, username: r.username, password: "", vsys: r.vsys,
+    name: r.name, api_url: r.api_url, api_key: "",
+    vsysText: (r.vsys_list ?? []).join(", "),
+    api_version: r.api_version ?? "",
     enabled: r.enabled, verify_tls: r.verify_tls,
-    sync_arp: r.sync_arp, sync_policies: r.sync_policies, sync_nat: r.sync_nat,
+    sync_dhcp: r.sync_dhcp, sync_arp: r.sync_arp,
+    sync_policies: r.sync_policies, sync_nat: r.sync_nat,
     sync_addresses: r.sync_addresses,
     sync_interval_seconds: r.sync_interval_seconds,
     description: r.description ?? "",
@@ -101,28 +107,35 @@ function openEdit(r: PaloAltoFirewall) {
 }
 
 async function submit() {
+  const vsys = form.value.vsysText.split(",").map((s) => s.trim()).filter(Boolean);
+  const ver = form.value.api_version.trim();
+   
   const payload: any = {
-    name: form.value.name, api_url: form.value.api_url, username: form.value.username,
-    vsys: form.value.vsys,
+    name: form.value.name, api_url: form.value.api_url,
+    vsys_list: vsys.length ? vsys : null,
     enabled: form.value.enabled, verify_tls: form.value.verify_tls,
-    sync_arp: form.value.sync_arp, sync_policies: form.value.sync_policies,
-    sync_nat: form.value.sync_nat, sync_addresses: form.value.sync_addresses,
+    sync_dhcp: form.value.sync_dhcp, sync_arp: form.value.sync_arp,
+    sync_policies: form.value.sync_policies, sync_nat: form.value.sync_nat,
+    sync_addresses: form.value.sync_addresses,
     sync_interval_seconds: form.value.sync_interval_seconds,
     description: form.value.description || undefined,
     scope_subnet_ids: form.value.scope_subnet_ids,
   };
+  if (ver) payload.api_version = ver;
   try {
     if (editing.value) {
-      if (form.value.password) payload.password = form.value.password;
+      if (form.value.api_key) payload.api_key = form.value.api_key;
+      // 清空版本欄＝改回自動偵測。PATCH 的 null 是「不修改」，所以要用旗標講清楚。
+      if (!ver) payload.clear_api_version = true;
       await updatePaloAlto(editing.value.id, payload);
     } else {
-      payload.password = form.value.password;
+      payload.api_key = form.value.api_key;
       await createPaloAlto(payload);
     }
     show.value = false;
     msg.success(t("common.ok"));
     await refresh();
-  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
 }
 
 async function test(r: PaloAltoFirewall) {
@@ -130,7 +143,7 @@ async function test(r: PaloAltoFirewall) {
     diag.value = await testPaloAlto(r.id);
     diagFor.value = r.name;
     diagOpen.value = true;
-  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
 }
 
 async function sync(id: string) {
@@ -138,38 +151,43 @@ async function sync(id: string) {
   try {
     await syncPaloAlto(id);
     msg.success(t("tasks.queued_toast", { kind: "Palo Alto sync", target: name }));
-  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
 }
 
 async function del(id: string) {
   try { await deletePaloAlto(id); await refresh(); }
-  catch { msg.error(t("errors.server")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
 }
 
-function iconAction(icon: any, label: string, onClick: () => void, type?: any) {
+function iconAction(icon: unknown, label: string, onClick: () => void, type?: string) {
   return h(NTooltip, null, {
-    trigger: () => h(NButton, { size: "small", quaternary: true, type,
+    trigger: () => h(NButton, { size: "small", quaternary: true, type: type as never,
       onClick: (e: MouseEvent) => { e.stopPropagation(); onClick(); } },
-      { icon: () => h(NIcon, null, () => h(icon)) }),
+      { icon: () => h(NIcon, null, () => h(icon as never)) }),
     default: () => label,
   });
 }
 
 const SYNC_TAGS: [keyof PaloAltoFirewall, string][] = [
-  ["sync_arp", "ARP"], ["sync_policies", "policy"], ["sync_nat", "NAT"], ["sync_addresses", "addr"],
+  ["sync_dhcp", "DHCP"], ["sync_arp", "ARP"],
+  ["sync_policies", "policy"], ["sync_nat", "NAT"], ["sync_addresses", "addr"],
 ];
 
 const allCols = computed<DataTableColumns<PaloAltoFirewall>>(() => autoSort([
   { title: t("common.name"), key: "name", minWidth: 150, ellipsis: { tooltip: true } },
-  { title: "API URL", key: "api_url", minWidth: 170, ellipsis: { tooltip: true } },
-  { title: "vsys", key: "vsys", width: 90 },
+  { title: "API URL", key: "api_url", minWidth: 180, ellipsis: { tooltip: true } },
   {
     title: t("common.status"), key: "enabled", width: 100,
     render: (r) => h(NTag, { type: r.enabled ? "success" : "default", size: "small" },
       () => r.enabled ? t("common.enabled") : t("common.disabled")),
   },
   {
-    title: t("common.sync"), key: "sync_flags", minWidth: 160,
+    title: "vsys", key: "vsys", width: 140, ellipsis: { tooltip: true },
+    render: (r) => (r.vsys_list && r.vsys_list.length)
+      ? r.vsys_list.join(", ") : t("paloalto.vsys_auto"),
+  },
+  {
+    title: t("common.sync"), key: "sync_flags", minWidth: 170,
     render: (r) => h(NSpace, { size: 3, wrap: true }, () =>
       SYNC_TAGS.filter(([k]) => r[k]).map(([, label]) =>
         h(NTag, { size: "tiny", type: "info", bordered: false }, () => label))),
@@ -183,7 +201,7 @@ const allCols = computed<DataTableColumns<PaloAltoFirewall>>(() => autoSort([
     title: t("common.actions"), key: "actions", className: "col-actions", width: 176,
     render: (r) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
       iconAction(EditIcon, t("common.edit"), () => openEdit(r)),
-      iconAction(TestIcon, t("fortigate.diagnose"), () => test(r)),
+      iconAction(TestIcon, t("paloalto.diagnose"), () => test(r)),
       iconAction(SyncIcon, t("common.pull"), () => sync(r.id), "primary"),
       h(NPopconfirm, { onPositiveClick: () => del(r.id) }, {
         trigger: () => iconAction(DeleteIcon, t("common.delete"), () => {}, "error"),
@@ -193,6 +211,7 @@ const allCols = computed<DataTableColumns<PaloAltoFirewall>>(() => autoSort([
   },
 ]));
 const cols = computed<DataTableColumns<PaloAltoFirewall>>(() =>
+   
   allCols.value.filter((c: any) => vis.value.includes(c.key)),
 );
 
@@ -205,7 +224,7 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
       <n-space align="center" :wrap-item="false">
         <n-icon :size="22"><FirewallIcon /></n-icon>
         <span>{{ t("paloalto.title") }}</span>
-        <n-tag type="warning" size="small" :bordered="false">Beta</n-tag>
+        <n-tag size="small" type="warning" :bordered="false">Beta</n-tag>
       </n-space>
     </template>
 
@@ -236,27 +255,33 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         <n-form-item label="API URL">
           <n-input v-model:value="form.api_url" placeholder="https://192.0.2.1" />
         </n-form-item>
-        <n-form-item :label="t('paloalto.username')">
-          <n-input v-model:value="form.username" placeholder="admin" />
-        </n-form-item>
-        <n-form-item :label="editing ? t('paloalto.password_keep') : t('paloalto.password')">
-          <n-input v-model:value="form.password" type="password" show-password-on="click" />
+        <n-form-item :label="editing ? t('paloalto.key_keep') : t('paloalto.key')">
+          <n-input v-model:value="form.api_key" type="password" show-password-on="click" />
         </n-form-item>
         <div style="margin: -8px 0 12px">
-          <span style="font-size: 11px; opacity: .7">{{ t("paloalto.password_hint") }}</span>
+          <span style="font-size: 11px; opacity: .7">{{ t("paloalto.key_hint") }}</span>
         </div>
         <n-form-item label="vsys">
-          <n-input v-model:value="form.vsys" placeholder="vsys1" />
+          <n-input v-model:value="form.vsysText" :placeholder="t('paloalto.vsys_ph')" />
+        </n-form-item>
+        <n-form-item :label="t('paloalto.api_version')">
+          <div style="width: 100%">
+            <n-input v-model:value="form.api_version" placeholder="v11.1" />
+            <div style="font-size: 11px; opacity: .7; margin-top: 4px">
+              {{ t("paloalto.api_version_hint") }}
+            </div>
+          </div>
         </n-form-item>
         <n-form-item :label="t('firewall_admin.verify_tls')">
           <n-switch v-model:value="form.verify_tls" />
         </n-form-item>
-        <n-form-item :label="t('fortigate.pull_what')">
+        <n-form-item :label="t('paloalto.pull_what')">
           <n-space :size="16" :wrap="true">
+            <n-checkbox v-model:checked="form.sync_dhcp">{{ t("pfsense_admin.dhcp_leases") }}</n-checkbox>
             <n-checkbox v-model:checked="form.sync_arp">ARP</n-checkbox>
-            <n-checkbox v-model:checked="form.sync_policies">{{ t("fortigate.policies") }}</n-checkbox>
+            <n-checkbox v-model:checked="form.sync_policies">{{ t("paloalto.policies") }}</n-checkbox>
             <n-checkbox v-model:checked="form.sync_nat">NAT</n-checkbox>
-            <n-checkbox v-model:checked="form.sync_addresses">{{ t("fortigate.addresses") }}</n-checkbox>
+            <n-checkbox v-model:checked="form.sync_addresses">{{ t("paloalto.addresses") }}</n-checkbox>
           </n-space>
         </n-form-item>
         <n-form-item :label="t('adguard_admin.sync_interval')">
@@ -290,19 +315,20 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
 
     <!-- 連線診斷 -->
     <n-modal v-model:show="diagOpen" preset="card"
-             :title="`${t('fortigate.diagnose')} — ${diagFor}`" style="width: 560px">
+             :title="`${t('paloalto.diagnose')} — ${diagFor}`" style="width: 560px">
       <template v-if="diag">
         <n-space vertical :size="10">
-          <div><strong>vsys：</strong>{{ diag.vsys }}</div>
+          <div><strong>{{ t("paloalto.api_version") }}：</strong>{{ diag.api_version || "—" }}</div>
+          <div><strong>vsys：</strong>{{ diag.vsys.join(", ") || "—" }}</div>
           <n-alert :type="diag.ok_count === diag.checks.length ? 'success' : 'warning'" :bordered="false">
-            {{ t("fortigate.diag_summary", { ok: diag.ok_count, total: diag.checks.length }) }}
+            {{ t("paloalto.diag_summary", { ok: diag.ok_count, total: diag.checks.length }) }}
           </n-alert>
           <div v-for="c in diag.checks" :key="c.endpoint" class="diag-row">
             <n-tag :type="c.ok ? 'success' : 'error'" size="small" :bordered="false">
               {{ c.ok ? "OK" : "ERR" }}
             </n-tag>
             <code>{{ c.endpoint }}</code>
-            <span v-if="c.ok" class="diag-note">{{ t("fortigate.diag_rows", { n: c.rows ?? 0 }) }}</span>
+            <span v-if="c.ok" class="diag-note">{{ t("paloalto.diag_rows", { n: c.rows ?? 0 }) }}</span>
             <span v-else class="diag-note">{{ c.error }}</span>
           </div>
         </n-space>

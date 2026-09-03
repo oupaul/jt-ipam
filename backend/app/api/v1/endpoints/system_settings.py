@@ -21,7 +21,7 @@ from app.api.v1.dependencies import (
 )
 from app.core.audit import append_audit
 from app.core.db import get_session
-from app.core.safe_http import UnsafeOutboundURL, safe_request
+from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
 from app.models.ip_hostname import HOSTNAME_SOURCES
 from app.schemas.base import StrictModel
 from app.services import os_precedence
@@ -543,8 +543,89 @@ async def put_rack_name_align(
 
 
 # ─────────────────── 上線判定閾值（全域，管理員設）───────────────────
+class LivenessSourceOut(StrictModel):
+    """設定頁要顯示的一個候選來源。"""
+
+    key: str
+    #: 這個來源的證據會不會過期 —— 不會過期的勾了就等於「看過一次就永遠上線」
+    aging: bool
+    #: 這個站台真的有這個整合嗎（沒有的就別佔版面）
+    configured: bool
+
+
 class OnlineGraceOut(StrictModel):
     minutes: Annotated[int, Field(ge=1, le=43200)]
+    #: 哪些證據算「上線」。LibreNMS 的 ARP 預設不勾：它沒有時間概念，來源設備的
+    #: 快取不老化就會讓關機的機器一直顯示上線（來源契約見 services/evidence.py）
+    sources: list[str] = ["scanner", "librenms"]
+    #: 候選來源（GET 才有值；PUT 的回應沿用同一個模型，可為空）
+    available: list[LivenessSourceOut] = []
+
+
+class CooldownOut(StrictModel):
+    days: Annotated[int, Field(ge=0, le=3650)]
+
+
+class CertExpiryOut(StrictModel):
+    """憑證到期通知的**全域預設**天數。每張憑證仍可各自覆寫。"""
+
+    days: Annotated[int, Field(ge=1, le=365)]
+
+
+@public_router.get("/cert-expiry-alert", response_model=CertExpiryOut)
+async def get_cert_expiry_alert(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CertExpiryOut:
+    from app.services.system_config import get_cert_expiry_days
+    return CertExpiryOut(days=await get_cert_expiry_days(session))
+
+
+@router.put("/cert-expiry-alert", response_model=CertExpiryOut)
+async def put_cert_expiry_alert(
+    payload: CertExpiryOut, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CertExpiryOut:
+    from app.services.system_config import set_cert_expiry_days
+    days = await set_cert_expiry_days(session, days=payload.days, updated_by_user_id=user.id)
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "cert_expiry_alert", "days": days},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return CertExpiryOut(days=days)
+
+
+@public_router.get("/ip-cooldown", response_model=CooldownOut)
+async def get_ip_cooldown(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CooldownOut:
+    from app.services.ip_lifecycle import get_cooldown_days
+    return CooldownOut(days=await get_cooldown_days(session))
+
+
+@router.put("/ip-cooldown", response_model=CooldownOut)
+async def put_ip_cooldown(
+    payload: CooldownOut, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CooldownOut:
+    from app.services.ip_lifecycle import set_cooldown_days
+    days = await set_cooldown_days(session, days=payload.days, updated_by_user_id=user.id)
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "ip_cooldown", "days": days},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return CooldownOut(days=days)
 
 
 @public_router.get("/online-grace", response_model=OnlineGraceOut)
@@ -552,14 +633,56 @@ async def get_online_grace(
     _user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> OnlineGraceOut:
-    from app.models.system_setting import SystemSetting
-    row = await session.get(SystemSetting, "online_grace_minutes")
-    m = (row.value.get("minutes") if row and isinstance(row.value, dict) else None) or 30
-    try:
-        m = int(m)
-    except (TypeError, ValueError):
-        m = 30
-    return OnlineGraceOut(minutes=min(43200, max(1, m)))
+    from app.services.system_config import get_liveness_config
+    cfg = await get_liveness_config(session)
+    chosen = list(cfg["sources"])
+    return OnlineGraceOut(
+        minutes=int(cfg["minutes"]), sources=chosen,
+        available=await _liveness_candidates(session, chosen),
+    )
+
+
+async def _liveness_candidates(
+    session: AsyncSession, chosen: list[str],
+) -> list[LivenessSourceOut]:
+    """候選來源清單：**只列這個站台真的有的整合**，加上已經被勾選的（不能讓設定
+    因為某個整合被停用就從畫面消失、卻仍在後端生效）。
+
+    掃描代理永遠列出來（它是內建能力，不是整合）。
+    """
+    from sqlalchemy import func, select
+
+    from app.models.firewall import OPNsenseFirewall
+    from app.models.fortigate import FortiGateFirewall
+    from app.models.librenms import LibreNMSInstance
+    from app.models.paloalto import PaloAltoFirewall
+    from app.models.pfsense import PfSenseFirewall
+    from app.models.wazuh import WazuhInstance
+    from app.models.zabbix import ZabbixInstance
+    from app.services.evidence import LIVENESS_SOURCES, is_aging
+
+    async def _has(model: Any) -> bool:
+        return bool(await session.scalar(select(func.count()).select_from(model)))
+
+    present = {
+        "scanner": True,
+        "librenms": await _has(LibreNMSInstance),
+        "wazuh": await _has(WazuhInstance),
+        "zabbix": await _has(ZabbixInstance),
+        "opnsense": await _has(OPNsenseFirewall),
+        "pfsense": await _has(PfSenseFirewall),
+        "fortigate": await _has(FortiGateFirewall),
+        "paloalto": await _has(PaloAltoFirewall),
+    }
+    out: list[LivenessSourceOut] = []
+    for key in LIVENESS_SOURCES:
+        vendor = key.split(":", 1)[1] if ":" in key else key
+        # 舊的籠統 "arp" 等同 arp:librenms
+        configured = present.get("librenms" if key == "arp" else vendor, False)
+        if configured or key in chosen:
+            out.append(LivenessSourceOut(
+                key=key, aging=is_aging(key), configured=configured))
+    return out
 
 
 @router.put("/online-grace", response_model=OnlineGraceOut)
@@ -572,12 +695,14 @@ async def put_online_grace(
     from sqlalchemy.orm.attributes import flag_modified
 
     from app.models.system_setting import SystemSetting
+    from app.services.evidence import LIVENESS_SOURCES
     m = min(43200, max(1, int(payload.minutes)))
+    srcs = [s for s in payload.sources if s in LIVENESS_SOURCES]
     row = await session.get(SystemSetting, "online_grace_minutes")
     if row is None:
         row = SystemSetting(key="online_grace_minutes", value={}, updated_by=user.id)
         session.add(row)
-    row.value = {"minutes": m}
+    row.value = {"minutes": m, "sources": srcs}
     row.updated_by = user.id
     flag_modified(row, "value")
     await append_audit(
@@ -585,11 +710,12 @@ async def put_online_grace(
         actor_ip=request.client.host if request.client else None,
         actor_user_agent=request.headers.get("user-agent"),
         object_type="system", object_id=None, action="update",
-        diff={"target": "online_grace_minutes", "minutes": m},
+        diff={"target": "online_grace_minutes", "minutes": m, "sources": ",".join(srcs)},
         request_id=getattr(request.state, "request_id", None),
     )
     await session.commit()
-    return OnlineGraceOut(minutes=m)
+    return OnlineGraceOut(minutes=m, sources=srcs,
+                          available=await _liveness_candidates(session, srcs))
 
 
 # ─────────────────── GeoIP（MaxMind 本地 mmdb + 排程更新）───────────────────
@@ -1102,8 +1228,14 @@ def _gather_version_info() -> dict[str, Any]:
     # 前端框架版本（讀 frontend/node_modules/<pkg>/package.json 的實裝版本）
     frontend: dict[str, str | None] = {}
     fe_root = Path(__file__).resolve().parents[5] / "frontend" / "node_modules"
+    # 完整列出 package.json 的執行期相依（＋建置工具 vite/typescript）。
+    # 這份清單與後端那份一樣是手寫的，會靜靜過期 —— tests/test_dependency_page.py
+    # 會拿它跟實際宣告的相依比對，漏了就擋下來。
     for p in ["vue", "naive-ui", "vite", "typescript", "pinia", "vue-router",
-              "vue-i18n", "axios", "@xterm/xterm", "@iconoir/vue"]:
+              "vue-i18n", "axios", "@xterm/xterm", "@xterm/addon-fit",
+              "@xterm/addon-unicode11", "@xterm/addon-web-links",
+              "@novnc/novnc", "@iconoir/vue", "@vueuse/core",
+              "cytoscape", "cytoscape-cose-bilkent", "qrcode", "vfonts", "zod"]:
         ver: str | None = None
         try:
             ver = json.loads((fe_root / p / "package.json").read_text(encoding="utf-8")).get("version")
@@ -1222,7 +1354,7 @@ async def check_latest_version() -> dict[str, Any]:
             if m:
                 latest = m.group(1)
     except (UnsafeOutboundURL, httpx.HTTPError) as exc:
-        error = f"transport: {exc.__class__.__name__}"
+        error = f"transport: {transport_detail(exc)}"
 
     # 退回：releases/latest →（無 release）tags。GitHub tags 順序非語意序 → 取數字序最大者。
     if latest is None and error is None:
@@ -1250,7 +1382,7 @@ async def check_latest_version() -> dict[str, Any]:
             else:
                 error = f"github http {resp.status_code}"
         except (UnsafeOutboundURL, httpx.HTTPError) as exc:
-            error = f"transport: {exc.__class__.__name__}"
+            error = f"transport: {transport_detail(exc)}"
 
     return {
         "current": __version__,

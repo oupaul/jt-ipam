@@ -36,6 +36,7 @@ from app.schemas.address import (
 )
 from app.schemas.base import Paginated, StrictModel
 from app.schemas.ip_change_log import IPChangeLogRead
+from app.services import ip_lifecycle
 from app.services.address import (
     IPAlreadyExists,
     IPNotInSubnet,
@@ -363,6 +364,248 @@ async def get_address_firewall(
     return await rules_touching_ip(session, str(obj.ip))
 
 
+class SiblingIP(StrictModel):
+    """同主機名稱、尚未關聯裝置的另一筆 IP —— **候選，不是結論。**"""
+
+    id: uuid.UUID
+    ip: str
+    mac: str | None = None
+    mac_vendor: str | None = None
+    #: MAC 與本 IP 相同 → 幾乎可以確定是同一張網卡
+    same_mac: bool = False
+
+
+class DeviceSuggestion(StrictModel):
+    """「這個 IP 應該屬於哪一台裝置」的建議。**只是建議，不會自己動手。**"""
+
+    suggested_name: str | None = None
+    existing_device_id: uuid.UUID | None = None
+    existing_device_name: str | None = None
+    #: 為什麼認為是這一台：name / fqdn / ip / mac
+    match_reason: str | None = None
+    #: 用同一個主機名稱、尚未關聯裝置的其他 IP。
+    #:
+    #: ⚠️ **同主機名稱不等於同一台機器。** DHCP 把位址回收給別台之後，IP 記錄上的舊
+    #: 主機名稱還留著 —— 實機上一台筆電的名字散在九筆 IP 上，其中有 Proxmox 的 VM
+    #: 和一顆 ESP32。所以這裡回的是**候選與它們的證據**（MAC、廠商），由人決定要掛哪些，
+    #: 而不是給一個「全部掛上」的開關。
+    siblings: list[SiblingIP] = Field(default_factory=list)
+    #: 這個使用者能不能建立裝置（建立裝置是管理員限定）
+    can_create: bool = False
+
+
+class DeviceSuggestionApply(StrictModel):
+    """套用建議。二擇一：關聯到既有裝置，或建立一台新的。"""
+
+    device_id: uuid.UUID | None = None
+    create_name: str | None = Field(default=None, max_length=200)
+    #: 要一併關聯的其他 IP —— **由使用者逐筆勾選**，不是一個「全部」開關
+    link_ip_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+def _first_label(hostname: str | None) -> str | None:
+    """`laptop-07.local` → `laptop-07`。裝置名稱慣例用第一段。"""
+    h = (hostname or "").strip()
+    return h.split(".")[0] or None if h else None
+
+
+async def _sibling_rows(
+    session: AsyncSession, *, user: User, hostname: str, exclude: uuid.UUID,
+) -> list[Any]:
+    """同主機名稱、尚未關聯裝置、且**這個使用者能寫**的其他 IP。
+
+    可見性一定要推進 SQL：先取再過濾會讓數量算在使用者看不到的資料上。
+    """
+    q = (
+        select(IPAddress.id, IPAddress.ip, IPAddress.mac)
+        .join(Subnet, IPAddress.subnet_id == Subnet.id)
+        .where(
+            func.lower(IPAddress.hostname) == hostname.strip().lower(),
+            IPAddress.device_id.is_(None),
+            IPAddress.id != exclude,
+            Subnet.archived_at.is_(None),
+        )
+    )
+    vis = await visible_ids(session, user=user, object_type="subnet", required="write")
+    if vis is not None:
+        if not vis:
+            return []
+        q = q.where(IPAddress.subnet_id.in_(vis))
+    return list((await session.execute(q.limit(50))).all())
+
+
+@router.get("/{address_id}/device-suggestion", response_model=DeviceSuggestion)
+async def device_suggestion(
+    address_id: uuid.UUID,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> DeviceSuggestion:
+    """這個 IP 看起來屬於哪一台裝置 —— 或者該建立哪一台。
+
+    **只回建議，不會建立也不會關聯任何東西。** DHCP 的筆電會散在十幾個 IP 上，
+    每一筆都手動建裝置、手動關聯是純粹的苦工；但要不要建立仍然是人決定。
+    """
+    from app.models.device import Device
+    from app.models.physical import DevicePort
+
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "read")
+
+    out = DeviceSuggestion(can_create=bool(user.is_admin))
+    if obj.device_id is not None:
+        return out                      # 已經有裝置就沒什麼好建議的
+
+    hostname = (obj.hostname or "").strip()
+    ip_host = str(obj.ip).split("/")[0]
+    out.suggested_name = _first_label(hostname)
+
+    # ── 先找既有裝置：名稱 / FQDN / 主要 IP / 連接埠 MAC
+    dev: tuple[uuid.UUID, str] | None = None
+    reason: str | None = None
+    if hostname:
+        row = (await session.execute(
+            select(Device.id, Device.name).where(
+                or_(func.lower(Device.name) == hostname.lower(),
+                    func.lower(Device.name) == (out.suggested_name or "").lower(),
+                    func.lower(Device.fqdn) == hostname.lower())
+            ).limit(2)
+        )).all()
+        # 對到多台就不猜 —— 這與 ip_device_link 的規則一致
+        if len(row) == 1:
+            dev, reason = (row[0][0], row[0][1]), "name"
+    if dev is None and obj.mac:
+        row = (await session.execute(
+            select(DevicePort.device_id, Device.name)
+            .join(Device, Device.id == DevicePort.device_id)
+            .where(func.lower(DevicePort.mac_address) == str(obj.mac).lower())
+            .limit(2)
+        )).all()
+        if len(row) == 1:
+            dev, reason = (row[0][0], row[0][1]), "mac"
+    if dev is None:
+        # 精確比對位址本身。用字串前綴比對會把 10.0.0.1 命中成 10.0.0.10／10.0.0.100 ——
+        # 掛錯的裝置關聯比沒有關聯更難發現。
+        row = (await session.execute(
+            select(Device.id, Device.name)
+            .join(IPAddress, IPAddress.id == Device.primary_ip_id)
+            .where(func.host(IPAddress.ip) == ip_host).limit(2)
+        )).all()
+        if len(row) == 1:
+            dev, reason = (row[0][0], row[0][1]), "ip"
+
+    if dev is not None:
+        out.existing_device_id, out.existing_device_name = dev
+        out.match_reason = reason
+    if hostname:
+        my_mac = str(obj.mac).lower() if obj.mac else None
+        for sid, sip, smac in await _sibling_rows(
+            session, user=user, hostname=hostname, exclude=obj.id,
+        ):
+            mac = str(smac) if smac else None
+            out.siblings.append(SiblingIP(
+                id=sid, ip=str(sip).split("/")[0], mac=mac,
+                mac_vendor=await vendor_for_mac(session, smac),
+                same_mac=bool(my_mac and mac and mac.lower() == my_mac),
+            ))
+    return out
+
+
+@router.post("/{address_id}/device-suggestion/apply", response_model=IPAddressRead)
+async def apply_device_suggestion(
+    address_id: uuid.UUID,
+    payload: DeviceSuggestionApply,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> IPAddressRead:
+    """把建議套用下去：關聯到既有裝置，或建立一台再關聯。"""
+    from app.models.device import Device
+
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "write")
+
+    if bool(payload.device_id) == bool(payload.create_name):
+        raise HTTPException(status_code=400,
+                            detail="請二擇一：關聯到既有裝置，或建立一台新的")
+
+    if payload.create_name:
+        # 建立裝置是管理員限定（與 POST /devices 同一條線）
+        if not user.is_admin:
+            raise HTTPException(status_code=403, detail="只有管理員能建立裝置")
+        name = payload.create_name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="裝置名稱不可為空")
+        hostname = (obj.hostname or "").strip()
+        device = Device(name=name, type="other",
+                        fqdn=hostname if "." in hostname else None)
+        session.add(device)
+        await session.flush()
+        await append_audit(
+            session,
+            actor_user_id=str(user.id),
+            actor_ip=request.client.host if request.client else None,
+            actor_user_agent=request.headers.get("user-agent"),
+            object_type="device", object_id=str(device.id), action="create",
+            diff={"name": name, "from_ip": str(obj.ip)},
+            request_id=getattr(request.state, "request_id", None),
+        )
+    else:
+        device = await session.get(Device, payload.device_id)
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+    linked = 0
+    if obj.device_id is None:
+        await log_change(
+            session, ip=obj, event_type="edited", field="device_id",
+            old=None, new=str(device.id), source="user", actor_user_id=user.id,
+            note="applied device suggestion",
+        )
+        obj.device_id = device.id
+        linked += 1
+
+    if payload.link_ip_ids and (obj.hostname or "").strip():
+        # 客戶端送來的 id 不能直接相信：只接受「這個使用者能寫、且確實同主機名稱、
+        # 且還沒關聯」的那一批 —— 以伺服器自己算出來的集合為準。
+        allowed = {
+            row[0] for row in await _sibling_rows(
+                session, user=user, hostname=obj.hostname or "", exclude=obj.id,
+            )
+        }
+        for sid in payload.link_ip_ids:
+            if sid not in allowed:
+                continue
+            sib = await session.get(IPAddress, sid)
+            if sib is None or sib.device_id is not None:
+                continue
+            await log_change(
+                session, ip=sib, event_type="edited", field="device_id",
+                old=None, new=str(device.id), source="user", actor_user_id=user.id,
+                note="applied device suggestion (same hostname)",
+            )
+            sib.device_id = device.id
+            linked += 1
+
+    await append_audit(
+        session,
+        actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="ip_address", object_id=str(obj.id), action="update",
+        diff={"device_id": str(device.id), "linked_ips": linked},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    await session.refresh(obj)
+    out = IPAddressRead.model_validate(obj)
+    out.mac_vendor = await vendor_for_mac(session, obj.mac)
+    return out
+
+
 @router.get("/{address_id}", response_model=IPAddressRead)
 async def get_address(
     address_id: uuid.UUID,
@@ -677,6 +920,19 @@ async def create_address(
 ) -> IPAddressRead:
     subnet = await _require_subnet_perm(session, user, payload.subnet_id, "write")
 
+    # 冷卻期守門：這個位址剛被釋放，外面的 DNS 快取／防火牆規則可能還指著它。
+    # 擋下來而不是安靜放行 —— 管理員判斷沒問題可以先解除冷卻再建立。
+    cd = await ip_lifecycle.cooldown_for(session, subnet_id=payload.subnet_id, ip=payload.ip)
+    if cd is not None:
+        raise HTTPException(status_code=409, detail={
+            "code": "ip_in_cooldown",
+            "ip": payload.ip,
+            "until": cd.until.isoformat() if cd.until else None,
+            "previous_hostname": cd.previous_hostname,
+            "message": ("此位址剛被釋放，仍在冷卻期內（外部的 DNS 快取、防火牆規則可能"
+                        "還指著它）。確定要現在使用，請先解除冷卻。"),
+        })
+
     try:
         obj = await create_ip(
             session,
@@ -906,8 +1162,61 @@ async def delete_address(
     await log_change(session, ip=obj, event_type="deleted",
                      source="manual", actor_user_id=str(user.id),
                      old=str(obj.ip))
+    # 釋放 → 進冷卻期。外面還有 DNS 快取／防火牆規則／ACL 指著這個位址，
+    # 立刻配給別人會造成最難查的那種故障（見 services/ip_lifecycle）。
+    await ip_lifecycle.start_cooldown(session, ip=obj, actor_user_id=user.id,
+                                      reason="deleted")
     await session.delete(obj)
     await session.commit()
+
+
+class CooldownClearIn(StrictModel):
+    reason: Annotated[str | None, Field(max_length=500)] = None
+
+
+@router.get("/cooldowns/{subnet_id}")
+async def list_cooldowns(
+    subnet_id: uuid.UUID,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """這個子網路裡仍在冷卻期的位址（剛釋放、暫時不配發）。"""
+    await _require_subnet_perm(session, user, subnet_id, "read")
+    rows = await ip_lifecycle.active_cooldowns(session, subnet_id)
+    return {"items": [{
+        "ip": ip,
+        "released_at": r.released_at.isoformat() if r.released_at else None,
+        "until": r.until.isoformat() if r.until else None,
+        "previous_hostname": r.previous_hostname,
+        "previous_mac": r.previous_mac,
+        "reason": r.reason,
+    } for ip, r in sorted(rows.items())], "count": len(rows)}
+
+
+@router.post("/cooldowns/{subnet_id}/{ip}/clear")
+async def clear_cooldown(
+    subnet_id: uuid.UUID, ip: str, payload: CooldownClearIn,
+    user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """提前解除冷卻。**紀錄不刪**，留下誰／何時／為什麼。"""
+    await _require_subnet_perm(session, user, subnet_id, "admin")
+    row = await ip_lifecycle.clear_cooldown(
+        session, subnet_id=subnet_id, ip=ip,
+        actor_user_id=user.id, reason=payload.reason,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not in cooldown")
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="ip_address", object_id=None, action="cooldown_clear",
+        diff={"subnet_id": str(subnet_id), "ip": ip, "reason": payload.reason or ""},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return {"ok": True, "ip": ip}
 
 
 class BulkDeletePayload(StrictModel):

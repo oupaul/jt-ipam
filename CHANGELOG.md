@@ -4,6 +4,700 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.6.1] — 2026-09-03
+
+Version numbering moves to 0.6.x from here; 0.5.247 was the last 0.5 release.
+
+### Fixed
+- **A powered-off host could look online for longer than the configured threshold.** An ARP entry
+  survives in the firewall's table until it times out (20 minutes on FreeBSD), and every sync round
+  in that window was recording it as "just seen" — so the threshold was effectively stacked on top
+  of the ARP timeout. Each round now derives the same observation time from the entry's own
+  countdown, so a host that stopped answering at 12:00 is reported offline one threshold later,
+  not one threshold plus twenty minutes. This is now pinned by a test that walks the rounds after
+  a shutdown, and by an end-to-end check that a host last seen 25 minutes ago is online at a
+  30-minute threshold and offline at a 20-minute one.
+
+- **Zabbix was registered as a liveness source but never actually fed one.** Its sync linked hosts
+  to addresses and mirrored their availability into its own table, yet nothing was written back to
+  the IP — so the liveness rules could not see it and the settings page could not offer it, which
+  reads as "Zabbix isn't supported here". Availability is now recorded on the address
+  (`last_seen_zabbix`, migration 0134) **only when Zabbix reports the host up**: "down" is evidence
+  of the opposite and "unknown" is no evidence, and writing either would turn them into "seen".
+  A guard test now requires every source the contract marks as expiring to be wired through.
+
+### Changed
+- The liveness evidence picker separates its groups with a rule and more spacing, so probes, ARP
+  tables, VPN sessions and DHCP leases no longer read as one undifferentiated block; its label is
+  now "evidence sources counted".
+
+## [0.5.247] — 2026-09-02
+
+### Fixed (everything a new integration has to reach)
+Adding Palo Alto covered the sync, the rule-change sentinel and the settings page — and then a
+sweep found a string of places still stopping at the previous vendor. None of them broke: they
+were simply one vendor short, which is exactly why nobody noticed.
+- **AI chat** could not see it: `list_firewalls` returned three vendors, so the model would answer
+  "which firewalls do we have" from an incomplete list, and there were no tools for Palo Alto
+  policies or address objects. Both added, scoped to global-read like the other firewall tools.
+- **An IP's detail page** did not show which Palo Alto rules touch that address. The App-ID is
+  shown next to the service, because that is what a PAN-OS rule actually matches on.
+- **Audit entries** showed a truncated UUID instead of the instance name, and clicking one went
+  nowhere.
+- **Unauthorised-DHCP detection** did not know the firewall's own management address, so a Palo
+  Alto could report itself as a rogue server.
+- **OS fingerprinting** did not classify PAN-OS as a network device.
+- **The rule-change page** still said it compares "three firewalls", and the change kind was
+  crammed into the diff column — it is now its own column, so rows line up.
+- **The precedence page** printed raw lowercase keys (`paloalto`, `zabbix`) for sources with no
+  display name, and its intro enumerated a stale subset of sources.
+- **The liveness evidence picker** wrapped into ragged rows; sources are now grouped by kind
+  (probes / ARP tables / VPN sessions / DHCP leases) in an aligned grid.
+- Docs: the feature map, the home page and the API endpoint table now list Palo Alto.
+
+### Fixed (what makes a firewall's ARP table usable evidence)
+- **A firewall's ARP entries were stamped with the sync time, not the time they were refreshed.**
+  Asked why a firewall's ARP table may claim a host is online when LibreNMS's may not, the honest
+  answer turned out to expose a flaw in our own code. Live data from two OPNsense boxes: every
+  entry carries `expires`, counting down from FreeBSD's 1200-second `max_age`; of 84 entries, 22
+  had last been refreshed more than five minutes earlier and six were 15–20 minutes old — all of
+  which we were recording as "just seen". That is the same defect we criticise LibreNMS ARP for.
+  The entry's own clock is now used: `expires` (OPNsense / pfSense), `age` (FortiOS), `ttl`
+  (PAN-OS) are converted back to when the entry was actually refreshed. Permanent entries and ones
+  already flagged expired are skipped, and `max_age` is taken from the batch so a site that tuned
+  it still lines up. Where a vendor gives no such field we fall back to the sync time, which
+  claims only "still within the ARP timeout" — a weaker statement, deliberately.
+  **The rule is now written down: a source may claim liveness if it can say *when*, not because
+  it happens to be called ARP.**
+
+### Testing
+- **A guard for "did the new integration reach everything?"** (`test_integration_coverage.py`).
+  It checks each vendor against every place that enumerates them — AI tools, rule-change
+  detection and its on-screen copy, the IP-detail lookup, NAT, audit naming, scheduled sync,
+  export/import, the evidence contract, and display names in both locales. It also records the
+  two features that are **deliberately** vendor-limited (exposed-services and rule-rot detection)
+  with the reason, so they are not "fixed" by accident: a FortiGate policy or a PAN-OS App-ID
+  rule is not the same claim as "this port is reachable from the internet".
+
+## [0.5.246] — 2026-09-02
+
+### Fixed
+- **A VNC server with no password could never be reached.** From RFB 3.7 onwards the client must
+  reply with one byte naming the security type it picked; the library we use only sends it on the
+  password path, leaving the no-password branch empty — so both sides waited for each other until
+  the timeout. All the operator saw was "連線逾時", which points at the network rather than at the
+  handshake. Patched alongside the mouse fix already applied to that library.
+- **Console errors no longer hide the reason.** "連線/認證失敗（密碼錯誤或 VNC 設定）" was sent for
+  every failure, including the most common one — the target closing the TCP connection before the
+  RFB handshake, where the password is never even sent. That message walks the operator into
+  checking a password that was never the problem. Failures are now classified (refused / timed out /
+  closed before the handshake / authentication) and carry the underlying reason, the same rule the
+  integrations already follow. Applied to the RDP console too.
+
+### Testing
+- **A minimal RFB server as a test target** (`frontend/e2e/fixtures/vnc-target.py`, standard library
+  only) plus a backend test that completes a real handshake against it and an e2e that renders the
+  framebuffer in the browser and measures the pixels. Nothing had ever completed a VNC handshake in
+  a test, so when a real target failed to connect we could not tell our half from theirs — which is
+  exactly how the no-password defect had stayed invisible.
+
+## [0.5.245] — 2026-09-02
+
+### Added
+- **A BMC / SOL setup page on the documentation site** (`docs/bmc-sol.html`, linked from the feature
+  map and from the BMC console's own setup guide). Until now the only thing said about the BIOS was
+  one optional line — "point console redirection at the same COM port, 115200 8N1" — which leaves out
+  the fields that actually decide whether you see anything. The page reproduces the AMI
+  `Console Redirection Settings` screen with a recommended value for every field and what breaks when
+  it is wrong, most importantly **Redirection After BIOS POST**: anything other than `Always Enable`
+  stops the relay when POST ends, so you see the BIOS and then nothing after boot — which is easy to
+  misread as a missing setting on the operating-system side. It also maps each symptom (blank screen,
+  garbage, freezing after a few lines, replacement boxes, cut-off edges) to the one field to check
+  first, and names the equivalent setting on HPE iLO, Dell iDRAC and Supermicro.
+
+## [0.5.244] — 2026-09-02
+
+### Added
+- **Palo Alto (PAN-OS) integration — Beta.** Its own settings page, independent of the other
+  firewalls, read-only over the PAN-OS API: ARP table, DHCP leases, security policies (with the
+  App-ID, which is where a PAN-OS rule's meaning actually lives), NAT and address objects, across
+  every vsys. Rule-change detection covers it like the others, so a changed policy raises the same
+  notification with the same diff. There is **no appliance to test against**, so the parsing is
+  deliberately tolerant and "Test connection" reports **per endpoint** whether it could be read —
+  including the REST version segment it detected, because PAN-OS binds `/restapi/v11.1/…` to the
+  firmware version and a wrong guess 404s everything.
+- **Wazuh agents now count towards liveness.** An agent's keep-alive is maintained by the manager
+  and expires, which is exactly what a liveness source has to be. The **agent's own keep-alive
+  time** is stored, not the time we synced — otherwise an agent that went silent three months ago
+  would mark its address online at every sync.
+
+### Changed (this one changes what "online" means — read it)
+- **Firewall evidence is now recorded per source.** Everything the OPNsense / pfSense / FortiGate /
+  Palo Alto sync learned — ARP tables, DHCP leases, VPN sessions — used to be written into
+  `last_seen_scanner`. Two consequences: sites with no scan agent at all were shown "online
+  (scanner)", and there was no way to trust one kind of evidence without trusting all of them.
+  Each now lands under its own name (`arp:opnsense`, `vpn:pfsense`, `lease:fortigate`…) and the
+  liveness settings list them individually, showing only the integrations that site actually has.
+  - A firewall's own ARP table **can** claim a host is up: entries age out in minutes and we
+    re-read them each round. It stays trusted by default, so a firewall-only site does not go
+    dark on upgrade. **Static/permanent entries are skipped** — they never age out.
+  - A **DHCP lease cannot**: a lease often outlives the machine's uptime by days. Off by default.
+  - LibreNMS's ARP still cannot, unchanged: its API returns no timestamp at all.
+- Ghost-IP and "ARP only" detection follow the same rule — an address a firewall can still see is
+  neither a ghost nor ARP-only.
+
+### Fixed
+- **The dashboard's virtualisation node had no right answer when both platforms were in use.**
+  The number is the sum of Proxmox and VMware, so either destination showed half of it and looked
+  like data had gone missing. With both configured the node no longer navigates (and no longer
+  looks clickable); with one, it goes where it always did.
+- **The IP change log printed a raw translation key** for any event type without a translation
+  (`ipChanges.event.update`). It now falls back to the raw value, matching what the IP edit dialog
+  already did.
+
+### Testing
+- **Every route is now opened by a test.** The sweep visited 22 of 78 routes; forty-odd pages had
+  never been opened by anything. The new spec parses the route list out of the router itself, so a
+  new page is covered the day it is added, and it fails on blank screens, JS exceptions, failed
+  API calls and untranslated keys. It immediately caught a 500 on **creating** a Palo Alto firewall
+  (the API key was encrypted into the wrong shape) — a defect every backend test had missed,
+  because none of them called that function.
+
+## [0.5.243] — 2026-09-01
+
+### Fixed (a sweep of accounts and permissions)
+- **The login path could demote the last administrator.** With a group mapping configured, the last
+  remaining admin only had to fall out of that group — a renamed group, a typo, a directory change
+  — and the next login revoked their admin, leaving nobody able to reach the admin area short of
+  running the CLI on the server. `PATCH` and `DELETE` already guarded this; login did not. All
+  three external login paths (LDAP, OIDC, SAML) now agree: **the count of effective admins is
+  never allowed to reach zero**.
+- **Deleting a user or a group left orphaned grants.** `permissions.principal_id` can point at
+  either a user or a group, so it cannot have a foreign key — nothing cleans it up. The rows that
+  remain show on the permissions page but match nobody, leaving an audit with a grant it cannot
+  explain (**one already existed in production**; it has been removed). Deletion now clears them
+  and records how many in the audit entry — that is a permission change, not a side effect.
+- **Deleting a subnet, section, customer or device also clears grants pointing at it**
+  (`object_id` has no foreign key either).
+
+### Checked and found sound
+Every user and group endpoint is guarded by `require_admin` at the router level; a deactivated
+account is rejected on each request and on token refresh; changing one's own password requires the
+current one; permission grants and group membership changes are audited; the last-admin guard on
+`PATCH`/`DELETE` remains.
+
+## [0.5.242] — 2026-09-01
+
+### Fixed
+- **Admin granted to an LDAP/SSO account switched itself back off** (reported by a customer). All
+  three external login paths (LDAP, OIDC, SAML) unconditionally ran
+  `is_admin = user is in an admin group`, and the admin-group mapping is **empty by default** — an
+  empty list always evaluates to false, so every login revoked admin. No external account could
+  ever be an administrator, while the switch in the UI looked perfectly usable.
+  That was **inferring "not an admin" from "nothing configured"**: with no mapping, the system
+  knows nothing about who should be an administrator, and the right move is to leave the flag
+  alone and let local administration decide. **With a mapping configured the directory remains the
+  source of truth** — that is the point of configuring it — and the switch now states the rule,
+  because letting someone flip it and silently reverting on next login is the worst of both.
+
+## [0.5.241] — 2026-08-31
+
+### Added
+- **Expiry warning lead time is configurable per certificate** (migration 0131). Renewal takes
+  different amounts of time for different certificates: a commercial one bought by hand needs a
+  month of lead time, an auto-renewed one needs a week — one threshold for all of them is either
+  too noisy or too late. Each row on the certificates page gets an "expiry notice" button, and
+  system settings holds the global default. **Unset means "use the default", not "never warn"**,
+  and it can be set back to the default (a `null` in PATCH means "don't change", so there is an
+  explicit flag for it — otherwise setting it once would be irreversible).
+
+### Fixed
+- **Exposed-services list: searching one IP showed a different one.** The table's row-key used the
+  **array index** (`key-via-index`), so after filtering the same index referred to a different row
+  and the table reused the old one. Rows now get a stable identity when the data is built. Verified
+  by replaying the same filter over real production data: 7 matches, all of them the searched IP,
+  agreeing with the "7 rows" the page reported.
+- **The virtualization card on the device page was untranslated**: field labels and statuses like
+  `running`/`stopped` now have translations; an unrecognised status is shown as-is — translating
+  a word we do not know would just invent information.
+
+## [0.5.240] — 2026-08-31
+
+### Fixed
+- **A console could only use a stored credential, with no way to switch to another.** Clearing the
+  selection meant using the ✕ that **only appears on hover** — opening the dropdown showed just the
+  saved entry, so there appeared to be no other option. Being possible is not the same as being
+  discoverable. All six consoles (SSH / SFTP / RDP / VNC / noVNC / BMC) now offer "use different
+  credentials" in the dropdown itself, which returns to the manual fields. A test watches all six —
+  fixing one instance of a shared interaction leaves five inconsistent ones.
+- **"Reachable, just slow the first time" was reported as unreachable.** Fetching the host key is
+  the **first** outbound step of the whole path, yet it allowed only 8 seconds — less than the 15
+  the actual connection gets. Measured against one OpenSSH 8.9 host: over 8s the first time, 1.08s
+  the second, 0.05s the third (a common cause of the first being slow is the server doing a reverse
+  DNS lookup on the source). The timeout now matches the connection's, and the message names the
+  likely cause and suggests retrying.
+
+## [0.5.239] — 2026-08-30
+
+### Added
+- **A new anomaly category: "device link may be stale."** Asked directly: if the IP is later used
+  by a different host, does it stay linked to this device? It does. A link is never re-evaluated
+  once written, so when the address is handed to another machine (common with DHCP) the link
+  **quietly becomes wrong** — the screen looks fine, it just points at the wrong device. IPs whose
+  **MAC changed after the link was made** are now surfaced; that is a recorded fact, not an
+  inference. Nothing is unlinked automatically — that would be guessing too; both timestamps are
+  shown so the order can be checked.
+- The switch and port fields sit on one line via an input group. Previously the second field was
+  pushed onto its own line when space was tight, leaving the "@" stranded.
+
+### Fixed
+- **A notification has to take you where you need to look.** The "firewall rules changed" one
+  carried **no link at all**, so clicking it did nothing; a sweep then found two more pointing at
+  **routes that do not exist** (`/admin/audit`, `/admin/event-rules` — those pages live at
+  `/audit` and `/event-rules`). Both failures look identical on screen. A guard test now checks
+  every notification against the front-end route table: it must carry a link, and that link must
+  resolve.
+- **The device suggestion now lists candidates instead of offering a blanket switch.** It used to
+  have a "also link the other IPs with this hostname" checkbox — but **the same hostname does not
+  mean the same machine**: a reused DHCP address keeps its old hostname. In the field one laptop's
+  name was spread over nine IPs, among them a Proxmox VM and an ESP32. Candidates are now listed
+  individually with their **evidence (MAC, vendor)**; those sharing the MAC are marked and ticked
+  by default, the rest are not. On apply the server **does not trust the ids from the client** and
+  accepts only those in the set it computes itself.
+- **The device field on the IP detail page showed a fragment of a UUID.** The name was resolved
+  only against the one page `listDevices()` returns (200 rows), so a freshly created device was not
+  in it. It now **fetches that device by id**.
+- **Rack diagram: a 2U device's name sat half a row too high.** The name was drawn in "the middle
+  row", and an even number of Us has no middle row. It now spans the whole device and is centred
+  within it (compensating the outline width, without which everything shifts 2px down). A
+  geometric end-to-end test guards it — this kind of drift is invisible in a screenshot.
+- **AI review prose contained addresses with no source.** One run produced both `192.16CA.1.59`
+  (the model mangling `192.168.1.59`) and `196.168.1.39` (valid but nonexistent). Such errors look
+  precise and read as confident, and people go and look them up. Addresses in the prose that do not
+  match the cited evidence are now removed (CIDRs are kept — those describe a range) — better one
+  sentence short than one plausible-looking falsehood.
+
+### Changed
+- **Only the legend keeps the topology "virtual machines" toggle.** There were two controls for it
+  at different layers: the legend merely hid nodes, while VMs had not been fetched at all — so
+  clicking it did nothing. The legend entry now controls whether VMs are loaded, and reflects that.
+
+## [0.5.238] — 2026-08-30
+
+### Added
+- **Editing an IP now suggests creating or linking a device.** A laptop on DHCP shows up under a
+  dozen IPs with the same hostname, and creating and linking a device by hand for each one is pure
+  drudgery. The device field now offers "Create device X and link it" (or "Link to the existing
+  device X"), with a checkbox to **also link the other IPs that share the hostname and have no
+  device yet**. It is **only a suggestion — nothing happens until it is clicked** (a test guards
+  exactly that: looking at the suggestion must have no side effects). It follows the existing
+  refuse-to-guess rules: no suggestion when several devices match the name, an existing link is
+  never overwritten, the batch only touches empty ones, every change is written to the IP history
+  and the audit log, and creating a device stays admin-only. The "how many sibling IPs" count is
+  scoped in SQL — filtering after the fetch would count rows the user cannot see.
+
+### Fixed
+- Matching an existing device by address used a string **prefix**, so `10.0.0.1` matched
+  `10.0.0.10` and `10.0.0.100`. It is an exact match now — a wrong device link is harder to notice
+  than no link at all.
+
+### Note: the SFTP upload stall
+The upload failures chased over several days came down to **a faulty wired network adapter on the
+client machine** (switching to Wi-Fi worked): its TCP had accepted 85442 bytes to send, put only
+66820 on the wire, and then neither sent nor retransmitted the rest before resetting the connection
+some twenty seconds later. The server acknowledged everything it received with a steadily growing
+window, and another machine on the same LAN pushed 5 MB to it in 0.1 s.
+
+The changes from 0.5.229 to 0.5.237 were therefore **not** the fix for that, but they stay, because
+each stands on its own: console keepalive, a pong timeout that no longer cuts off slow links, upload
+flow control that discovers what a path can carry, and above all the **step-by-step diagnostics** —
+they are what turned "connection lost" into "nothing arrived after byte 49152", which is what made
+the network adapter findable at all.
+
+## [0.5.237] — 2026-08-30
+
+### Fixed
+- **A rack can be chosen without picking a location first** (both the device list and the device
+  detail editor). A rack already belongs to a location — that is a lookup, not a question for the
+  user — and choosing a rack now **fills the location in**. A guard test watches both entry points,
+  since editing the same object from two places is where a fix usually gets applied to only one.
+
+### Added
+- **The in-flight upload window discovers what the path can carry**: it starts at 32 KiB, doubles
+  while acknowledgements keep arriving (up to 4 MiB), and halves and retries the file when it
+  stalls. Hard-coding a small value would make everyone pay for one bad path — over a link with
+  100 ms of round trip, a 32 KiB window is only about 320 KB/s. A healthy path reaches the ceiling
+  within a few round trips.
+- Upload frames are a fixed 16 KiB. A 256 KiB frame was measured taking the connection down the
+  moment it was sent; what actually needs controlling is **how much is in flight** (a 256 KiB frame
+  puts 256 KiB on the wire at once), and frame size itself does not affect throughput.
+
+# Changelog
+
+All notable changes to this project are documented here. The format is loosely
+based on [Keep a Changelog](https://keepachangelog.com/); versions track
+`frontend/package.json` / `backend/app/version.py`.
+
+## [0.5.236] — 2026-08-30
+
+### Added
+- **Uploads are paced against acknowledgement**: the server confirms each block it takes and the
+  client keeps only a small amount in flight. A path was measured where continuously streamed data
+  was swallowed after roughly 48 KB; only this pattern gets through it.
+
+## [0.5.235] — 2026-08-30
+
+### Fixed
+- **Upload frames are now 16 KiB — large frames were killing the connection.** Measured in the
+  field: on one and the same connection a 16 KiB data frame reached the server in **7 ms**, and the
+  256 KiB frame sent immediately after **took the connection down** (the server had received
+  exactly those 16384 bytes; close code 1006), while text commands worked throughout. This is the
+  direct cause behind every earlier "the upload does nothing and then the connection drops" — it
+  stopped at the first large frame every time.
+- Smaller frames do not slow the transfer: data is streamed rather than acknowledged per frame, so
+  throughput is set by the link and by how fast the remote writes, not by frame size.
+
+## [0.5.234] — 2026-08-30
+
+### Added
+- **Uploads now start small and grow only after the server confirms receipt.** The server reports
+  how many bytes it has taken; the client sends **16 KiB** first and only widens to 256 KiB once
+  that is acknowledged. A path was seen in the field where text commands (small packets) worked
+  throughout while the first 256 KiB data frame **never reached the server at all**, and the
+  connection died on its own twenty-odd seconds later. If small blocks get through, the whole
+  upload gets through; if they do not, the user is told within 15 seconds instead of waiting.
+- **The "not getting through" message points somewhere.** The server having replied "ready to
+  receive" means the server is fine, so the trouble is between this computer and it — commonly a
+  VPN or proxy discarding larger packets, or a browser extension interfering; try an incognito
+  window or a different network. A bare "connection lost" sends people the wrong way.
+- On-screen upload progress now counts **bytes the server confirmed**, not bytes handed to the
+  local socket. The two agree when things work and diverge when they do not — which is exactly
+  when it matters.
+
+## [0.5.233] — 2026-08-30
+
+### Fixed
+- **Console replies now carry a request id — "the screen says it finished while the server received
+  nothing" is no longer possible.** The client had a **single unlabelled waiting slot**: any `ok`
+  from the server resolved whatever happened to be waiting. One protocol slip (a late reply, a
+  duplicate, a reordering) swapped success for failure — the field log showed `written=0` while the
+  screen reported "1.5 MB of 1.5 MB sent" and moved on to the next file. With ids, a reply that
+  matches nothing is ignored and the pending request keeps waiting, so "not received" shows up
+  honestly as "still waiting".
+- **WebSocket compression is off** (`--ws-per-message-deflate false`). The console carries file
+  bytes — usually already-compressed archives and executables — so deflate buys nothing on the wire
+  while adding a **stateful** layer between "the browser called send()" and "the server received
+  bytes" that fails without an error on either end, and burning CPU per frame.
+
+### Added
+- Console logging now records **how long the remote open took** and **when the first data frame
+  arrived and what kind it was**. Without those, "the remote is slow to open a file" and "no data
+  ever arrived" look identical in the log.
+
+### Testing
+- The end-to-end tests clean up the files they create. Accumulated files pushed the listing past one
+  page, so "is the row I just uploaded visible?" failed for entirely unrelated reasons — that
+  misled three separate investigations today.
+
+## [0.5.232] — 2026-08-30
+
+### Added
+- **Whole folders can now be dropped onto the SFTP console** (nested subdirectories included).
+  Dropping a folder previously produced only a "skipped" notice. The remote directory structure is
+  created first and files follow — the other order fails every file for a missing parent.
+  A single drop takes at most 500 files and 16 levels, and **says how many items were left out**
+  rather than truncating silently.
+- The server's `mkdir` gained a `parents` option (create missing levels, treat an existing
+  directory as success). Without it the client collects a string of bogus failures for
+  directories that already exist, and those errors abort the upload in progress.
+
+### Verified
+- **Before/after for the ping timeout** (v0.5.231): the same 5.8 MB file over a genuinely
+  rate-limited link — with the default 20s pong timeout the transfer **died at 47.9s having
+  written 1.8 MB** (close code 1006); with 600s it **completed all 5,831,130 bytes in 104s**.
+  One setting apart.
+- ⚠️ This only reproduces with **incompressible** data: WebSocket permessage-deflate shrinks
+  compressible test data to almost nothing, so a slow link never backs up and the test passes
+  for the wrong reason. The file that failed in the field was an `.exe`.
+- The end-to-end test now checks that a folder and its nested contents really arrive, plus new
+  `dropWalk` unit tests (batched `readEntries` must not lose files, over-limit must be reported,
+  `..` and path separators are refused).
+
+## [0.5.231] — 2026-08-30
+
+### Fixed
+- **Large console uploads were being cut off by the server itself — this is the real cause behind "connection lost".** A 5.8 MB file dropped into SFTP died after 26 seconds; the server recorded "the peer closed the connection", the upload timeout was never reached, and there is no reverse proxy in the path. The culprit was a uvicorn default: **a WebSocket ping every 20s, and the connection is dropped if no pong arrives within 20s**. The browser answers the ping immediately, but that pong is queued **behind the megabytes of upload data already sitting in the same TCP stream** — on a slow uplink it simply cannot get back in time. The bigger the file and the slower the link, the more certain the failure.
+- The ping interval stays at 20s (a genuinely dead peer must still be reaped), but the **patience for the reply is now 600s**, which covers the 100 MB cap down to roughly 1.4 Mbps of uplink. A guard test (`tests/test_ws_ping_timeout.py`) keeps someone from quietly restoring the default later.
+
+### Added
+- **Byte-level upload progress**: "{sent} / {total} ({pct}%)" while uploading, and the disconnect card now states **where it stopped**. Zero bytes sent (the file could not be read on your own machine) and 95% sent (something went wrong in transit) looked identical on screen, and they call for opposite investigations.
+- Server-side logging of upload progress and the interruption point (a line every 4 MB; bytes written and the close code when the peer goes away).
+
+### Ruled out (recorded so nobody re-investigates)
+A slow uplink on its own, a TLS reverse proxy and its default timeouts, dropping a folder and a file together, the file size, and client-side send backpressure. Locally, the same file over a 2 Mbps-throttled link through an nginx reverse proxy always succeeded — **because browser-level throttling does not put the pong behind the upload; only a genuinely slow connection does**.
+
+## [0.5.230] — 2026-08-30
+
+### Fixed
+- **A failed read during upload never told the server, and the whole session hung.** `file.slice(...).arrayBuffer()` in the send loop **can throw** — the file was moved after being dropped, an external disk went away, an iCloud file was not downloaded locally yet. Without a guard the exception escaped the upload function and the "giving up" notice was **never sent**: the server kept waiting for bytes that would never arrive, and the user saw "the upload does nothing, then the connection drops" while the actual cause was on their own machine. A failed read now notifies the server, and reports **"cannot read this item" rather than "connection lost"** — the latter sends people to investigate the network, which is entirely the wrong direction.
+
+### Added
+- **The disconnect card now shows the WebSocket close code.** `1000` is a normal close; `1006` means the connection was cut mid-way (usually an idle timeout in an intervening reverse proxy). Those two call for completely different investigations, and until now the screen said only "connection lost".
+- **Logging for what happens inside an SFTP session**: every command, how many bytes each upload wrote against how many it declared and whether it was interrupted, plus the reason a session ended and the original exception behind a failed operation. Three rounds of diagnosing one upload problem came down to guesswork because the log was blank between "session start" and "session end". **Paths are not logged** (those are the user's file names) — only the operation, size and outcome.
+
+### Verified
+New browser end-to-end test "folder and file dropped together" reproduces the field scenario exactly (macOS reports a folder as 256 bytes) and checks that the folder is skipped, the file arrives **byte for byte**, and the session stays usable. All 15 SFTP end-to-end tests pass.
+
+## [0.5.229] — 2026-08-30
+
+### Fixed
+- **An idle SFTP console was being disconnected — this is the main cause behind "connection lost".** The log makes it plain: the session was established, went **60 seconds with no traffic at all**, and was cut, without a single upload in between. Sixty seconds is the most common idle timeout default in reverse proxies. Our own nginx sets 3600s, but **a user may have their own reverse proxy in front** (Mode C explicitly supports that deployment), and that one is not ours to configure.
+- **The cause was that SFTP lacked a heartbeat while every other console has one**: SSH, RDP and VNC exchange ping/pong and noVNC sends its own keepalive packet — only SFTP had none. The server now sends a tiny keepalive every 20 seconds. Server-side is more reliable than client-side (a backgrounded browser tab gets throttled), and it uses **application data rather than a WebSocket ping frame**: control frames get swallowed by some proxies, while data frames are always forwarded — forwarding data is what makes something a proxy.
+- ⚠️ The BMC console still has **no** heartbeat (it is a pure relay and injected data would corrupt the SOL stream); it is recorded as a known gap in the test checklist.
+
+### Verified
+After connecting and sitting **idle for 90 seconds** (past the common 60-second timeout): four keepalives received, and the directory still lists normally afterwards.
+
+## [0.5.228] — 2026-08-30
+
+### Fixed
+- **Dropping a folder into SFTP broke the whole batch** — the actual root cause behind the reports. Folders were detected with `File.size > 0`, but **macOS reports a folder's `size` as 256**, not 0, so the folder passed the filter, was uploaded as a file, and only failed when its contents were read. That is the "0/256 bytes written" in the error. The screen said "1 folder skipped" while nothing was actually skipped.
+- Type is now decided per item by `webkitGetAsEntry().isFile` — **size must never be used to decide what something is**. The logic moved to `utils/dropFilter.ts` with unit tests, one of which is exactly the folder that reports 256 bytes.
+- **Readability is checked before anything is sent**: one byte is read first, and an unreadable item is reported as "this item cannot be read (compress a folder first)" and skipped without touching the connection. Previously the server opened the file and waited out a 30-second timeout before cleaning up — a full minute of apparently frozen UI for two items.
+
+### Verified
+- All three protocol scenarios pass (two files in sequence / a command sent mid-transfer / a declared-but-unsent upload)
+- **The customer's case reproduced in a real browser**: a folder reporting 256 bytes dropped alongside an 800 KB file — the folder is skipped, the file uploads with **byte-for-byte correct contents**, the connection stays up, and the backend raises no exception
+
+## [0.5.227] — 2026-08-29
+
+### Fixed
+- **0.5.225 broke SFTP uploads — a regression of our own making, and we are sorry for it.** Rewriting the upload block in that release dropped the line that tells the client it may begin sending (`put_ready`): the server opened the file and went straight into the receive loop while the client waited for a permission that never came, so not a byte was sent and it timed out after 30 seconds. **The symptom was identical to the bug being fixed** ("connection lost"), which makes it easy to read as "still not fixed" rather than "newly broken". Restored, with a test of its own — something that breaks everything when one line goes missing, while looking like the old problem, deserves to be pinned down.
+
+### Verified (actually exercised, not just read)
+A protocol-level harness drove the WebSocket directly to reproduce the timing from the crash log, alongside a real browser uploading two files at once:
+- Two files in sequence: both succeed at the right size, **md5 identical to the source**
+- A command sent mid-transfer (the logged crash): connection survives, the interrupted command still runs, the partial file is removed
+- A declared size with nothing sent: the session remains usable after the timeout
+- **Zero** ASGI exceptions on the backend throughout
+
+## [0.5.226] — 2026-08-29
+
+### Fixed
+- **SFTP uploads still dropped the whole connection — this time the server log gave the exact cause** (reported by a customer, following 0.5.224 and 0.5.225):
+
+  ```
+  File ".../sftp_console.py", line 332, in sftp_ws
+  File ".../starlette/websockets.py", line 128, in receive_bytes
+  KeyError: 'bytes'
+  ```
+
+  `receive_bytes()` raises `KeyError` when a **text** frame arrives, taking down the handler and closing the connection. A client sending its next command before finishing the data is entirely possible (it gives up on one file and moves to the next), and the server had no defence against it — the user sees "connection lost" when the real cause is simply **no guard against a frame of an unexpected type**. The timeouts added in the previous two releases could not help, because the next command arrives *immediately*, long before any timeout.
+- The upload loop now inspects the frame type itself: data gets written, a command ends the upload (removing the partial file) and **is kept and executed as usual** — an action the user asked for should not vanish silently.
+- When the client gives up mid-file it now sends an explicit `put_abort` rather than moving on as if nothing happened.
+- Two new tests pin the exact line from the log: the upload loop must not call `receive_bytes()` directly, and an interrupted command must not be swallowed.
+
+## [0.5.225] — 2026-08-29
+
+### Fixed
+- **Dragging several files into SFTP let the first failure kill the whole connection** (reported by a customer, following 0.5.224). The ordering was wrong: the server announced "ready to receive" **before** opening the remote file. When the open failed (the remote answered "no such file or directory" on real hardware), the client had already begun sending binary frames, while the server reported the error and returned to reading a *text* message — and read those frames instead. The protocol desynchronised and the connection died, taking the remaining files with it as "connection lost". The file is now opened first and only then is the client invited to send; the main loop quietly discards stray frames so any leftover resynchronises by itself; and the client stops sending as soon as an error arrives.
+- **Selecting a rack still demanded a location** (reported by a customer). A rack already belongs to a location — the rack dropdown even reads "Server room / R1". What can be derived should not be asked: an empty location now takes the rack's, and only a genuine contradiction between the two is blocked, because then one of them is wrong and choosing for the user would be a guess. The logic existed separately in the device list and the device page's edit dialog; it is now one shared function with unit tests — when the same logic exists twice, usually only one copy gets fixed.
+
+### Added
+- **The version page's dependency lists were completed and are now guarded by a test.** Both lists (backend Python, frontend npm) are hand-written and go stale silently — and that page is exactly what an upgrade or audit checks "what is actually installed here" against, where a missing line raises no error and simply is not there. A test now compares them against what `pyproject.toml` / `package.json` actually declare: anything missing fails, and anything listed but undeclared needs a stated reason (only `pillow` today, a transitive dependency of the optional RDP package aardwolf). The frontend list went from 11 entries to 20.
+- **A "logic between related fields" section in the test plan**, listing the places where one field determines another (rack→location, subnet→section, IP→subnet, VM→host, U position→rack height…) along with the rule: **before adding any "if A is set then B is required" check, ask whether B can be looked up from A** — derive it if it can, block only if it cannot.
+
+## [0.5.224] — 2026-08-29
+
+### Fixed
+- **An interrupted SFTP upload wedged the whole connection and dragged the service down with it** (reported by a customer). The receive loop kept waiting until the declared byte count arrived, with **no time limit at all** — so if the client stopped sending after `put_ready`, the server waited indefinitely. The reported symptoms line up exactly: a **zero-byte** file on the remote (opened, never written), "connection lost" on screen, then reconnect requests timing out and the whole interface unresponsive for a long stretch. Each frame now has a 30-second limit; on timeout **only that upload fails**, the empty file is removed, and the session stays usable — one interrupted upload should not force a reconnect.
+- **The client sent files without backpressure**, pushing an entire file into the browser's WebSocket send buffer; when the server could not keep up, Chrome simply closed the connection (dragging two files reproduced it). It now waits whenever the buffer exceeds 4 MiB and checks the socket is still open before each send.
+- **The same class of defect was swept for across the project.** Console WebSockets have two kinds of wait and only one should be bounded: **waiting for the next command while idle** (nobody typing at a terminal) is normal for hours and must not be timed out, while **waiting mid-protocol** must be. Besides the upload, that meant the first config message on all five consoles (SSH/SFTP/RDP/VNC/BMC) and the SSH host-key confirmation — all now bounded (30s for config, 180s for the key prompt). Without it, opening N connections and staying silent holds N sets of resources, and from outside it just looks like "the system is slow".
+- A guard test now catches a new console that forgets a handshake limit — and the opposite mistake of adding one to an idle loop.
+
+## [0.5.223] — 2026-08-29
+
+### Added
+- **Every line on the topology map now says where it came from.** The map carries two different things: links someone recorded (cabling, wireless links, IP-to-device links) and links we derived (FDB saw a MAC on a port, ARP saw a subnet, a device name happens to be an IP). Drawing both the same way claims we are equally sure of them, which is not true. Each edge now carries `evidence` mapped to the evidence contract's tiers — **recorded by a person / reported by monitoring / learned passively / guessed from the name** — visible when you click a link.
+- **`inferred` is deliberately not part of the evidence contract**: the contract is about *sources*, and "the name looks like an IP" is not a source but a guess, so it has to be distinguishable from the other three. Those lines are drawn dotted and faded.
+- **A "recorded only" toggle** drops every derived link so you can see how much is actually known. The result is telling: in the access-layer view of this environment, **every** link is either learned or reported by monitoring — not one was recorded by a person.
+- Evidence is not expressed through colour or dash pattern: those two dimensions already carry meaning (link type, and whether attachment is direct), and stacking a third on top would make none of them readable.
+
+## [0.5.222] — 2026-08-29
+
+### Added
+- **The audit action filter now accepts several values, from a dropdown or typed by hand.** There are dozens of actions and the set grows with each feature (the previous release alone added `group_member_add` and `cert_agent_key_rotate`), so a dropdown alone cannot offer new ones and free text alone means memorising names. The options come from **the actions actually present in the log**, with counts — a hard-coded list would go stale in a way nobody notices: it just looks like the action is missing from the filter.
+- **A settings screen for rack diagram embedding** (Admin → System settings): the master switch, viewing and copying the token, and regenerating it. Regeneration says plainly that every existing embed URL stops working immediately — otherwise someone's dashboard breaks with no obvious cause.
+
+## [0.5.221] — 2026-08-29
+
+### Added
+- **Rack diagrams can be embedded in other systems.** One URL returns an SVG, so another dashboard (a LibreNMS widget, say) can show it with a plain `<img>` — that system will not run our frontend, so the drawing moved to the backend (same geometry and palette, see `services/rack_svg.py`).
+- **SVG rather than PNG**: a PNG would need a rendering library (cairo or similar), which is a poor trade for a picture made of rectangles and text; an SVG displays in an `<img>` just as well and stays sharp when scaled.
+- **An image rather than an iframe**, deliberately: this service sends `frame-ancestors 'none'` and `X-Frame-Options: DENY`, so iframes are blocked by design, and allowing specific origins in order to embed would open a clickjacking surface.
+
+### Security design
+- **Two switches must both be on**: embedding enabled with a token at system level, plus the **per-rack** toggle (off by default everywhere). A rack diagram reveals device names and positions, so one rack being worth sharing must not expose the rest.
+- **A rack that does not exist and a rack that is not shared return exactly the same response** — otherwise the token would double as a way to enumerate racks.
+- Token comparison is constant-time; the response carries `Content-Security-Policy: default-src 'none'` and `X-Content-Type-Options: nosniff` (SVG can carry scripts, and this image gets pasted onto someone else's page); device names are user input and are always escaped.
+- The audit entry records whether embedding is enabled and whether the token was rotated, **never the token itself** — an audit log must not become a second copy of a key.
+
+## [0.5.220] — 2026-08-29
+
+### Added
+- **A guard test for audit coverage.** It walks the whole API and reports endpoints whose HTTP method changes data, whose body really does write, and which record no audit entry. An exemption has to be written down with a reason, so "not recorded" becomes a decision someone made rather than something forgotten. What remains exempt is deliberate: high-frequency agent reports, per-user notification read state and UI preferences.
+
+### Fixed
+- **Group membership changes were not audited at all**, and groups carry permissions — adding someone to a group is a privilege change. The two endpoints did not even take `request`, so not only was the change unrecorded, **there was no way to tell who made it**. They now record `group_member_add` / `group_member_remove` with the group and the affected user.
+- **Certificate agent key rotation and deletion were not audited** (`cert_agent_key_rotate` / `cert_agent_delete` / `cert_agent_update`) — those change who can obtain a private key. Deletion records **before** it deletes: afterwards the name is gone and an audit entry holding only a UUID says nothing.
+- **Certificate settings changes were not audited**, though uploads and deletions were (the entry contains no key material).
+- **Manual ESXi and pfSense syncs were not audited**, while every other integration already recorded `sync`.
+
+### Verified complete (this review)
+- Console sessions: SSH / RDP / VNC / noVNC / BMC all record `session_open` and `session_close` including duration, and SSH additionally records host-key pinning. SFTP records the session plus **every upload, download, delete, rename and mkdir**, with path and byte count.
+- Login success and failure, TOTP enable/disable, password change and OIDC/SAML logins are all recorded (in `services/auth.py`).
+
+## [0.5.219] — 2026-08-29
+
+### Fixed
+- **A group of network devices was wrongly reported as "switch port unknown".** The old rule treated any port carrying more than four MACs as an uplink, but the port of an access point, a hypervisor or a downstream dumb switch legitimately carries dozens of MACs — and that is exactly where the device is plugged in. Six network devices on real hardware landed in the unknown area because of it, including an AP whose port carries 35 MACs (its wireless clients). The rule now uses **containment**: the port nearest a device holds a MAC set that is a proper subset of the outer port's (verified on real data — that AP's 35 MACs are a subset of the uplink's 144). Where no single innermost port exists, or a device was seen just once on one busy port, it still refuses to guess — one router on real hardware appears on four ports at once, and that genuinely cannot be resolved. The inference also now reads **every** sighting rather than only the switches currently drawn: the inner/outer comparison depends on the uplink's "sees everything" list, and that uplink switch is often excluded by the subnet filter because its management IP lives elsewhere. Visibility is applied when drawing, not when reasoning. Together the two changes took one subnet from 6 access-layer links to 18, and from 7 located devices to 19.
+
+### Changed
+- **The topology map now opens on "subnets only"** — the view that makes sense without configuration; switch to a physical view when you want one.
+- The "virtual machines" legend entry moved next to "servers / other".
+
+## [0.5.218] — 2026-08-28
+
+### Fixed
+- **A row of devices in the mixed view looked disconnected.** They are in fact "in this subnet, but we cannot tell which switch port they are on" — drawing them inside the box was not enough to say that, so they read as devices with no links at all. They now go into a clearly labelled sub-area, "same subnet · switch port unknown". A box with no access-layer information at all is not split, since there would be nothing to contrast against.
+- **The subnet picker grew taller with every subnet selected, pushing the layout around.** Tags now collapse onto a single line with a +N overflow, so the toolbar stays 34px tall no matter how many are selected.
+
+## [0.5.217] — 2026-08-28
+
+### Added
+- **The topology map can show which physical host each virtual machine runs on (off by default, tick to enable).** Real hardware has 149 VMs that all know their node, yet not one of them appeared on the map — in a virtualisation-heavy room that is most of the estate missing. With "virtual machines" ticked, each VM sits directly beneath its host and shares the host's subnet box. It stays **off by default** because it adds hundreds of nodes at once and drowns the picture.
+- Matching uses `virtual_machines.node` (the PVE node or ESXi host name) against device names, case-insensitively — all five node names match on real hardware. Note that `virtual_machines.device_id` is the device the **VM itself** maps to, not its physical host; the two are easy to confuse. A VM already mapped to a device reuses that node instead of drawing the same machine twice.
+- A VM whose host cannot be identified, or whose node name matches several devices, is **not drawn**: this feature answers "what does it run on", and a dot connected to nothing cannot answer that — it is only noise (same reasoning as the access-layer-only view).
+
+## [0.5.216] — 2026-08-28
+
+### Fixed
+- **Exporting to another machine and importing lost a large share of the devices** (reported by a customer). The import writes table by table in foreign-key dependency order, but six columns point *forward*: `devices.primary_ip_id` references `ip_addresses`, which is imported later, while `sections.parent_id`, `subnets.master_subnet_id`, `device_ports.peer_port_id`, `contact_groups.parent_id` and `tenant_groups.parent_id` reference another row of the same table. When such a row is written its target does not exist yet, the foreign key fails and **the whole row is dropped**. It looks like random data loss but is perfectly regular: every device with a primary IP fails and every device without one survives; nested sections and subnets lose whichever rows happen to be exported before their parent. Those columns are now left empty on the first pass and filled in once every table is written, so no link is lost.
+- **The import screen reported a green "import complete" even when whole rows had failed.** The failure count was only a column in a table, which is why the customer discovered the missing devices afterwards rather than at import time. A run with failures now shows a warning that says those rows are missing entirely, and lists the first few reasons — the part that can actually be reported back to us.
+- **Clicking another machine in a rack left "ports / cabling" showing the first one** (reported against 0.5.208). Clicking a device in the rack diagram navigates to `/devices/:id`; when only the route parameter changes Vue reuses the component and simply passes a new prop, while that panel only loaded its data on mount. The power-port panel and the uptime bar beside it already watched the prop; this one did not.
+
+## [0.5.215] — 2026-08-28
+
+### Changed
+- **The mixed view now really merges the subnet with its switches instead of drawing two sets of links.** The previous version placed the subnet below the switch, but every host still got two lines — one to the switch, one to the subnet — saying the same thing twice and tangling the picture. The subnet is now a **box**, its members (switches included) are drawn inside it, and "belongs to this network" is expressed by containment rather than by an edge.
+- **A subnet with several switches is not pinned to one of them**: a subnet is a broadcast domain and spans the core and access switches by nature, so the box holds them all with the backbone drawn inside it. Members whose port is unknown sit centred beneath the whole box rather than under the first switch — nothing says which switch they belong to, and picking one would be invention.
+- **A device that spans several subnets goes in no box at all** (routers, firewalls): putting it in one would claim it belongs only there. Those keep their L3 edges, which makes the cross-subnet devices easy to spot.
+- **A switch with FDB data but no IP record of its own** is folded into the box its hosts all belong to — otherwise the switch sits outside while its hosts sit inside and a bundle of edges crosses the boundary, which reads as broken. A switch whose hosts span several boxes stays outside, because that is a genuinely cross-subnet switch.
+
+### Fixed
+- **The map opened far too spread out, shrinking everything past legibility.** Three measured causes: arranging hosts in a semicircle widened the graph as the host count grew (8 hosts × 3 switches measured 2274px wide at 0.53 zoom), and a grid above each switch brought it to 1477px at 0.73; a fixed six-per-row member grid turned a large subnet into a tall strip, so it now scales by square root; and nodes outside the box were scattered far away, where a single distant node is enough to shrink the whole picture.
+- **The backbone line ran straight through a third switch, with its port label landing on that switch's name.** Switches are now ordered so that backbone-connected ones sit side by side, and the port label is lifted clear of the line.
+
+## [0.5.214] — 2026-08-28
+
+### Added
+- **The topology map now offers a choice of view.** The same data supports two quite different readings, and forcing them into one picture serves neither: the subnet view answers "who is on which network", the access-layer view answers "which switch port is this host plugged into". Pick one from the toolbar: **Automatic (mixed) / Centred on switches / Access layer only (FDB) / Subnets only**.
+- **The switch-centred layout computes its own coordinates rather than swapping in another force layout.** A force layout has no notion of up and down, so it cannot express "switches in the middle, hosts above, the subnet hanging underneath its switch". Spacing scales with the actual node count — fixed wide spacing makes a small graph shrink until the labels are unreadable, and a layout being structurally right is not the same as being legible.
+- **What "automatic" decides**: with access-layer data in range, centre on the switches and hang the subnet below; without it, fall back to the subnet-centred layout. Choosing "centred on switches" with no FDB data falls back the same way — there is no point forcing a layout around a centre that does not exist.
+
+### Changed
+- **The access layer (FDB) checkbox now starts unticked.** It pulls every endpoint into the picture, which gets dense immediately. Tick it when you want it, or pick the "access layer only" view, which turns it on by itself.
+- **"Access layer only" no longer draws devices whose position is unknown.** In that view a device with no FDB data has nothing to say, and drawing it as a dot floating off to one side is just noise — on real hardware only about 10 of 105 devices have FDB data, and the other 95 orphan dots wreck the zoom and read as "not connected".
+
+## [0.5.213] — 2026-08-27
+
+### Added
+- **The topology map can finally draw the access layer: which host hangs off which switch port.** The data was always there (the FDB table LibreNMS collects), but the map never read it — the file header even claimed the graph was built from "device + cabling + FDB" while not a single line of it was used. Two kinds of link are now derived: **access** (host to switch port) and **switch backbone** (how the switches connect to each other). With no data source for LLDP/CDP, FDB is the only thing that can draw a backbone automatically.
+- **Inference must not draw what merely looks right**, so three guards apply: (1) a port carrying more MACs than the threshold is an uplink, and the hosts on it are not drawn as plugged into it; (2) a MAC that maps to more than one device (overlapping subnets) is not guessed; (3) two switches count as directly connected only when each sees the other on one of its ports **and** the MAC sets behind those two ports are disjoint — without that third condition an A—B—C chain gets drawn as A—C too.
+- **"Directly attached" and "behind this port" are drawn differently**: a solid line only when the port carries exactly one MAC, dashed when several hosts sit behind it (a dumb switch downstream, or a hypervisor carrying its guests' MACs). The difference is visible on real data — the same hosts appear on two switches at once, and drawing both as direct would be a lie.
+
+### Fixed
+- **An unreachable integration only ever said `transport: ConnectError`, which says nothing.** A name that does not resolve, a refused connection, an unroutable host and a certificate that fails verification all looked identical on screen, leaving whoever handles it to guess. The reason was right there underneath (`socket.gaierror` / `ssl.SSLCertVerificationError`) and was being thrown away. It now reads like `transport: ConnectError: [SSL: CERTIFICATE_VERIFY_FAILED] ...`. All **21** sites shared the same shape (LibreNMS, Zabbix, Wazuh, pfSense, FortiGate, Proxmox, DNS, SSO, AI) and were fixed together. Certificate problems are the ones most often mistaken for "the network is down", because httpx wraps handshake-time SSL errors in `ConnectError` too and the outer message can be empty — one test pins exactly that case.
+- **vCenter sync aborted on long network names** (issue #25, reported by eric700928). An NSX-T generated portgroup name embeds a UUID (78 chars in the report) and overflowed the 64-char limit on `vm_interfaces.bridge`, ending the whole run with `StringDataRightTruncationError`. The length of a name from a third-party platform is not ours to bound, so `bridge` and `node` (an ESXi host FQDN, up to 253 chars) are now unbounded (migration 0129).
+
+### Changed
+- **Pre-release security checks now cover the scan agent and the maintenance scripts.** The bandit rules (ruff's `S` set) only ever looked at `backend/app/`, while the code under `agent/` and `scripts/` — which runs with real privileges on customer machines — sat outside every check. The one finding worth fixing was fixed: the agent validates the scheme of `JT_IPAM_URL` at startup, so a mistyped value can no longer turn every poll into a local file read with the agent key attached.
+
+## [0.5.212] — 2026-08-27
+
+### Fixed
+- **The SFTP permission column now uses a monospace font.** Every position in `drwxr-xr-x` carries a fixed meaning, and in a proportional font the rows do not line up, so checking one bit means counting characters. This also fixes the root cause: the cell already carried `class="mono"`, but that rule only targeted `input`, and nodes produced by a render function live inside the table and never receive this component's scoped-style attribute — it looked set and did nothing. It is an inline style now.
+- **The "all subnets" dropdown on the devices page was shorter than the search box and buttons beside it.** It carried `size="small"` while its neighbours used the default size. A toolbar measurement sweep across 18 list pages in a real browser confirmed this was the only remaining row with mixed heights.
+
+## [0.5.211] — 2026-08-27
+
+### Fixed
+- **The SFTP sort-mode dropdown was shorter than the controls beside it and had no icon.** Leaving the size unset fell back to the component default, so one toolbar row had two heights; every other control there is "icon + label", and this one was bare text. It now matches the neighbouring filter box and carries a sort icon ahead of the selected value (the chevron stays — it is what says "this opens"). Verified by measuring all seven toolbar controls in a real browser: one height, one top edge.
+
+## [0.5.210] — 2026-08-27
+
+### Added
+- **The SFTP file list can sort folders first or mix them with files.** Both conventions are defensible — a file manager groups directories, `ls` does not — so it is a preference rather than a decision made for you, stored per user so it follows you to another device. Folders-first holds in **both** sort directions: putting the grouping inside the comparison would send directories to the bottom the moment you switch to descending, which is what nobody wants. That required taking sorting off the table component, since its sorter never sees the direction.
+
+### Changed
+- Sorting by size or modified time now also honours the chosen mode; previously only the name column grouped directories, so switching columns silently changed the grouping rule.
+
+## [0.5.209] — 2026-08-27
+
+### Added
+- **Evidence sources now carry a contract.** Every source declares two things in one place: which tier it belongs to (asserted / probed / monitored / learned) and — the part that matters — whether its evidence expires. `learned` sources such as ARP, FDB, DNS and virtualization config never expire, because they answer "this mapping was learned at some point", not "the machine is alive now". A guard test refuses any source used by a precedence list that has not declared this, so adding an integration means answering the question rather than discovering the answer in production. This is the structural version of the fix that a powered-off VM showing 52 days of green forced: the knowledge used to live in string comparisons scattered across modules, where a new source silently fell into whichever branch matched first.
+- **Cooldown after an address is released.** DNS records and caches, firewall rules, ACLs, certificate SANs and monitoring configuration all keep pointing at an address after it is freed; handing it to another machine immediately produces the hardest kind of fault to diagnose. Releasing an address now starts a 30-day cooldown (configurable, 0 disables): the allocator will not offer it, creating it by hand is refused with the previous hostname and the end date, and an admin can clear an individual address early — which is recorded rather than erased. The record deliberately lives in its own table, because releasing an address in practice means deleting it, and a note attached to the deleted row would vanish with it.
+- **Event rules: event → conditions → actions.** Webhooks could only subscribe to event names; what people actually want is conditional ("notify when a new subnet's description contains Production", "alert on an unauthorised IP only inside server ranges"). Conditions are structured fields, evaluated by code that executes nothing — rules are user input, so an expression language would be an injection path carrying a database session. Regular expressions are deliberately absent for the same class of reason (a single rule could stall every dispatch). A malformed rule is flagged and skipped rather than silently doing nothing, and a dry-run reports what would match without sending anything.
+- IP lifecycle states `deprecated` and `quarantine`, alongside the existing vocabulary.
+
+### Changed
+- The five source-precedence modules (hostname, MAC, OS, device name, model — 661 lines) shared one shape: settings key, source list, default order, disabled list, 60-second cache, sanitising. That half is now one module; each of the five keeps only what is genuinely its own. Copies are how a new source ends up registered in four places and forgotten in the fifth.
+
+### Fixed
+- The test fixture that clears precedence caches between tests had been silently doing nothing since the caches moved, because it looked them up with a tolerant `getattr(..., "_cache", {})`. Tests then leaked settings into each other, which shows up as "one test occasionally fails". It now imports the shared cache directly, so a future move breaks loudly instead.
+- Structured API error details are rendered as their message instead of `[object Object]`.
+
+## [0.5.208] — 2026-08-26
+
+### Fixed
+- **The system settings groups stopped looking like cards.** Splitting them out of the single large card left them as bordered panels with no card surface of their own, sitting directly on the page background — so the background read as wrong and the cards read as missing. Each group is a real card component again, which is also what keeps its surface identical to every other page in both light and dark themes; hand-rolled card styling was what drifted in the first place.
+
+## [0.5.207] — 2026-08-26
+
+### Added
+- **Which evidence counts as "online" is now a setting**, under Admin → System settings → Liveness. Scan-agent probes and LibreNMS device status are on; **ARP is off by default**, because it proves a MAC-to-IP binding was learned rather than that the machine is alive, and the LibreNMS ARP API returns no timestamp at all — a reporting device's cache can keep a powered-off machine looking online indefinitely. The recompute also honours the configured threshold, which it previously ignored: the backend had 30 minutes hard-coded while the settings page invited you to change it.
+- **The AI chat can be stopped mid-answer.** Aborting the request closes the connection, which is also what makes the LLM server stop generating rather than finishing an answer nobody will read.
+
+- **The chat says what it is doing.** A spinner with nothing next to it is indistinguishable from a hang, and these answers can take tens of seconds. The status line now names the phase — connecting, the model thinking (with how much it has produced), which tool is running, working through the results, writing the answer — along with the query round and the elapsed seconds. Tool names are turned into readable text rather than shown as identifiers. The thinking phase is reported by the backend, which previously produced no events at all while the model was thinking, so the screen sat blank for the longest part of the wait.
+
+### Fixed
+- **A stale transition no longer paints green once any evidence source reappears.** Demoting ARP was not enough on its own: the moment the machine in question was powered on and the scan agent saw it, "this address has a source" became true again and the inference happily refilled the fifty days it had been off. Carrying a state forward now requires the source that state *claims* to still exist — a transition recorded as "online (librenms)" is not carried on an address that has no LibreNMS evidence at all.
+- **The AI chat could answer with a blank message.** When the model returned neither text nor a tool call — usually because it emitted only thinking, or hit the output limit — the empty string was passed straight through and the UI showed "(no answer)", which says nothing about what went wrong. It now asks the model once more for a direct answer, and if that also comes back empty, says which of the two it was and what to adjust.
+
+### Changed
+- The system settings page is no longer one long card inside another card: each group is its own card, the content uses the full width, and field grids go to three columns on wide screens.
+
+## [0.5.206] — 2026-08-25
+
+### Fixed
+- **A machine that had been powered off for weeks could show 52 days of unbroken availability.** Two things combined to produce that. First, ARP was treated as timestamped evidence of life: LibreNMS's ARP API returns no timestamp at all, so an address appearing in the dump was stamped with the sync clock — meaning a lingering entry in some device's ARP cache (in the case that surfaced this, a wireless AP's) reads as "seen just now" forever, whether or not the host is running. On the affected system every such address carried a byte-identical timestamp, which is the sync run, not an observation. Second, the availability bar carries the last known state forward, so one transition recorded in July painted every day since green without a single observation behind it.
+- ARP evidence is now stored separately from LibreNMS device status and forms its own status tier, `online (arp)`. It still counts as online — a learned MAC-to-IP binding is real information — but it is labelled as such in the UI, with a note explaining why it can outlive the machine, and **the availability bar no longer paints days backed only by ARP**. Carrying a state forward now requires an evidence source that actually expires (scan agent probes, LibreNMS device status): without one, days with no observation of their own are grey rather than green.
+- The upgrade separates existing data by fingerprint: where `last_seen_librenms` exactly equals the address's ARP timestamp, the value came from the ARP path and is moved accordingly, so the distinction applies to history rather than only to new syncs.
+
+- **Availability is now recorded daily rather than inferred.** Even with ARP demoted, one stale transition could still paint weeks of green the moment any evidence source reappeared — because "does this address have a source that expires" is a per-address flag, not a per-day fact. The exact case that surfaced this: the VM was started, the scan agent saw it within minutes, and the inference would happily fill in the fifty days it had been off. Every sync round now writes down what was actually observed for each address that day, and days with a record use it instead of inference. Days whose only observation was ARP are grey. The bar states where the recorded era begins, so inference and observation are not silently mixed.
+
+### Added
+- New anomaly category, **ARP-only liveness**: addresses that look online where ARP is the only source saying so, and neither the scan agent nor LibreNMS device status has ever seen them. That is precisely the class of record that misleads, and it is worth reviewing rather than trusting.
+
+## [0.5.205] — 2026-08-25
+
+### Added
+- **URLs in the browser terminals are now clickable**, including the ones a TUI has broken across several lines. This is the case that matters: an app like Claude Code measures the width itself and writes the URL out one row at a time, so those rows are separate logical lines in the buffer — the standard link addon only follows the terminal's own wrapping and would leave such a URL unlinked, and selecting it by hand produces text with line breaks inside that pastes as a broken address. Both kinds of wrapping are now rejoined: the terminal's own (via the wrap flag) and the app's (a row filled to the last column followed by a row starting at column 0 with URL characters). The rejoin is a heuristic, so it is deliberately narrow — it stops at whitespace, refuses when what follows the run on the final row is more text rather than padding, and **hovering shows the full assembled target in a bar at the bottom of the terminal**, so what a click will open is visible before clicking. Only http and https are opened, in a new tab with no opener, since the text comes from the remote host. Applies to the SSH, BMC serial and Proxmox console screens.
+- Selecting such a broken URL and copying it now puts the rejoined address on the clipboard. This only happens when removing the line breaks yields exactly one URL with no other whitespace — in every other case what you copied is what you get, untouched.
+
+### Fixed
+- The terminals now use the Unicode 11 width tables. Getting the width of box-drawing characters and emoji wrong shifts a TUI's layout, and a shifted layout means what you see no longer lines up with the buffer underneath — which is what makes selections come out misaligned in the first place.
+
 ## [0.5.204] — 2026-08-24
 
 ### Added

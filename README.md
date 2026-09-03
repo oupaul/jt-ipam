@@ -1,4 +1,4 @@
-# jt-ipam v0.5.204
+# jt-ipam v0.6.1
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/jasoncheng7115/jt-ipam)](https://github.com/jasoncheng7115/jt-ipam/commits/main)
@@ -11,7 +11,7 @@
 
 **🌐 [Project site / 專案介紹網站 →](https://jasoncheng7115.github.io/jt-ipam/?lang=en)**
 
-> A self-hosted, integration-focused IPAM, independently developed with an operation flow familiar to phpIPAM users, deeply integrated with multiple DNS servers, LibreNMS, OPNsense, pfSense, FortiGate, Windows DHCP Server, Proxmox VE, VMware ESXi / vCenter, Wazuh, Zabbix, and a local LLM.
+> A self-hosted, integration-focused IPAM, independently developed with an operation flow familiar to phpIPAM users, deeply integrated with multiple DNS servers, LibreNMS, OPNsense, pfSense, FortiGate, Palo Alto, Windows DHCP Server, Proxmox VE, VMware ESXi / vCenter, Wazuh, Zabbix, and a local LLM.
 >
 > By Jason Tools Co., Ltd. · License: AGPL-3.0 · 繁體中文: [README_zh-TW.md](README_zh-TW.md)
 
@@ -24,7 +24,7 @@ Familiar to phpIPAM users so they are productive from day one, but built from sc
 - **DNS** — PowerDNS, BIND 9, OPNsense Unbound, Univention UCS, Microsoft Windows DNS (reads forward/reverse status, optional record push)
 - **LibreNMS** — device sync, ARP / FDB harvesting, online-status reconciliation, auto-onboarding to monitoring
 - **Zabbix** — read-only complement on the monitoring side: host-to-IP mapping, availability as an extra evidence source for effective status, maintenance windows, and a **monitoring coverage gap** (addresses IPAM has a hostname for that Zabbix is not watching). ARP/FDB stay with LibreNMS — they are not part of Zabbix's built-in data
-- **Infrastructure** — Proxmox VE, **VMware ESXi / vCenter (Beta)** — one setup covering both a standalone ESXi host and vCenter, read-only over the vSphere API for virtual machines, NICs and addresses, landing in the same virtualisation tables as Proxmox; Wazuh, OPNsense / pfSense (alias / rule / NAT sync), and **FortiGate** — read-only over the FortiOS REST API (DHCP leases and ranges, ARP, IPsec tunnels and SSL-VPN sessions, policies, NAT, address objects; multi-VDOM)
+- **Infrastructure** — Proxmox VE, **VMware ESXi / vCenter (Beta)** — one setup covering both a standalone ESXi host and vCenter, read-only over the vSphere API for virtual machines, NICs and addresses, landing in the same virtualisation tables as Proxmox; Wazuh, OPNsense / pfSense (alias / rule / NAT sync), **FortiGate** — read-only over the FortiOS REST API (DHCP leases and ranges, ARP, IPsec tunnels and SSL-VPN sessions, policies, NAT, address objects; multi-VDOM), and **Palo Alto (Beta)** — read-only over the PAN-OS API (ARP, DHCP leases, security policies with App-ID, NAT, address objects; multi-vsys)
 - **DHCP** — each server is configured on its own: OPNsense (Kea/ISC) and pfSense sync leases and address ranges over their REST APIs; **Windows DHCP Server (Beta)** is read-only over WinRM + PowerShell (`Get-*` only, needs WinRM reachable — 5986/HTTPS by default). Addresses inside a pool are flagged in the IP list and detail view.
 - **Graylog** — exposes an IP→hostname/FQDN DSV lookup endpoint for Graylog's "DSV File from HTTP" data adapter
 - **Local AI** — natural-language queries and semantic search over LLM Server (self-hosted by default, so data never leaves the host; an OpenAI-compatible endpoint can be selected explicitly instead), plus an MCP server (stdio and Streamable HTTP transports) so external LLM clients can drive the IPAM; `gemma4:26b` works well in our testing Security-side AI: a **firewall rule-change sentinel** (per-sync snapshot diffs of all three firewall families; a permit rule appearing overnight notifies admins), **IP forensics in chat** (ask "who was this IP last week" and get the field-level change log, ARP/MAC bindings and per-source hostnames as an evidence timeline), and an **AI triage card for unauthorised IPs** (OUI vendor, hostnames and switch port assembled into "what this likely is and where to look next", with evidence fencing against prompt injection).
@@ -59,7 +59,7 @@ SOL only relays the host's **serial port**, so the host needs a serial console c
    - Generic Linux (GRUB): add `console=tty0 console=ttyS0,115200n8` to `GRUB_CMDLINE_LINUX` in `/etc/default/grub`, then `update-grub`.
    - Proxmox VE (systemd-boot / ZFS): append the same to `/etc/kernel/cmdline`, then `proxmox-boot-tool refresh`.
 3. **Enable serial login** (immediate, no reboot): `systemctl enable --now serial-getty@ttyS0`.
-4. **(Optional) BIOS Console Redirection** — point it at the same COM port (115200 8N1) to also see POST / BIOS over SOL.
+4. **(Optional) BIOS Console Redirection** — point it at the same COM port (115200 8N1) to also see POST / BIOS over SOL. Per-field values (Terminal Type, Flow Control, **Redirection After BIOS POST**, …) are in the [BMC / SOL setup guide](https://jasoncheng7115.github.io/jt-ipam/bmc-sol.html?lang=en).
 5. **Reboot** so `console=` takes effect — then SOL shows the whole boot and kernel panics. The physical monitor is unaffected.
 
 Just want a login now? Step 3 alone is enough. The same guide is built into the app, from the BMC console's **Setup guide** button.
@@ -86,7 +86,7 @@ source — and it matters, because the "unauthorised IPs" anomaly check is defin
 | **Proxmox VE** | May create | "Trust addresses from virtualization" | **off by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
 | **VMware / ESXi** | May create | "Trust addresses from virtualization" | **off by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
 | **OPNsense / pfSense** | May create (DHCP leases) | "Create addresses IPAM does not have" | **off by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
-| AdGuard / Wazuh / Zabbix / DNS / Windows DHCP / FortiGate | **Match only, never create** | — | — | — |
+| AdGuard / Wazuh / Zabbix / DNS / Windows DHCP / FortiGate / Palo Alto | **Match only, never create** | — | — | — |
 | CSV import / phpIPAM migration | Created from the imported data (an explicit user action) | — | — | as imported |
 
 **Shared rule**: every auto-creation path uses the same decision
@@ -113,7 +113,7 @@ normally.
 
 ## Core entities
 
-`Section → Subnet → IPAddress`, plus `Device` / `Rack` / `Location`, `Customer` (managing unit), `VLAN` / `VRF`, `NAT`, OPNsense / pfSense / FortiGate firewalls, and an IEEE OUI vendor table (monthly refresh).
+`Section → Subnet → IPAddress`, plus `Device` / `Rack` / `Location`, `Customer` (managing unit), `VLAN` / `VRF`, `NAT`, OPNsense / pfSense / FortiGate / Palo Alto firewalls, and an IEEE OUI vendor table (monthly refresh).
 
 ## Access control (RBAC)
 
@@ -285,8 +285,26 @@ jt-ipam/
 
 - **Phase 1 (done)** — phpIPAM-equivalent features + improvements (Section/Subnet/IP/VLAN/VRF/NAT/Devices/Racks/Locations/IP-Requests, TOTP/API-Token/RBAC, phpIPAM import, CSV/RIPE/TWNIC, visual subnet grid, forced TLS)
 - **Phase 2 (done)** — multi-vendor DNS + deep LibreNMS integration (device/ARP/FDB/effective-status) + anomaly detection + SHA-256 audit chain + pgvector AI semantic search
-- **Phase 3 (done)** — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox VE sync + Cytoscape topology + OIDC/SAML SSO + OPNsense / pfSense / FortiGate firewall sync + VMware ESXi / vCenter inventory + Wazuh agent inventory + Zabbix monitoring coverage
+- **Phase 3 (done)** — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox VE sync + Cytoscape topology + OIDC/SAML SSO + OPNsense / pfSense / FortiGate / Palo Alto firewall sync + VMware ESXi / vCenter inventory + Wazuh agent inventory + Zabbix monitoring coverage
 - **Phase 4 (done, scoped)** — MCP server + local-LLM natural language (LLM Server) + plugin mechanism
+
+### Embedding a rack diagram in another system
+
+A rack diagram can be served as an SVG at a single URL, so another dashboard (a LibreNMS
+widget, for example) can show it with a plain `<img>`:
+
+```html
+<img src="https://your-ipam.example.com/api/v1/racks/<rack-id>/embed.svg?token=<token>">
+```
+
+Two switches must both be on: enable embedding and generate a token under **Admin → System
+settings**, and turn on **that rack's** own "external embedding" toggle (per rack, off by
+default). A rack diagram shows device names and positions, and the token is a key — do not
+post it publicly. Regenerating the token invalidates every existing URL immediately.
+
+Serving an image rather than an iframe is deliberate: this service sends
+`frame-ancestors 'none'`, so iframe embedding is blocked by design, and allowing specific
+origins would open a clickjacking surface.
 
 ## License
 

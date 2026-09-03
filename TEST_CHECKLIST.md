@@ -135,6 +135,11 @@ the reverse proxy dropped the WebSocket upgrade.
 - [ ] **Measure geometry, don't eyeball it** — `boundingBox()` whenever the point is
   alignment, overlap or spacing; a screenshot hides a 16px error
 - [ ] New text checked in both locales (switch to English, confirm no key leaks)
+- [ ] **Every route opens**: `playwright test e2e/all-routes.spec.ts` green. It parses the
+  route list out of `src/router/index.ts`, so a new page is covered automatically — and it
+  fails on blank screens, JS exceptions, failed API calls and untranslated keys. This exists
+  because the sweep used to visit 22 of 78 routes: forty-odd pages had never been opened by
+  any test. A page that only a human ever opens is a page nothing is checking
 
 ## 5d. System export / import (cross-instance migration) — **run in full every release that touches it**
 
@@ -183,6 +188,28 @@ defect is in *what the model was able to ask*.
   stays fenced and truncated; the adversarial tests still pass
 - [ ] **Facts come from tools, not arithmetic**: usage / free / count answers are fetched, never
   computed by the model from a CIDR
+
+- [ ] **Cancellable**: while generating, Send becomes Stop; pressing it aborts the request
+  (closing the connection also stops the LLM server), and the transcript says it stopped
+- [ ] **Progress is visible**: connecting / thinking / which tool / composing / answering, each
+  with the round number and elapsed seconds — **a bare spinner is indistinguishable from a hang**
+- [ ] **An empty reply is never passed through**: the model is asked once more for a direct
+  answer, and if it is still empty the reason is stated (length limit vs no text at all)
+## 5f. Browser consoles (SSH / BMC / PVE) — **whenever the terminal changes**
+
+- [ ] **URLs are clickable**: when a TUI has broken a long URL across rows
+  (`printf '%s\n' "$URL" | fold -w $(tput cols)` reproduces it), hovering the **second row**
+  still recognises the whole URL, and the bar shows the full target
+- [ ] **Only http/https open**, in a new tab with no opener (the text comes from the remote host)
+- [ ] **Selection copy**: a URL split across rows copies as one usable address;
+  **ordinary multi-line text must be left untouched**
+- [ ] **No false joins**: a full-width line followed by unrelated text is not glued into a URL
+- [ ] **SFTP sort mode**: with Folders first, directories lead in **both ascending and descending**
+  order (putting the grouping inside the comparator inverts it on descending — that is the regression
+  to watch); Mixed sorts purely by the column. Sorting by size or mtime honours the same mode.
+  The choice is saved to user preferences and survives a reconnect or a different device
+- [ ] Existing spec: `frontend/e2e/terminal-links.spec.ts` (needs `E2E_SSH_ADDRESS_ID/USER/PASS`,
+  plus `can_ssh` on the user and `ssh_enabled` on the address; accept the host key on first use)
 
 ## 6. Manual page review (browser, after deploy)
 
@@ -235,6 +262,10 @@ defect is in *what the model was able to ask*.
 - [ ] **PVE regression (shared tables)**: Proxmox clusters/VMs/interfaces are untouched by an ESXi
   sync, `legacy_vmid` and `kind=ct` still correct, and 進階 → 虛擬化 (Proxmox VE) still lists only PVE
   while 虛擬化 (VMware) lists only VMware. Device / IP links from PVE VMs still resolve.
+- [ ] **Long external names (issue #25)**: a VM on an NSX-T portgroup whose name exceeds 64 chars
+  syncs without error, and the full name (not a truncated one) shows on the VM's interface. The
+  same goes for an ESXi host FQDN longer than 128 chars in `node`. A name coming from a third-party
+  platform has no length we get to assume.
 - [ ] Delete instance; periodic `jt-ipam-sync` picks up enabled instances every ~5 min without errors.
 
 ## 7c. Integration sync resilience — **applies to every integration, not just the one you changed**
@@ -301,6 +332,178 @@ What this section tests is the thing the chain itself cannot catch. Verifying th
   round (the change log must not fill up)
 - [ ] **Coverage gap**: asking with a subnet scope answers only for those subnets; an empty scope
   returns empty rather than falling back to global
+
+## 7g. Evidence contract — **whenever a source is added or changed**
+
+What this section guards: **a new source must answer whether its evidence expires**.
+The cost of not having that gate has already been paid — ARP was treated as timestamped
+evidence, and a machine powered off for weeks showed 52 days of green.
+
+- [ ] **Registered**: the new source declares its tier and `aging` in `services/evidence.py`;
+  `pytest tests/test_evidence_contract.py` is green (the guard rejects unregistered sources)
+- [ ] **Tier is right**: passively learned mappings (ARP/FDB/DNS/DHCP/virtualisation config)
+  are `learned` with `aging=False`; only active probes and third-party monitoring may age
+- [ ] **No string matching for source semantics**: no `"scanner" in status` style checks
+  remain — ask `evidence.is_aging()`, so a new source cannot fall into the loosest branch
+- [ ] **Liveness settings**: the options and defaults are derived from the contract;
+  a non-expiring source is **not** selected by default
+- [ ] **Per-vendor evidence is labelled honestly**: a firewall's ARP table, VPN sessions and
+  DHCP leases land in `ip_addresses.arp_seen` as `arp:<vendor>` / `vpn:<vendor>` /
+  `lease:<vendor>` — **never** in `last_seen_scanner`. A site with no scan agent must never
+  show "online (scanner)". `pytest tests/test_liveness_sources.py` green
+- [ ] **Upgrade keeps the previous verdict**: firewall ARP was counted before the split
+  (it was written as scanner evidence), so `arp:<vendor>` stays trusted by default —
+  otherwise a firewall-only site goes entirely offline on upgrade. Leases do **not**:
+  a lease can outlive the machine by days
+- [ ] **Static ARP entries are skipped**: a permanent/static entry never ages out, so
+  stamping it would mean "this host is alive forever"
+- [ ] **Ghost-IP and ARP-only detection follow**: an address only a firewall can see is
+  neither reported as a ghost nor as "ARP only"
+- [ ] **Availability bar**: days backed only by ARP are grey, not green; carrying a state
+  forward requires the source that state claims to still exist
+- [ ] **Precedence**: all five attributes (hostname/MAC/OS/device name/model) take effect
+  immediately after a change and disabled sources really are excluded;
+  `pytest -k "precedence or hostname or arp"` green
+- [ ] ⚠️ **Cache**: precedence uses a module-level 60s cache cleared between tests by
+  `conftest`'s `bust_all()`. If the cache moves, **verify that fixture still clears it** —
+  it once failed silently and tests leaked settings into each other
+
+## 7h. IP lifecycle and cooldown — **whenever release, allocation or the cooldown setting change**
+
+- [ ] **Release starts a cooldown**: after deleting an address it appears under
+  `/addresses/cooldowns/{subnet_id}` with the previous hostname and MAC
+- [ ] **The record survives deletion** (releasing an address in practice means deleting it)
+- [ ] **Allocation skips it**: neither the free-address list nor automatic allocation offers it
+- [ ] **Manual creation is refused**: recreating the address returns 409 with a readable
+  message including the end date and previous hostname — **not** `[object Object]`
+- [ ] **Early clear**: after clearing, the address can be used again, but the record remains
+  with who cleared it, when and why (recorded, not erased)
+- [ ] **Disabled**: setting 0 days restores the previous behaviour and writes no record
+- [ ] **Purge**: the sync round removes long-expired records but **keeps recently expired ones**
+  (the days right after expiry are exactly when someone asks who had the address)
+
+## 7i. Event rules — **whenever rules, conditions or event dispatch change**
+
+- [ ] **Conditions are not expressions**: confirm nothing is evaluated; regular expressions
+  are **unsupported** (ReDoS)
+- [ ] **An unknown operator never passes** (passing is the dangerous default)
+- [ ] **Field paths walk data only**: `data.x.y` must not reach attributes
+- [ ] **AND semantics**: every condition must hold; no conditions means the event name decides
+- [ ] **A broken rule does not stop the others**: a malformed rule is flagged and skipped while
+  the remaining rules and the normal webhook dispatch continue (**never silently inert**)
+- [ ] **Dry run has no side effects**: it reports what would match without sending anything
+- [ ] **The webhook action uses the same path**: signing and the SSRF guard cannot be bypassed
+
+## 7j. Topology access layer (FDB) — **whenever FDB inference or the topology map changes**
+
+> FDB says "this MAC appeared on this switch port". Turning that into lines has two classic traps,
+> and both of them draw a map that is confidently wrong rather than visibly empty.
+
+- [ ] Access edges appear for hosts on ports carrying a single MAC, labelled with the port name.
+- [ ] A port carrying more MACs than the threshold (an uplink/trunk) produces **no** access edges —
+  the hosts beyond it are not drawn as plugged into that port.
+- [ ] A port with several known hosts draws **dashed** edges (behind this port), not solid ones.
+  Clicking such an edge shows "Directly attached: No" and the MAC count on the port.
+- [ ] Two switches are joined only when each sees the other and the MAC sets behind the two ports
+  are disjoint. In an A—B—C chain, **A—C must not appear**.
+- [ ] A MAC that maps to more than one device (overlapping subnets) produces no edge at all.
+- [ ] Unchecking 存取層 (FDB) removes every l2/l2_uplink edge; the rest of the map is unaffected.
+- [ ] A department account that cannot see one end of a link does not receive that edge (no edge may
+  reference a node that is not in the graph).
+- [ ] **View modes**: the toolbar offers automatic / centred on switches / access layer only / subnets
+  only. Automatic centres on switches when the range has FDB data and falls back to the subnet layout
+  when it does not; "centred on switches" falls back the same way rather than drawing a centre-less
+  layout.
+- [ ] **Access layer (FDB) starts unticked**, and the default view therefore matches the pre-0.5.213
+  subnet-centred picture.
+- [ ] In the switch-centred layout the switches sit in the middle, their hosts above them, and each
+  subnet node directly below its switch with subnet-only devices beneath it.
+- [ ] **"Access layer only" hides devices with no FDB data** rather than scattering them as orphan
+  dots (check on an estate where most devices have none).
+- [ ] **Virtual machines (unticked by default)**: ticking it places each VM directly beneath its
+  host inside the host's subnet box; unticking removes them entirely. A VM with no identifiable
+  host, or whose node name matches several devices, is not drawn. A VM already mapped to a device
+  does not appear twice.
+- [ ] **Audit coverage**: `pytest tests/test_audit_coverage.py` is green. A new data-changing
+  endpoint must either record an audit entry or be added to `EXEMPT` with a stated reason —
+  never silenced just to make the test pass.
+- [ ] **Rack diagram embedding**: after enabling it and generating a token in system settings,
+  turn on one rack's toggle, copy the URL and open it in a **logged-out** browser — the image
+  must render. A wrong or empty token returns 401; a rack that is not shared and one that does
+  not exist return an **identical** 404; regenerating the token invalidates old URLs at once.
+- [ ] **Basis of each link**: clicking any link shows its "basis" (recorded by a person /
+  reported by monitoring / learned passively / guessed from the name). With "recorded only"
+  on, just the recorded links remain; IP-to-device links survive in the subnet view, while
+  the access-layer view may empty entirely — which is correct, and means nothing was recorded.
+## 7k. Logic between related fields — **whenever a field that determines another changes**
+
+> The rule: **if it can be derived from a relation we already hold, do not ask again**.
+> The only case worth blocking is "both were given and they contradict each other", because
+> then one of them is wrong and picking for the user would be a guess. A customer hit this
+> once: selecting a rack still demanded a location — while the rack dropdown already reads
+> "location / rack".
+
+- [ ] **Device rack → location**: saving with only a rack chosen works, and the stored location
+  is the rack's. Choosing both inconsistently is blocked with an explanation. A rack with no
+  location of its own neither blocks nor invents one. **Test both entry points** (device list
+  and the edit dialog on the device page) — when the same logic exists twice, usually only one
+  copy gets fixed.
+- [ ] **Subnet → section**: adding a subnet from within a section carries the section over.
+- [ ] **IP → subnet**: adding an address from a subnet page carries the subnet over and it
+  cannot be switched to a different one.
+- [ ] **VM → cluster / physical host**: a VM's node comes from the virtualisation platform,
+  not from a human picking one.
+- [ ] **Rack U position → rack height**: position plus size must fit the rack, and half-U
+  devices (left/right) must not overlap on the same U.
+- [ ] **Scan settings → scan agent**: enabling scanning without naming an agent is blocked —
+  that is genuinely missing information, not something derivable.
+- [ ] **Certificate agent → certificate scope**: an agent can only fetch certificates in scope.
+- [ ] Before adding any "if A is set then B is required" rule, ask: **can B be looked up from
+  A?** If it can, derive it; block only when it cannot.
+- [ ] **The dependency list matches what is declared**: `pytest tests/test_dependency_page.py`
+  is green. Adding any third-party package means updating the version page's list as well as
+  `pyproject.toml` / `package.json` — that page is what an upgrade or audit checks against, and
+  a missing entry raises no error, it just quietly is not there.
+
+### 7.x Consoles and file transfer (WebSocket) — walk this whole class by hand
+
+This group comes from field reports across v0.5.222-229. What they share is that **the symptom
+is always the same ("connection lost") while the cause is different every time**, so testing the
+happy path of "an upload succeeded" is not enough.
+
+- [ ] **Drag a folder in** (a folder alone, and a folder mixed with files): **the whole folder and
+  its nested contents** must arrive with the same structure, files dropped alongside must still
+  upload, and the connection must **not** drop. Do NOT decide "is this a file?" by `size > 0` — macOS reports a folder as
+  **256 bytes**, and that check is what corrupted the stream.
+- [ ] **Drag several files at once**: every one must arrive intact — compare **byte count and md5**
+  for each. Only one arriving, or one arriving at **0 bytes**, means the upload loop was
+  interrupted partway.
+- [ ] **Send a command mid-upload**: if the client declares a size and then sends the next command
+  before finishing, the server must **end that upload, still execute the command, and keep the
+  session usable**. The command must not be swallowed.
+- [ ] **Declare a size and send nothing**: after a timeout the server must report an error and
+  clean up the partial file — it must **never wait indefinitely**. A coroutine parked there holds
+  both the WebSocket and the SSH connection, and the user sees "the whole page is unresponsive".
+- [ ] **The session survives a failed upload**: one failure must not force a reconnect.
+- [ ] **Reconnecting right after a failure works**: the ticket request must not time out. A long
+  delay means the previous session is still stuck in the event loop.
+- [ ] **An idle console must not be cut off**: open SSH / SFTP / RDP / VNC / noVNC and **leave it
+  untouched for three minutes**, then use it again. A console without a heartbeat gets dropped by
+  an intervening reverse proxy after **60 seconds without traffic** (a common default), and the
+  user just sees an inexplicable "connection lost".
+  BMC currently has **no** heartbeat (pure relay; injected data would corrupt SOL) — a known gap.
+- [ ] **Send a file large enough to take a while** through the console (say 50 MB, or 5 MB over a
+  slow link): it must complete. **Do not test this on the LAN only** — uvicorn drops a connection
+  when no pong arrives within 20s, and the pong queues behind the upload data, so only a genuinely
+  slow uplink reproduces it (fixed in v0.5.231). Browser network throttling **will not** show it:
+  it does not put the pong behind the upload.
+- [ ] **Guard tests green**: `pytest tests/test_sftp_upload_stall.py tests/test_ws_wait_timeouts.py`.
+  They hold the line on three things that break uploads outright: a receive loop with no timeout,
+  `receive_bytes()` raising KeyError on a text frame, and forgetting to send `put_ready` after open.
+- [ ] Whenever the upload block changes, **actually transfer a file**. The 0.5.225 rewrite dropped
+  the `put_ready` line entirely, uploads never started, and the symptom was **identical** to the
+  bug being fixed — easy to read as "still broken" rather than "newly broken". Neither type
+  checking nor unit tests can see this.
 
 ## 8. Recent feature spot-checks
 

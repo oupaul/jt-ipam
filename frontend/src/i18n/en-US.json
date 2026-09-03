@@ -223,7 +223,13 @@
     "device_hint": "Pick the device this agent runs on",
     "device_help": "Once linked, the agent name in the list and status page links to that device's detail; the source IP also links to its address if it exists in IPAM.",
     "go_device": "Go to device: {name}",
-    "cert_deleted": "certificate deleted"
+    "cert_deleted": "certificate deleted",
+    "warn_days_title": "Expiry notice: {name}",
+    "warn_days_label": "Warn this many days ahead",
+    "warn_days_use_default": "Use the global default ({n} days)",
+    "warn_days_default": "Expiry notice: default, {n} days",
+    "warn_days_set": "Expiry notice: {n} days ahead",
+    "warn_days_hint": "Renewal takes different amounts of time for different certificates: a commercial one bought by hand needs lead time, an auto-renewed one does not. Left unset, the global default from system settings applies."
   },
   "nav": {
     "dashboard": "Dashboard",
@@ -302,7 +308,10 @@
     "esxi_admin": "VMware",
     "fw_rule_changes": "Firewall rule changes",
     "attack_surface": "Exposed services",
-    "zabbix": "Zabbix integration"
+    "zabbix": "Zabbix integration",
+    "event_rules": "Event rules",
+    "paloalto": "Palo Alto integration",
+    "paloalto_fw": "Firewall (Palo Alto)"
   },
   "topbar": {
     "search": "Search…",
@@ -396,7 +405,9 @@
     "disconnected_err": "Connection error",
     "disconnected_hint": "Click Reconnect (top right) to retry",
     "username": "Username",
-    "password": "Password"
+    "password": "Password",
+    "show": "Show",
+    "hide": "Hide"
   },
   "scan_agent": {
     "outdated": "update available",
@@ -423,7 +434,8 @@
     "source_label": "Source",
     "src_scanner": "Scan agent",
     "src_librenms": "LibreNMS",
-    "src_wazuh": "Wazuh"
+    "src_wazuh": "Wazuh",
+    "src_zabbix": "Zabbix"
   },
   "scan_probes": {
     "title": "Scan probes",
@@ -677,7 +689,8 @@
     "err_username": "Username is required",
     "err_ticket": "Cannot establish connection (permission or network issue)",
     "err_ws": "WebSocket connection failed",
-    "err_generic": "Connection error"
+    "err_generic": "Connection error",
+    "cred_manual": "Use different credentials (enter them below)"
   },
   "rdp": {
     "connect": "RDP",
@@ -801,7 +814,8 @@
     "unlock": "Unlock",
     "assign_perms": "Assign permissions",
     "deactivate": "Deactivate",
-    "reactivate": "Reactivate"
+    "reactivate": "Reactivate",
+    "admin_external_hint": "This is an external account (LDAP / SSO). If the site configures an admin-group mapping, this switch is re-evaluated from the directory on every login; it is only decisive when no mapping is configured."
   },
   "ipChanges": {
     "title": "IP Change Log",
@@ -895,7 +909,16 @@
     "foot_newline": "newline",
     "foot_local": "AI responses may be wrong — please verify",
     "assistant": "AI assistant",
-    "related": "Related"
+    "related": "Related",
+    "stop": "Stop",
+    "stopped": "(generation stopped)",
+    "phase_connecting": "Connecting…",
+    "phase_thinking": "Model is thinking…",
+    "phase_thinking_n": "Model is thinking… ({n}k chars)",
+    "phase_composing": "Working through the results…",
+    "phase_answering": "Writing the answer…",
+    "phase_round": "query round {n}",
+    "phase_elapsed": "{n}s elapsed"
   },
   "perm": {
     "title": "Permissions",
@@ -1030,7 +1053,37 @@
     "fit": "Fit",
     "zoom_in": "Zoom in",
     "zoom_out": "Zoom out",
-    "online_only": "Online only"
+    "online_only": "Online only",
+    "fdb": "Access layer (FDB)",
+    "kind_l2": "Access port",
+    "kind_l2_uplink": "Switch backbone",
+    "kind_l2_behind": "Behind this port (not direct)",
+    "via_fdb": "Switch MAC table (FDB)",
+    "field_peer_port": "Peer port",
+    "field_direct": "Directly attached",
+    "field_port_mac_count": "MACs on this port",
+    "direct_yes": "Yes (sole MAC on this port)",
+    "direct_no": "No (other hosts behind this port)",
+    "view_auto": "Automatic (mixed)",
+    "view_switch": "Centred on switches",
+    "view_l2": "Access layer only (FDB)",
+    "view_l3": "Subnets only",
+    "vms": "Virtual machines",
+    "kind_vm_host": "VM to host",
+    "type_vm": "Virtual machine",
+    "via_virtualization": "Virtualisation platform",
+    "field_host": "Physical host",
+    "field_cluster": "Cluster",
+    "field_memory": "Memory (MB)",
+    "unplaced_group": "Same subnet · switch port unknown",
+    "asserted_only": "Recorded only",
+    "asserted_only_hint": "Keep only links someone recorded in IPAM (cabling, wireless links, IP-to-device links) and drop everything inferred — so you can see at a glance how much is actually known.",
+    "field_evidence": "Basis",
+    "ev_asserted": "Recorded by a person",
+    "ev_monitored": "Reported by monitoring",
+    "ev_learned": "Learned passively (FDB/ARP)",
+    "ev_inferred": "Guessed from the name",
+    "kind_inferred": "Guessed (neither recorded nor observed)"
   },
   "hostnameSrc": {
     "auto": "Auto (follow global order)",
@@ -1039,14 +1092,14 @@
     "pin_label": "Pin hostname source",
     "pin_hint": "When pinned, this IP always uses that source's hostname; \"Auto\" resolves by the global priority order.",
     "page_title": "Hostname source order",
-    "page_subtitle": "When multiple sources (manual / DNS / LibreNMS / OPNsense / scanner / Proxmox VE / Wazuh / AdGuard) report a hostname for the same IP, the first one with a value (top-down) wins. Drag to reorder.",
+    "page_subtitle": "When several sources report a hostname for the same IP, the first one with a value wins, top to bottom (the list is every source actually in use). Drag to reorder.",
     "drag_hint": "Drag to reorder priority (top = highest); use the switch to disable a source — disabled sources are excluded from name matching.",
     "enabled": "On",
     "disabled": "Off",
     "arp_title": "ARP / MAC source priority",
-    "arp_subtitle": "When multiple sources (scan / OPNsense / LibreNMS / AdGuard / Proxmox VE) report a MAC for the same IP, higher-ranked sources override lower ones; the switch on the right disables a source. Drag to reorder.",
+    "arp_subtitle": "When several sources report a MAC for the same IP, the ones higher up override the ones below; the switch on the right disables a source. Drag to reorder.",
     "dev_title": "Device name source priority",
-    "dev_subtitle": "When multiple sources (LibreNMS / DNS / Proxmox VE name / OPNsense / LibreNMS sysName) provide a name for the same device, higher-ranked sources win; Manual is highest and cannot be disabled. Drag to reorder.",
+    "dev_subtitle": "When several sources supply a name for the same device, the one higher up wins; manual is highest and cannot be disabled. Drag to reorder.",
     "save": "Save priority",
     "saved": "Priority updated",
     "src": {
@@ -1062,10 +1115,14 @@
       "adguard": "AdGuard",
       "snmp": "LibreNMS (sysName)",
       "windows_dhcp": "Windows DHCP",
-      "fortigate": "FortiGate"
+      "fortigate": "FortiGate",
+      "pfsense": "pfSense",
+      "paloalto": "Palo Alto",
+      "zabbix": "Zabbix",
+      "esxi": "VMware ESXi / vCenter"
     },
     "model_title": "Device model source order",
-    "model_subtitle": "When multiple sources (LibreNMS hardware / Proxmox VE / OPNsense) provide a device model, higher = preferred; manual is highest and can't be disabled. Drag to reorder."
+    "model_subtitle": "When several sources supply a model for the same device, the one higher up wins; manual is highest and cannot be disabled. Drag to reorder."
   },
   "addresses": {
     "search_placeholder": "Search all fields (IP / hostname / MAC / description / owner / switch location / note)",
@@ -1146,7 +1203,16 @@
     "virt_vm_tag": "Virtual machine",
     "switch_name_ph": "Switch name",
     "switch_port_ph": "Port (e.g. eth1/0/6)",
-    "switch_port_hint": "Maintained by the LibreNMS sync; a value entered by hand is overwritten on the next sync."
+    "switch_port_hint": "Maintained by the LibreNMS sync; a value entered by hand is overwritten on the next sync.",
+    "last_seen_arp": "Last seen (ARP)",
+    "source_arp": "ARP only",
+    "state_deprecated": "Deprecated",
+    "state_quarantine": "Quarantined",
+    "suggest_link": "Link to the existing device “{name}”",
+    "suggest_create": "Create device “{name}” and link it",
+    "suggest_siblings_hint": "{n} other IPs carry the same hostname. Note that the same hostname does not mean the same machine — a reused DHCP address keeps its old hostname, so check the MAC before ticking:",
+    "suggest_same_mac": "same MAC",
+    "last_seen_wazuh": "Wazuh agent keep-alive"
   },
   "subnets": {
     "title": "Subnets",
@@ -1377,7 +1443,8 @@
     "physical": "Physical",
     "filter_subnet": "Subnet",
     "filter_subnet_all": "All subnets",
-    "vm_tag": "VM"
+    "vm_tag": "VM",
+    "error_location_mismatch": "That rack is not in the location you picked — fix one of the two"
   },
   "locations": {
     "site": "Site",
@@ -1447,7 +1514,12 @@
     "dimensions": "Width × Depth",
     "page_title": "Rooms / Racks",
     "rack_side_left": "L",
-    "rack_side_right": "R"
+    "rack_side_right": "R",
+    "embed_label": "External embedding",
+    "embed_hint": "When enabled, this rack's diagram is available at a URL (carrying a token) that other systems can embed as an image, such as a LibreNMS dashboard. The image shows device names and positions. Off by default.",
+    "embed_copy": "Copy embed URL",
+    "embed_copied": "Copied. This URL is a key — do not post it publicly.",
+    "embed_disabled_hint": "Embedding is not enabled in system settings"
   },
   "requests": {
     "title": "IP Requests",
@@ -1812,7 +1884,11 @@
     "triage_btn": "AI triage",
     "triage_title": "AI triage: {ip}",
     "fw_rot": "Firewall rule rot",
-    "explain_fw_rule_rot": "Parts of the active ruleset that are already wrong: port forwards whose target is not in IPAM (likely reclaimed), any-to-any permits (that interface effectively has no firewall), and management ports (SSH/RDP/VNC/IPMI) open to any source on a WAN interface. Manual NAT entries and disabled rules are excluded."
+    "explain_fw_rule_rot": "Parts of the active ruleset that are already wrong: port forwards whose target is not in IPAM (likely reclaimed), any-to-any permits (that interface effectively has no firewall), and management ports (SSH/RDP/VNC/IPMI) open to any source on a WAN interface. Manual NAT entries and disabled rules are excluded.",
+    "arp_only": "ARP-only liveness",
+    "explain_arp_only_liveness": "These addresses look online, but the only evidence is an ARP record — and ARP carries no timestamp while the reporting device's cache never expires. A machine that was powered off weeks ago still reads as online here. To find out the real state, probe them with a scan agent or bring them under LibreNMS/Zabbix monitoring.",
+    "stale_link": "Device link may be stale",
+    "explain_stale_device_links": "These IPs are linked to a device but the address has changed MAC since that link was made — usually the address was handed to a different machine (common with DHCP), so the link now points at the wrong device. Nothing is unlinked automatically: whether to detach is a judgement call. Compare the current MAC against that device before changing or clearing it."
   },
   "webhooks": {
     "events_label": "events (* = all)",
@@ -1954,7 +2030,12 @@
     "expand_ref": "Expand",
     "rule_disabled": "disabled",
     "from": "from",
-    "to": "to"
+    "to": "to",
+    "vm_status_running": "Running",
+    "vm_status_stopped": "Stopped",
+    "vm_status_paused": "Paused",
+    "vm_status_suspended": "Suspended",
+    "vm_status_unknown": "Unknown"
   },
   "physical": {
     "cabling": "Cabling",
@@ -2396,7 +2477,9 @@
     "ago_hours": "{n} h ago",
     "ago_days": "{n} d ago",
     "no_records": "No scanner / LibreNMS / DNS records",
-    "online_threshold": "Online threshold: {n} min"
+    "online_threshold": "Online threshold: {n} min",
+    "arp_only_label": "Online (ARP only)",
+    "arp_only_hint": "Seen only in an ARP table. ARP records carry no timestamp and the reporting device's cache does not expire, so this can still read as online after the machine has been powered off."
   },
   "llm_settings": {
     "title": "LLM / AI global settings",
@@ -2554,7 +2637,12 @@
     "wz_instance": "Wazuh instance",
     "wz_sca": "Config assessment",
     "wz_sca_counts": "{pass} passed / {fail} failed",
-    "wz_sca_worst": "{n} benchmarks on this host; showing the lowest-scoring one"
+    "wz_sca_worst": "{n} benchmarks on this host; showing the lowest-scoring one",
+    "vm_name": "VM",
+    "vm_node": "Host node",
+    "vm_cluster": "Cluster",
+    "vm_vcpu": "vCPU",
+    "vm_memory": "Memory (MB)"
   },
   "relations": {
     "title": "Relationships",
@@ -2697,7 +2785,33 @@
     "title": "System Settings (global)",
     "grp_display": "Display & map",
     "grp_liveness": "Liveness",
-    "grp_security": "Security"
+    "grp_security": "Security",
+    "liveness_sources": "Evidence sources counted",
+    "src_scanner": "Scan agent probes",
+    "src_librenms": "LibreNMS device status",
+    "src_arp": "ARP records (LibreNMS, not recommended)",
+    "liveness_sources_hint": "Only the selected sources decide whether an address is online. Sources marked \"never expires\" are not recommended: they prove a binding was learned once, not that the machine is alive — the LibreNMS ARP API returns no timestamp and a DHCP lease may be days old, so a powered-off machine keeps looking online. A firewall's own ARP table and VPN sessions do time out, so they are trusted by default.",
+    "grp_lifecycle": "IP lifecycle",
+    "cooldown_days": "Cooldown after release (days)",
+    "cooldown_days_hint": "After an address is released (deleted) it is not offered for reallocation during this window, and creating it by hand is refused. Things outside IPAM still point at it: DNS records and caches, firewall rules, ACLs, certificate SANs, monitoring. Handing it to another machine too early produces the hardest kind of fault to diagnose. Default 30 days; 0 disables it. An admin can clear an individual address early, which is recorded.",
+    "grp_rack_embed": "Rack diagram embedding",
+    "rack_embed_enabled": "Enable embedding",
+    "rack_embed_hint": "Once enabled, racks you have individually shared are available at a URL (carrying a token) that other systems can embed as an image, such as a LibreNMS dashboard. Each rack must also be turned on from the Racks page.",
+    "rack_embed_token": "Access token",
+    "rack_embed_token_hint": "This is a key: anyone holding it can see the diagrams of shared racks, including device names and positions. Do not post it publicly.",
+    "rack_embed_regen": "Regenerate token",
+    "rack_embed_regen_confirm": "Regenerating invalidates every existing embed URL immediately; each one has to be re-pasted. Continue?",
+    "rack_embed_regenerated": "Token regenerated — existing URLs stopped working",
+    "grp_cert_alert": "Certificate expiry notices",
+    "cert_expiry_days": "Warn this many days ahead (default)",
+    "cert_expiry_days_hint": "The global default. Each certificate can override it on the certificates page — a commercial certificate bought by hand needs lead time, an auto-renewed one does not.",
+    "src_wazuh": "Wazuh agent keep-alive",
+    "src_kind_arp": "ARP table",
+    "src_kind_vpn": "VPN sessions",
+    "src_kind_lease": "DHCP leases",
+    "src_no_aging": "never expires",
+    "src_kind_base": "Probes & monitoring",
+    "src_zabbix": "Zabbix host availability"
   },
   "oui_admin": {
     "title": "MAC Vendor Database (OUI)",
@@ -2916,7 +3030,8 @@
     "guide_ts_term": "Boxes / colors look broken (e.g. glances)",
     "guide_ts_term_d": "Set the serial login's TERM to xterm-256color (serial-getty often defaults to vt220).",
     "guide_ts_size": "Console area is tiny with black margins",
-    "guide_ts_size_d": "Serial can't auto-negotiate size — use the toolbar's Fit to window button (sends stty), or run stty rows N cols N yourself."
+    "guide_ts_size_d": "Serial can't auto-negotiate size — use the toolbar's Fit to window button (sends stty), or run stty rows N cols N yourself.",
+    "guide_s4_link": "Per-field values →"
   },
   "notif": {
     "ipreq_approved": "IP request approved",
@@ -2995,7 +3110,9 @@
     "import_done": "Import complete.",
     "import_failed": "Import failed.",
     "col_table": "Table",
-    "col_errored": "errors"
+    "col_errored": "errors",
+    "import_partial": "Import finished, but {n} rows were not written",
+    "import_partial_hint": "Those rows are missing entirely, not merely missing a field. Check the failed column per table below to see which one, and send us the messages listed here."
   },
   "windows_dhcp": {
     "title": "Windows DHCP Server",
@@ -3116,7 +3233,9 @@
     "sort_by": "Sort by",
     "sort_sla": "Uptime",
     "sort_asc": "Ascending",
-    "sort_desc": "Descending"
+    "sort_desc": "Descending",
+    "observed_from": "observed daily since {d}",
+    "observed_hint": "Days before this have no daily record and are inferred from status transitions: the absence of a transition does not prove everything was fine — it can equally mean nothing was watching."
   },
   "certOs": {
     "linux": "Linux",
@@ -3382,7 +3501,7 @@
     "upload_partial_fail": "Uploaded {ok}; these failed: {names}",
     "uploading_progress": "Uploading {done}/{total}: {name}",
     "drop_here": "Drop to upload into {dir}",
-    "drop_dirs_skipped": "Skipped {n} folder(s) — only files can be dropped for now.",
+    "drop_dirs_skipped": "{n} folders could not be expanded and were skipped (this browser does not expose folder contents)",
     "name_ph": "Enter a name",
     "move_title": "Move {n} item(s) to…",
     "move_path_ph": "Type an absolute destination path, or pick one below",
@@ -3395,7 +3514,16 @@
     "deleted_recursive": "Deleted {n} item(s).",
     "batch_dirs_not_empty": "These folders are not empty and were left alone: {names}. Delete them one at a time to choose whether to remove their contents.",
     "offline_title": "Disconnected",
-    "offline_hint": "This listing is what was on screen before the connection dropped and may no longer match the remote host. Reconnect to work with files again."
+    "offline_hint": "This listing is what was on screen before the connection dropped and may no longer match the remote host. Reconnect to work with files again.",
+    "sort_dirs_first": "Folders first",
+    "sort_mixed": "Mixed with files",
+    "sort_mode_hint": "With Folders first, directories always come before files in both ascending and descending order, like a file manager. Mixed sorts purely by the selected column, like ls. The choice is saved to your preferences and follows you to other devices.",
+    "unreadable_item": "This item cannot be read (compress a folder into a single file first)",
+    "offline_code": "Close code {code} (1000 = closed normally; 1006 = the connection was cut mid-way, usually an idle timeout in an intervening reverse proxy)",
+    "upload_bytes": "Uploading {name} — {sent} / {total} ({pct}%)",
+    "offline_upload": "An upload was in flight when the connection dropped: {name} — {sent} of {total} sent",
+    "drop_too_many": "{n} items were left out (at most {max} files per drop)",
+    "err_no_ack": "The data is not reaching the server: 15 seconds after the first block was sent, none of it had been acknowledged. The server is fine (it already replied that it is ready to receive) — something between this computer and the server is dropping the data, commonly a VPN or proxy discarding larger packets, or a browser extension interfering. Try an incognito window (extensions off) or a different network."
   },
   "fw_autocreate": {
     "label": "Create addresses IPAM does not have",
@@ -3418,7 +3546,7 @@
     "rules": "Rules",
     "diff": "What changed",
     "baseline": "(first snapshot, used as the comparison baseline)",
-    "hint": "The rule sentinel compares OPNsense / pfSense / FortiGate rules on every sync and records an entry (and notifies admins) only when something really changed. A permit rule appearing overnight is the classic sign of a compromised firewall — this page is the full record for verifying it.",
+    "hint": "Every sync round compares each firewall's rules (OPNsense / pfSense / FortiGate / Palo Alto); only a real change is recorded and notified. A permit rule that appears overnight is a classic sign of a breach or a backdoor — this page is the record you check it against.",
     "empty": "No rule changes recorded yet.",
     "ai": "AI analysis",
     "ai_btn": "AI analysis",
@@ -3435,7 +3563,8 @@
     "ack_ph": "Note (e.g. opened 443 per ticket #123)",
     "d_add": "added",
     "d_del": "removed",
-    "d_chg": "changed"
+    "d_chg": "changed",
+    "kind": "Type"
   },
   "surface": {
     "title": "Exposed services list",
@@ -3503,5 +3632,56 @@
     "gap": "Monitoring coverage gap",
     "gap_scoped": "Within the configured subnet scope, {n} address(es) with a known hostname are not monitored by this Zabbix.",
     "gap_global": "{n} address(es) with a known hostname are not monitored by this Zabbix (no subnet scope configured on this instance)."
+  },
+  "event_rules": {
+    "title": "Event rules",
+    "intro": "Event → conditions → actions. For example: notify only when a new subnet's description contains Production, or alert on an unauthorised IP only inside server ranges. Conditions are structured fields, not an executable expression, and regular expressions are deliberately not supported — rules are user input, and anything executable is a risk.",
+    "events": "Events",
+    "events_ph": "type your own; * matches every event",
+    "conditions": "Conditions (all must hold)",
+    "conditions_hint": "Fields use dot paths, e.g. data.subnet.cidr, data.count. No conditions means the event name alone decides.",
+    "no_conditions": "(no conditions)",
+    "actions_col": "Actions",
+    "act_notify": "Notify admins",
+    "act_webhook": "Send to webhook",
+    "add_condition": "Add condition",
+    "add_action": "Add action",
+    "field_ph": "data.subnet.cidr",
+    "value_ph": "value",
+    "notify_title_ph": "Notification title (defaults to the rule name)",
+    "webhook_id_ph": "Webhook subscription ID",
+    "matches": "Matches",
+    "test": "Dry run",
+    "run_test": "Run",
+    "test_event": "Event name",
+    "test_payload": "Event payload (JSON)",
+    "test_hint": "Only evaluates whether it would match — no notification or webhook is sent.",
+    "would_match": "This payload would match the rule",
+    "would_not_match": "This payload would not match",
+    "event_name": "Event name matches",
+    "actual": "actual",
+    "bad_json": "The payload is not valid JSON"
+  },
+  "paloalto": {
+    "title": "Palo Alto",
+    "view_title": "Firewall (Palo Alto)",
+    "intro": "Read-only sync from Palo Alto via the PAN-OS API (reads only — nothing on the firewall is changed). Needs an API key for a read-only role, and the backend must be able to reach the management interface.",
+    "key": "API key",
+    "key_keep": "API key (leave blank to keep)",
+    "key_hint": "Create a read-only administrator in PAN-OS, then obtain an API key via /api/?type=keygen. The key is sent in the X-PAN-KEY header.",
+    "api_version": "REST version",
+    "api_version_hint": "Leave blank to auto-detect (recommended). PAN-OS REST URLs carry a version segment (/restapi/v11.1/…); a wrong value makes every endpoint return 404.",
+    "vsys_ph": "Blank = discover every vsys (or list them: vsys1, vsys2)",
+    "vsys_auto": "Auto (all)",
+    "pull_what": "What to pull",
+    "policies": "Security policies",
+    "addresses": "Address objects",
+    "diagnose": "Test connection",
+    "diag_summary": "{ok} of {total} endpoints readable",
+    "diag_rows": "{n} rows",
+    "pick_firewall": "Select Palo Alto",
+    "all_vsys": "All vsys",
+    "none_configured": "No Palo Alto firewall configured — add one under Admin → Palo Alto integration.",
+    "col_application": "Application (App-ID)"
   }
 }

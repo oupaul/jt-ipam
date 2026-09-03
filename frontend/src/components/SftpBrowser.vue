@@ -12,11 +12,15 @@
  * 100 MB，收在記憶體再落地最單純。真要搬大檔請用 scp/rsync —— 把工具用在它擅長的地方，
  * 比在瀏覽器裡硬做串流落地實在。
  */
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { sortEntries, type SortKey, type SortOrder } from "@/utils/sftpSort";
+import { collectDroppedFiles, dirsToCreate, type PickedFile } from "@/utils/dropWalk";
+import { getPreferences, updatePreferences } from "@/api/preferences";
 import { useI18n } from "vue-i18n";
 import {
   NAlert, NButton, NCard, NDataTable, NForm, NFormItem, NIcon, NInput,
   NInputNumber, NPopconfirm, NRadio, NRadioGroup, NSelect, NSpace, NSpin, NSwitch,
+  NTooltip,
   NTag, NModal, NInputGroup, useMessage,
 } from "naive-ui";
 import type { DataTableColumns } from "naive-ui";
@@ -29,7 +33,7 @@ import { fmtDateTime } from "@/utils/datetime";
 import { useTablePagination } from "@/composables/useTablePagination";
 import {
   RefreshIcon, FilesIcon, CancelIcon, DeleteIcon, EditIcon,
-  DownloadIcon, UploadIcon, NewFolderIcon, FilterIcon, MoveIcon, UpLevelIcon,
+  DownloadIcon, UploadIcon, NewFolderIcon, FilterIcon, SortAscIcon, MoveIcon, UpLevelIcon,
 } from "@/icons";
 
 const props = defineProps<{
@@ -41,6 +45,10 @@ const msg = useMessage();
 
 /** 連線階段 —— 與 SSH／RDP／VNC 主控台同一組狀態名，狀態列也才能共用同一套樣式。 */
 const phase = ref<"form" | "connecting" | "connected" | "error" | "closed">("form");
+/** 斷線時的 WebSocket 關閉代碼。1000＝正常收線；1006＝連線被硬切（多半是中間的
+ *  反向代理逾時），兩者要查的方向完全不同 —— 沒有這個數字，使用者只能回報
+ *  「又斷了」，我們也只能猜。 */
+const closeCode = ref<number | null>(null);
 const connecting = computed(() => phase.value === "connecting");
 /** 是否已經在看檔案清單（連上了、或連上後才斷線）—— 其餘階段都停留在連線卡片上。 */
 const onFileList = computed(() => phase.value === "connected" || phase.value === "closed");
@@ -59,11 +67,15 @@ const form = ref({
   username: "", port: 22, auth: "password" as "password" | "key",
   password: "", private_key: "", passphrase: "",
 });
-const credOptions = computed(() => creds.value.map((c) => ({
-  // 標籤格式與 SSH 主控台一致
-  label: `${c.label}（${c.username}・${c.auth_type === "key" ? t("ssh.auth_key") : t("ssh.auth_password")}）`,
-  value: c.id,
-})));
+const credOptions = computed(() => [
+  // 「用別組帳密」必須在**下拉裡**看得到 —— 只靠 hover 才出現的 ✕ 不算可發現
+  { label: t("ssh.cred_manual"), value: null as unknown as string },
+  ...creds.value.map((c) => ({
+    // 標籤格式與 SSH 主控台一致
+    label: `${c.label}（${c.username}・${c.auth_type === "key" ? t("ssh.auth_key") : t("ssh.auth_password")}）`,
+    value: c.id,
+  })),
+]);
 
 async function delSelectedCred() {
   const id = form.value.credential_id;
@@ -85,20 +97,49 @@ let ws: WebSocket | null = null;
 let everConnected = false;
 /** 下載中的檔案：收到 file_begin 後開始累積二進位框，file_end 才落地。 */
 let incoming: { name: string; size: number; chunks: Uint8Array[]; got: number } | null = null;
-/** 等待中的請求：讓 send 之後可以 await 到結果。 */
-let pending: { resolve: (v: any) => void; reject: (e: Error) => void } | null = null;
+/** 等待中的請求，**以請求編號為鍵**。
+ *
+ *  先前這裡只有一個沒有標記的欄位：伺服器回任何一個 `ok`，都會解掉「當時正在等的那件事」。
+ *  只要協定有一次錯位（回覆遲到、訊息重複、順序顛倒），客戶端就會把別人的回覆當成
+ *  自己的成功 —— 實機上看到的就是「畫面說檔案傳完了，伺服器其實一個位元組都沒收到」。
+ *  帶上編號之後，這種錯配在結構上不可能發生：對不上的回覆會被忽略，該等的繼續等。 */
+const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+let nextReqId = 1;
+
+/** 把回覆交給對應的請求。沒有編號的回覆（舊版伺服器）退回「解掉最早那一個」。 */
+function settle(m: any, how: "resolve" | "reject", value: any) {
+  const id = typeof m?.id === "number" ? m.id : null;
+  const key = id !== null && pending.has(id) ? id : (id === null ? pending.keys().next().value : undefined);
+  if (key === undefined) return;
+  const p = pending.get(key)!;
+  pending.delete(key);
+  if (how === "resolve") p.resolve(value); else p.reject(value);
+}
+
+/** 連線斷掉時，所有還在等的請求都要收到拒絕，否則呼叫端會永遠停在那裡。 */
+function rejectAllPending(err: Error) {
+  for (const [, p] of pending) p.reject(err);
+  pending.clear();
+}
 /** 這次的 list 只是「對話框在瀏覽目錄」，不要動主畫面的清單。 */
 let browsingOnly = false;
+/** 這次上傳是否已被伺服器中止（收到 error）—— 送出迴圈看到就停手。 */
+let uploadAborted = false;
+/** 收到伺服器上傳確認時要通知誰（只有正在上傳時才有值）。 */
+let onPutAck: ((bytes: number) => void) | null = null;
+/** 這條路徑目前敢讓多少資料同時在路上（位元組）。順利就加倍、卡住就減半。 */
+let pathWindow = 32 * 1024;
 
 function send(obj: Record<string, unknown>) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
-/** 送一個請求並等它的回覆（同一時間只會有一個 —— 這個介面是逐步操作的）。 */
+/** 送一個請求並等它的回覆（依編號配對）。 */
 function request(obj: Record<string, unknown>): Promise<any> {
+  const id = nextReqId++;
   return new Promise((resolve, reject) => {
-    pending = { resolve, reject };
-    send(obj);
+    pending.set(id, { resolve, reject });
+    send({ ...obj, id });
   });
 }
 
@@ -177,7 +218,7 @@ async function connect() {
             entries.value = m.entries ?? [];
             truncated.value = !!m.truncated;
           }
-          pending?.resolve(m); pending = null;
+          settle(m, "resolve", m);
           break;
         case "file_begin":
           incoming = { name: m.name, size: m.size, chunks: [], got: 0 };
@@ -192,16 +233,26 @@ async function connect() {
             setTimeout(() => URL.revokeObjectURL(a.href), 4000);
             incoming = null;
           }
-          pending?.resolve(m); pending = null;
+          settle(m, "resolve", m);
           break;
         }
+        case "put_ack":
+          // 伺服器確認「這些位元組真的收到了」。不解掉等待中的請求 ——
+          // 它是過程回報，不是完成。
+          onPutAck?.(m.bytes ?? 0);
+          break;
+        case "keepalive":
+          // 伺服器的保活訊息：什麼都不做。**絕對不能**拿它去解決等待中的請求 ——
+          // 那會讓下一個操作以為自己完成了。
+          break;
         case "put_ready":
-          pending?.resolve(m); pending = null;
+          settle(m, "resolve", m);
           break;
         case "ok":
-          pending?.resolve(m); pending = null;
+          settle(m, "resolve", m);
           break;
         case "error": {
+          uploadAborted = true;          // 正在上傳的話，讓送出迴圈停下來
           errorMsg.value = m.message ?? "";
           // 連線階段失敗要退回表單，否則使用者卡在一片空白、無從重試
           if (phase.value !== "connected") phase.value = "error";
@@ -209,7 +260,7 @@ async function connect() {
           // 只丟字串的話呼叫端只能把它當成一般錯誤顯示
           const err = new Error(m.message) as Error & { code?: string };
           err.code = m.code;
-          pending?.reject(err); pending = null;
+          settle(m, "reject", err);
           break;
         }
       }
@@ -217,6 +268,7 @@ async function connect() {
 
     ws.onclose = (ev) => {
       const wasConnected = everConnected;
+      closeCode.value = ev.code || 0;
       phase.value = wasConnected ? "closed" : "error";
       // 還沒連上就被關掉，而且後端也沒送 error —— 這時什麼都不說，畫面看起來像
       // 「按了沒反應」。實際遇過的原因是反向代理沒轉發 WebSocket 升級標頭
@@ -224,7 +276,7 @@ async function connect() {
       if (!wasConnected && !errorMsg.value) {
         errorMsg.value = t("sftp.err_ws_closed", { code: ev.code || 0 });
       }
-      pending?.reject(new Error(t("sftp.disconnected"))); pending = null;
+      rejectAllPending(new Error(t("sftp.disconnected")));
     };
   } catch (e: any) {
     errorMsg.value = e?.response?.data?.detail ?? String(e);
@@ -274,39 +326,188 @@ const dragging = ref(false);
 let dragDepth = 0;          // dragenter/leave 會在子元素間跳動，用計數才不會閃爍
 /** 多檔上傳的進度：第幾個 / 共幾個。 */
 const uploadProgress = ref<{ done: number; total: number; name: string } | null>(null);
+/** 目前這個檔案送出了多少位元組／共多少。
+ *
+ *  兩個用途，而且第二個更重要：上傳時讓人看得出「有在動」，**斷線時讓人看得出停在哪裡**。
+ *  只顯示「連線已中斷」的話，送出 0 位元組（問題在自己這台機器讀不到檔）和送出 95%
+ *  （問題在連線途中）長得一模一樣，而這兩件事要查的方向完全相反。 */
+const uploadBytes = ref<{ sent: number; total: number; name: string } | null>(null);
 
-/** 送一個檔案到目前目錄。失敗直接往外拋，由呼叫端決定要不要繼續其他檔案。 */
-async function putOneFile(file: File) {
-  if (!ws) throw new Error(t("sftp.disconnected"));
-  const path = `${cwd.value.replace(/\/+$/, "")}/${file.name}`;
-  await request({ type: "put", path, size: file.size });
-  // put_ready 之後才開始送二進位框，一次 256 KiB
-  const CHUNK = 256 * 1024;
-  const done = new Promise((resolve, reject) => { pending = { resolve, reject }; });
-  for (let off = 0; off < file.size; off += CHUNK) {
-    const buf = await file.slice(off, off + CHUNK).arrayBuffer();
-    ws.send(buf);
-  }
-  await done;
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** 上傳一批檔案：逐個送（同一條連線，並行只會互相排隊）。 */
-async function uploadFiles(files: File[]) {
-  if (!files.length || !ws) return;
+/** 送一個檔案到目前目錄。失敗直接往外拋，由呼叫端決定要不要繼續其他檔案。 */
+async function putOneFile(file: File, rel?: string) {
+  if (!ws) throw new Error(t("sftp.disconnected"));
+  const path = `${cwd.value.replace(/\/+$/, "")}/${rel || file.name}`;
+  // 送出任何東西**之前**先確認這個項目真的讀得到。資料夾（或已被移走的檔案）在這裡
+  // 就會失敗，於是連線完全不會被驚動 —— 比起讓伺服器開好檔案、等滿逾時再清掉，
+  // 這樣使用者是立刻得到答案，而不是等半分鐘才看到錯誤。
+  try {
+    if (file.size > 0) await file.slice(0, 1).arrayBuffer();
+  } catch {
+    throw new Error(t("sftp.unreadable_item"));
+  }
+  const putId = nextReqId;          // request() 會用掉這個編號
+  await request({ type: "put", path, size: file.size });
+  // put_ready 之後才開始送二進位框，一次 256 KiB
+  // 每個資料框 16 KiB，真正受控的是**同時在路上的資料量**（下面的窗）。
+  //
+  // 由來（2026-08-30 實機量測）：某條路徑上，256 KiB 的資料框一送出就讓連線斷掉；
+  // 改成 16 KiB 的框連續送，則是到 **49152 位元組**就整個停住、30 秒後逾時。
+  // 兩者其實是同一件事 —— 一個 256 KiB 的框等於一次把 256 KiB 丟上路。
+  // 所以要控的不是框的大小，是**在路上的量**。
+  //
+  // 而那個門檻是**那條路徑的數字，不是通則**：別的站台可能高得多，也可能根本沒有
+  // 這個問題。寫死一個小值等於讓所有人陪一條壞路徑吃虧 —— 跨網路、往返 100 毫秒時，
+  // 32 KiB 的窗只有約 320 KB/s。所以這裡讓它自己探：從小開始，順利就加倍，
+  // 卡住就減半重來。好的路徑幾個往返就爬到上限，壞的路徑會自己收斂到過得去的大小。
+  const CHUNK = 16 * 1024;
+  const FIRST_CHUNK = CHUNK;
+  const FIRST_ACK_TIMEOUT = 15_000;
+  const WINDOW_MIN = 16 * 1024;
+  const WINDOW_MAX = 4 * 1024 * 1024;
+  const ACK_TIMEOUT = 20_000;
+  // 送出緩衝的上限。沒有這個限制時，大檔會被整個塞進瀏覽器的 WebSocket 送出緩衝
+  // （伺服器來不及消化），Chrome 會直接把連線切掉 —— 實機上拖兩個檔案就重現：
+  // 遠端留下 0 位元組的檔案、畫面顯示「連線已中斷」。
+  const HIGH_WATER = 4 * 1024 * 1024;
+  // 上傳被伺服器中止時要立刻停送。否則剩下的資料框會繼續往連線裡塞，
+  // 對方已經回到「等下一個指令」的狀態，那些框就成了雜訊。
+  uploadAborted = false;
+  uploadBytes.value = { sent: 0, total: file.size, name: file.name };
+  // 上傳完成的 `ok` 會帶著這次 `put` 的編號回來，所以先把編號留著再送資料
+  const done = new Promise((resolve, reject) => { pending.set(putId, { resolve, reject }); });
+  let sentAll = true;
+  // ⚠️ 讀檔失敗也算「送到一半放棄」。`file.slice().arrayBuffer()` 是會**丟例外**的：
+  // 檔案在拖進來之後被移走、外接磁碟斷線、iCloud 上還沒下載回本機… 都會在中途失敗。
+  // 少了這個 try，例外會直接跳出這個函式，`put_abort` 不會送出，伺服器就一直等
+  // 那些永遠不會來的位元組 —— 使用者看到的是「上傳沒反應、然後整條連線斷掉」。
+  let readError: unknown = null;
+  let ackedAny = false;
+  let firstAckResolve: (() => void) | null = null;
+  const firstAck = new Promise<void>((r) => { firstAckResolve = r; });
+  let acked = 0;
+  let ackWaiter: (() => void) | null = null;
+  // 這條連線目前敢讓多少資料在路上。整條連線共用（同一批檔案不必重新探一次）。
+  let win = pathWindow;
+  onPutAck = (bytes) => {
+    if (bytes > 0 && !ackedAny) { ackedAny = true; firstAckResolve?.(); }
+    if (bytes > acked) {
+      acked = bytes;
+      // 一路順利就把窗放大 —— 好的路徑幾個往返就爬到上限
+      if (win < WINDOW_MAX) { win = Math.min(win * 2, WINDOW_MAX); pathWindow = win; }
+      uploadBytes.value = { sent: acked, total: file.size, name: file.name };
+      ackWaiter?.();
+    }
+  };
+  /** 等到在路上的資料降到窗以下。回 false 代表等太久（對方沒再收到東西）。 */
+  const waitForWindow = (sentSoFar: number) => new Promise<boolean>((resolve) => {
+    if (sentSoFar - acked < win) { resolve(true); return; }
+    const timer = setTimeout(() => { ackWaiter = null; resolve(false); }, ACK_TIMEOUT);
+    ackWaiter = () => {
+      if (sentSoFar - acked < win) {
+        clearTimeout(timer); ackWaiter = null; resolve(true);
+      }
+    };
+  });
+  try {
+    let off = 0;
+    while (off < file.size) {
+      const step = off === 0 ? Math.min(FIRST_CHUNK, file.size) : CHUNK;
+      const buf = await file.slice(off, off + step).arrayBuffer();
+      // 等緩衝消化到水位以下再繼續送；中途斷線就別再送了
+      while (ws.bufferedAmount > HIGH_WATER) {
+        if (ws.readyState !== WebSocket.OPEN) { sentAll = false; break; }
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      if (!sentAll || uploadAborted || ws.readyState !== WebSocket.OPEN) { sentAll = false; break; }
+      ws.send(buf);
+      off += buf.byteLength;
+      if (off < file.size && !(await waitForWindow(off))) {
+        // 這個窗這條路徑吃不下 —— 減半記在連線上，讓上層重試一次
+        pathWindow = Math.max(WINDOW_MIN, Math.floor(win / 2));
+        sentAll = false;
+        readError = new Error(pathWindow < win ? "retry" : "no_ack");
+        break;
+      }
+      if (off === buf.byteLength && off < file.size) {
+        // 第一塊送出去了 —— 等伺服器說「收到了」再繼續。等不到就不必再送剩下的：
+        // 資料根本沒離開這台電腦或沒穿過中間的網路，繼續送只是把連線拖到自己死掉。
+        const ok = await Promise.race([
+          firstAck.then(() => true),
+          new Promise<boolean>((r) => setTimeout(() => r(false), FIRST_ACK_TIMEOUT)),
+        ]);
+        if (!ok) { sentAll = false; readError = new Error("no_ack"); break; }
+      }
+    }
+  } catch (e) {
+    sentAll = false;
+    readError = e;
+  }
+  if (!sentAll) {
+    // 送到一半放棄時**一定要讓伺服器知道**：它還在等剩下的位元組，我們卻若無其事
+    // 送出下一個指令 —— 伺服器讀到的就是型別不對的框。實機上這個組合會讓整條連線
+    // 直接斷掉（後端已另外補上防護，但客戶端本來就不該這樣做）。
+    send({ type: "put_abort", path });
+    // 讀不到檔案要說是讀不到，不要含糊地說「連線已中斷」—— 那會讓人去查網路，
+    // 而真正的原因在自己這台機器上。
+    if (readError instanceof Error && readError.message === "retry") {
+      const e = new Error("retry") as Error & { retry?: boolean };
+      e.retry = true;
+      throw e;
+    }
+    if (readError instanceof Error && readError.message === "no_ack") {
+      throw new Error(t("sftp.err_no_ack"));
+    }
+    if (readError !== null) throw new Error(t("sftp.unreadable_item"));
+    throw new Error(t("sftp.disconnected"));
+  }
+  await done;
+  onPutAck = null;
+  uploadBytes.value = null;
+}
+
+/** 上傳一批檔案：逐個送（同一條連線，並行只會互相排隊）。
+ *
+ *  拖資料夾進來時 `path` 會帶著子目錄，所以要**先把目錄建好再放檔案** ——
+ *  順序反過來的話每個檔案都會因為「父目錄不存在」而失敗。 */
+async function uploadFiles(picked: PickedFile[]) {
+  if (!picked.length || !ws) return;
   busy.value = true;
   const failed: string[] = [];
   try {
-    for (const [i, file] of files.entries()) {
-      uploadProgress.value = { done: i, total: files.length, name: file.name };
-      // 一個檔案失敗不該讓其餘的都不傳；最後一次講清楚是哪幾個
-      try { await putOneFile(file); } catch (e: any) {
-        failed.push(`${file.name}（${e?.message ?? String(e)}）`);
+    const base = cwd.value.replace(/\/+$/, "");
+    for (const d of dirsToCreate(picked)) {
+      // parents：缺的中間層一起建、已存在當成功，不然會收到一串假的失敗
+      try { await request({ type: "mkdir", path: `${base}/${d}`, parents: true }); } catch (e: any) {
+        failed.push(`${d}（${e?.message ?? String(e)}）`);
       }
     }
-    const ok = files.length - failed.length;
+    for (const [i, item] of picked.entries()) {
+      const file = item.file;
+      uploadProgress.value = { done: i, total: picked.length, name: item.path };
+      // 一個檔案失敗不該讓其餘的都不傳；最後一次講清楚是哪幾個
+      // 窗被調小時同一個檔案要再試一次 —— 那不是失敗，是還沒找到這條路徑的容量
+      let attempt = 0;
+      for (;;) {
+        try { await putOneFile(file, item.path); break; } catch (e: any) {
+          if (e?.retry && attempt < 4 && ws && ws.readyState === WebSocket.OPEN) {
+            attempt += 1;
+            continue;
+          }
+          failed.push(`${item.path}（${e?.message ?? String(e)}）`);
+          break;
+        }
+      }
+    }
+    const ok = picked.length - failed.length;
     if (failed.length) msg.error(t("sftp.upload_partial_fail", { ok, names: failed.join("、") }));
-    else if (files.length === 1) msg.success(t("sftp.uploaded", { name: files[0].name }));
-    else msg.success(t("sftp.uploaded_many", { n: files.length }));
+    else if (picked.length === 1) msg.success(t("sftp.uploaded", { name: picked[0].path }));
+    else msg.success(t("sftp.uploaded_many", { n: picked.length }));
     await refresh();
   } finally {
     uploadProgress.value = null;
@@ -317,7 +518,7 @@ async function uploadFiles(files: File[]) {
 
 async function onUpload(ev: Event) {
   const list = (ev.target as HTMLInputElement).files;
-  await uploadFiles(list ? Array.from(list) : []);
+  await uploadFiles(list ? Array.from(list).map((f) => ({ file: f, path: f.name })) : []);
 }
 
 // ── 拖曳上傳
@@ -342,12 +543,19 @@ async function onDrop(ev: DragEvent) {
   if (phase.value !== "connected") return;
   const dt = ev.dataTransfer;
   if (!dt) return;
-  // 資料夾拖進來時 webkitGetAsEntry().isDirectory 為真 —— 目前只收檔案，要講出來
+  // 資料夾要逐項對照 entry 來排除，**不可以用大小判斷**：macOS 交出來的資料夾
+  // `File.size` 是 256，`size > 0` 會把它當成檔案送去上傳，然後在讀取內容時失敗 ——
+  // 實機症狀是「已寫入 0/256 位元組」，而且伺服器要等滿逾時才放棄。
   const items = Array.from(dt.items ?? []);
-  const dirs = items.filter((it) => (it as any).webkitGetAsEntry?.()?.isDirectory).length;
-  const files = Array.from(dt.files ?? []).filter((f) => f.size > 0 || !dirs);
+  // ⚠️ `webkitGetAsEntry()` 必須在 await 之前就取完：`dataTransfer` 在事件處理函式
+  // 結束後就失效了，晚一步拿到的會是 null，整批東西會安靜地變成零個檔案。
+  const entries = items.map((it) => (it as any).webkitGetAsEntry?.() ?? null);
+  const files = Array.from(dt.files ?? []);
+  const { files: picked, skippedDirs: dirs, droppedOverLimit: over } =
+    await collectDroppedFiles(files, entries);
   if (dirs) msg.warning(t("sftp.drop_dirs_skipped", { n: dirs }));
-  await uploadFiles(files);
+  if (over) msg.warning(t("sftp.drop_too_many", { n: over, max: picked.length }));
+  await uploadFiles(picked);
 }
 
 // ── 名稱輸入對話框（新增資料夾 / 重新命名）
@@ -456,17 +664,22 @@ const cols = computed<DataTableColumns<SftpEntry>>(() => [
         r.is_dir ? [h(NIcon, { size: 16 }, { default: () => h(FilesIcon) })] : []),
       h("span", null, `${r.name}${r.is_link ? " ↗" : ""}`),
     ]),
-    sorter: (a, b) => Number(!!b.is_dir) - Number(!!a.is_dir)
-      || a.name.localeCompare(b.name),
+    sorter: true,
+    sortOrder: sortKey.value === "name" ? sortOrder.value : false,
   },
   { title: t("sftp.col_size"), key: "size", width: 110,
     render: (r) => (r.is_dir ? "—" : fmtSize(r.size)),
-    sorter: (a, b) => (a.size ?? -1) - (b.size ?? -1) },
+    sorter: true, sortOrder: sortKey.value === "size" ? sortOrder.value : false },
   { title: t("sftp.col_mtime"), key: "mtime", width: 170,
     render: (r) => (r.mtime ? fmtDateTime(new Date(r.mtime * 1000).toISOString()) : "—"),
-    sorter: (a, b) => (a.mtime ?? 0) - (b.mtime ?? 0) },
+    sorter: true, sortOrder: sortKey.value === "mtime" ? sortOrder.value : false },
   { title: t("sftp.col_mode"), key: "mode", width: 120,
-    render: (r) => h("span", { class: "mono" }, r.mode ?? "—") },
+    // 權限位元要等寬才對得齊（drwxr-xr-x 每個位置都有意義，錯位就得一個字一個字數）。
+    // 這裡走 inline style 而非 class：render function 產生的節點在表格內部，拿不到本元件的
+    // scoped 樣式作用域 —— 之前掛 class="mono" 完全沒生效就是這個原因。
+    render: (r) => h("span", {
+      style: "font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: nowrap;",
+    }, r.mode ?? "—") },
   {
     title: t("common.actions"), key: "actions", width: 230,
     render: (r) => h(NSpace, { size: 4, wrap: false }, () => [
@@ -483,12 +696,55 @@ const cols = computed<DataTableColumns<SftpEntry>>(() => [
   },
 ]);
 
+// ── 排序：自己做，不交給表格的 sorter
+// 因為「資料夾優先」必須在升冪／降冪**之外**成立 —— 寫進比較函式的話，切成降冪
+// 會連分組一起反轉，資料夾跑到最後面。表格的 sorter 拿不到方向，所以改成受控排序。
+const sortKey = ref<SortKey>("name");
+const sortOrder = ref<SortOrder>("ascend");
+const dirsFirst = ref(true);          // 預設與檔案總管一致
+
+const sortModeOptions = computed(() => [
+  { label: t("sftp.sort_dirs_first"), value: "dirs" },
+  { label: t("sftp.sort_mixed"), value: "mixed" },
+]);
+
+/** 選中值前面掛排序 icon —— 工具列上其他控制項都是「icon + 文字」，少一個看得出來。 */
+function renderSortTag({ option }: { option: { label?: unknown } }) {
+  return h("span", { style: "display:flex;align-items:center;gap:6px;" }, [
+    h(NIcon, null, { default: () => h(SortAscIcon) }),
+    String(option?.label ?? ""),
+  ]);
+}
+
+function onSorterChange(s: { columnKey?: string | number; order?: SortOrder } | null) {
+  if (!s || !s.order) { sortOrder.value = false; return; }
+  sortKey.value = String(s.columnKey ?? "name") as SortKey;
+  sortOrder.value = s.order;
+}
+
+async function setDirsFirst(v: boolean) {
+  dirsFirst.value = v;
+  // 存進使用者偏好（跨裝置），與每頁筆數同一個機制；失敗不影響當下操作
+  try { await updatePreferences({ sftp_sort_dirs_first: v }); } catch { /* 靜默 */ }
+}
+
+onMounted(async () => {
+  try {
+    const p = await getPreferences();
+    if (typeof p.sftp_sort_dirs_first === "boolean") dirsFirst.value = p.sftp_sort_dirs_first;
+  } catch { /* 讀不到就用預設 */ }
+});
+
 // ── 篩選：只篩目前這一頁的清單（遠端不重撈，因為列出來的就是全部了）
 const filterText = ref("");
 const shownEntries = computed(() => {
   const q = filterText.value.trim().toLowerCase();
-  if (!q) return entries.value;
-  return entries.value.filter((e) => e.name.toLowerCase().includes(q));
+  const base = q
+    ? entries.value.filter((e) => e.name.toLowerCase().includes(q))
+    : entries.value;
+  return sortEntries(base, {
+    key: sortKey.value, order: sortOrder.value, dirsFirst: dirsFirst.value,
+  });
 });
 
 // 目錄很大時分頁顯示 —— 原本只能截斷後說「只顯示一部分」，現在整份都拿得到、翻頁看
@@ -758,6 +1014,14 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
             <n-icon :size="24"><CancelIcon /></n-icon>
             <span class="sftp-offline-title">{{ t("sftp.offline_title") }}</span>
             <span class="sftp-offline-hint">{{ t("sftp.offline_hint") }}</span>
+            <span v-if="uploadBytes" class="sftp-offline-code">
+              {{ t("sftp.offline_upload", {
+                name: uploadBytes.name,
+                sent: fmtBytes(uploadBytes.sent), total: fmtBytes(uploadBytes.total) }) }}
+            </span>
+            <span v-if="closeCode !== null" class="sftp-offline-code">
+              {{ t("sftp.offline_code", { code: closeCode }) }}
+            </span>
             <n-button size="small" type="primary" @click="reconnect">
               {{ t("ssh.reconnect") }}
             </n-button>
@@ -794,6 +1058,16 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
                  :placeholder="t('sftp.filter_ph')">
           <template #prefix><n-icon><FilterIcon /></n-icon></template>
         </n-input>
+        <!-- 排序方式：兩派都有道理（檔案總管 vs ls），所以讓使用者自己選；存進偏好跨裝置 -->
+        <n-tooltip trigger="hover">
+          <template #trigger>
+            <!-- 尺寸與 icon 都比照旁邊的篩選框：工具列上少一個 icon、矮一截都看得出來 -->
+            <n-select :value="dirsFirst ? 'dirs' : 'mixed'" style="width: 190px"
+                      :options="sortModeOptions" :render-tag="renderSortTag"
+                      @update:value="(v: string) => setDirsFirst(v === 'dirs')" />
+          </template>
+          {{ t("sftp.sort_mode_hint") }}
+        </n-tooltip>
       </n-space>
 
       <!-- 勾選後才出現的批次列：沒選東西時不佔版面，也不會讓人誤按 -->
@@ -823,6 +1097,12 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
       </n-space>
 
       <!-- 多檔上傳時講出進度：不然畫面只是卡著，不知道還有幾個 -->
+      <div v-if="uploadBytes && phase === 'connected'" class="sftp-upload-note">
+        {{ t("sftp.upload_bytes", {
+          name: uploadBytes.name,
+          sent: fmtBytes(uploadBytes.sent), total: fmtBytes(uploadBytes.total),
+          pct: Math.floor((uploadBytes.sent / Math.max(1, uploadBytes.total)) * 100) }) }}
+      </div>
       <div v-if="uploadProgress && uploadProgress.total > 1" class="sftp-filter-note">
         {{ t("sftp.uploading_progress", {
           done: uploadProgress.done + 1, total: uploadProgress.total, name: uploadProgress.name }) }}
@@ -913,7 +1193,8 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
                       :checked-row-keys="checkedKeys"
                       :pagination="pagination"
                       :bordered="false" flex-height style="height:100%" virtual-scroll
-                      @update:checked-row-keys="(k: any) => (checkedKeys = k as string[])" />
+                      @update:checked-row-keys="(k: any) => (checkedKeys = k as string[])"
+                      @update:sorter="onSorterChange" />
       </div>
       </div>
     </div>
@@ -994,6 +1275,11 @@ html[data-theme="dark"] .sftp-panel { background: #10161f; border-color: rgba(20
   max-width: 420px; text-align: center;
 }
 .sftp-offline-title { font-weight: 600; }
+.sftp-offline-code {
+  font-size: 12px;
+  opacity: 0.65;
+  font-family: var(--jt-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+}
 .sftp-offline-hint { font-size: 12.5px; opacity: .75; line-height: 1.5; }
 :deep(.n-card > .n-card-header) { display: flex; align-items: center; padding-top: 12px; padding-bottom: 12px; }
 .sftp-saved-row { display: flex; align-items: center; margin-bottom: 18px; }
@@ -1009,4 +1295,7 @@ html[data-theme="dark"] .sftp-panel { background: #10161f; border-color: rgba(20
   background: rgba(32, 128, 240, .08); }
 .sftp-batch-count { font-size: 13px; font-weight: 500; }
 .sftp-filter-note { font-size: 12px; opacity: .7; margin-bottom: 6px; }
+/* 上傳進度自己一個 class：跟篩選提示共用時，「畫面上有幾個提示」這種
+   斷言會同時命中兩個，測試會以 strict mode 失敗（實際踩過）。 */
+.sftp-upload-note { font-size: 12px; opacity: .7; margin-bottom: 6px; }
 </style>

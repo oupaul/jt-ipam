@@ -191,14 +191,32 @@ async def get_certificate(
 async def update_certificate(
     cert_id: uuid.UUID,
     payload: CertificateUpdate,
+    user: CurrentUser,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> CertificateRead:
     obj = await session.get(Certificate, cert_id)
     if obj is None:
         raise HTTPException(404, detail="Not found")
     data = payload.model_dump(exclude_unset=True)
+    # PATCH 的 None 意思是「不修改」，所以「改回沿用全域預設」要有自己的旗標，
+    # 否則使用者一旦設過天數就再也回不去預設。
+    if data.pop("clear_expiry_warn_days", False):
+        obj.expiry_warn_days = None
+        data["expiry_warn_days"] = None
+    else:
+        data.pop("clear_expiry_warn_days", None)
     for k, v in data.items():
         setattr(obj, k, v)
+    # 憑證的設定異動（名稱／範圍／來源…）同樣要留紀錄：上傳與刪除都有記，改設定卻沒有
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="certificate", object_id=str(obj.id), action="update",
+        diff={k: str(v) for k, v in data.items()},   # 不含任何金鑰內容
+        request_id=getattr(request.state, "request_id", None),
+    )
     await session.commit()
     await session.refresh(obj)  # commit 後 updated_at(onupdate)過期 → refresh 免 model_validate 同步 lazy IO 500
     return await _to_read(session, obj)

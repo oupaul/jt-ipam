@@ -94,6 +94,7 @@ const routes: RouteRecordRaw[] = [
       { path: "zyxel-fw", name: "zyxel_fw", component: () => import("@/views/ZyxelFirewallView.vue") },
       { path: "paloalto-fw", name: "paloalto_fw", component: () => import("@/views/PaloAltoFirewallView.vue") },
       { path: "wazuh", name: "wazuh", component: () => import("@/views/WazuhAdmin.vue"), meta: { admin: true } },
+      { path: "event-rules", name: "event_rules", component: () => import("@/views/EventRules.vue"), meta: { admin: true } },
       { path: "zabbix", name: "zabbix", component: () => import("@/views/ZabbixAdmin.vue"), meta: { admin: true } },
       { path: "plugins", name: "plugins", component: () => import("@/views/PluginsAdmin.vue"), meta: { admin: true } },
       // Phase 3
