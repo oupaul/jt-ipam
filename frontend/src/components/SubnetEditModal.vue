@@ -30,8 +30,9 @@ import { listScanAgents } from "@/api/phase3";
 import { listVLANs, listVRFs, listLocations, type VLAN, type VRF } from "@/api/basic";
 import type { Subnet, Section } from "@/types";
 import { EditIcon, PlusIcon, SaveIcon, CancelIcon } from "@/icons";
-import { SUDO } from "@/utils/sudo";
+import { probeInstall } from "@/utils/probeInstall";
 import { useCustomers } from "@/composables/useCustomers";
+import { listJumpHosts } from "@/api/jumpHosts";
 import { useSubnetTree } from "@/composables/useSubnetTree";
 import { useScanProbes, probeLabel } from "@/api/scanProbes";
 
@@ -50,6 +51,16 @@ const { t, locale } = useI18n();
 const msg = useMessage();
 const { catalog } = useScanProbes();
 const { options: customerOptions, ensureLoaded: ensureCustomerOptsLoaded } = useCustomers();
+// 主控台的連線出口（issue #24）。跳板清單只有 admin 讀得到 —— 讀不到就不顯示這個欄位，
+// 而不是讓一般使用者看到一個永遠空的下拉。
+const jumpOptions = ref<{ label: string; value: string }[]>([]);
+async function loadJumpOptions() {
+  try {
+    jumpOptions.value = (await listJumpHosts()).items
+      .filter((j) => j.enabled)
+      .map((j) => ({ label: `${j.name}（${j.username}@${j.host}:${j.port}）`, value: j.id }));
+  } catch { jumpOptions.value = []; }
+}
 const { bump: bumpSubnetTree } = useSubnetTree();
 
 const showModel = computed({
@@ -96,18 +107,6 @@ function probeNotEnabledOnAgent(key: string): boolean {
   return !!en && !en.has(key);
 }
 // 探測所需的工具 / 安裝指令（與掃描代理頁一致）
-const PROBE_INSTALL: Record<string, string> = {
-  os: `${SUDO} apt install nmap`,
-  ports: `${SUDO} apt install nmap`,
-  netbios: `${SUDO} apt install samba-common-bin   # 提供 nmblookup`,
-  mdns: `${SUDO} apt install avahi-utils   # 提供 avahi-resolve`,
-};
-function probeInstall(key: string): string {
-  return (
-    PROBE_INSTALL[key] ??
-    "請確認掃描代理主機具備該探測所需的系統工具與權限（例如 root / cap_net_raw、可連到 DNS 等）。"
-  );
-}
 const locationOpts = ref<{ label: string; value: string }[]>([]);
 
 const sectionOpts = computed(() => sections.value.map((s) => ({ label: s.name, value: s.id })));
@@ -126,6 +125,7 @@ const form = ref({
   vrf_id: null as string | null,
   master_subnet_id: null as string | null,
   customer_id: null as string | null,
+  jump_host_id: null as string | null,
   is_pool: false,
   is_full: false,
   ai_audit_enabled: true,
@@ -182,6 +182,7 @@ async function loadAuxOpts() {
     allSubnets.value = res.items;
   } catch { /* silent */ }
   void ensureCustomerOptsLoaded();
+  void loadJumpOptions();
 }
 
 function resetForm() {
@@ -195,6 +196,7 @@ function resetForm() {
       vrf_id: r.vrf_id,
       master_subnet_id: (r as any).master_subnet_id ?? null,
       customer_id: r.customer_id ?? null,
+      jump_host_id: r.jump_host_id ?? null,
       is_pool: r.is_pool, is_full: r.is_full,
       ai_audit_enabled: r.ai_audit_enabled ?? true,
       anomaly_enabled: r.anomaly_enabled ?? true,
@@ -214,6 +216,7 @@ function resetForm() {
       cidr: "",
       description: "",
       vlan_id: null, vrf_id: null, master_subnet_id: null, customer_id: null,
+      jump_host_id: null,
       is_pool: false, is_full: false,
       ai_audit_enabled: true, anomaly_enabled: true,
       scan_enabled: false, scan_method: ["icmp"],
@@ -256,6 +259,7 @@ async function submit() {
         vrf_id: form.value.vrf_id ?? null,
         master_subnet_id: form.value.master_subnet_id ?? null,
         customer_id: form.value.customer_id ?? null,
+        jump_host_id: form.value.jump_host_id ?? null,
         is_pool: form.value.is_pool,
         is_full: form.value.is_full,
         ai_audit_enabled: form.value.ai_audit_enabled,
@@ -277,6 +281,7 @@ async function submit() {
         vlan_id: form.value.vlan_id ?? null,
         vrf_id: form.value.vrf_id ?? null,
         customer_id: form.value.customer_id ?? null,
+        jump_host_id: form.value.jump_host_id ?? null,
         is_pool: form.value.is_pool, is_full: form.value.is_full,
         ai_audit_enabled: form.value.ai_audit_enabled,
         anomaly_enabled: form.value.anomaly_enabled,
@@ -314,7 +319,7 @@ async function submit() {
     </template>
     <n-form label-placement="left" label-width="120">
       <n-form-item label="CIDR" required>
-        <n-input v-model:value="form.cidr" placeholder="192.168.1.0/24"
+        <n-input v-model:value="form.cidr" placeholder="198.51.100.0/24"
                  :disabled="!!editing" />
       </n-form-item>
       <n-form-item v-if="!editing" :label="t('subnets.allow_overlap')">
@@ -339,6 +344,15 @@ async function submit() {
       <n-form-item :label="t('cols.unit')">
         <n-select v-model:value="form.customer_id" :options="customerOptions"
                   :placeholder="t('common.not_specified')" clearable filterable />
+      </n-form-item>
+      <n-form-item v-if="jumpOptions.length" :label="t('jump_hosts.exit')">
+        <div style="width: 100%">
+          <n-select v-model:value="form.jump_host_id" :options="jumpOptions"
+                    :placeholder="t('jump_hosts.exit_direct')" clearable filterable />
+          <div style="font-size: 11px; opacity: .7; margin-top: 4px">
+            {{ t("jump_hosts.exit_hint") }}
+          </div>
+        </div>
       </n-form-item>
       <n-form-item :label="t('subnets.gateway')">
         <n-input v-model:value="form.gateway" :placeholder="t('subnets.gateway_ph')" />
@@ -412,7 +426,7 @@ async function submit() {
                       </div>
                       <code style="display:block; padding:6px 8px; border-radius:4px;
                                    background:rgba(0,0,0,.05); font-size:12px;
-                                   white-space:pre-wrap; word-break:break-all">{{ probeInstall(p.key) }}</code>
+                                   white-space:pre-wrap; word-break:break-all">{{ probeInstall(p.key, t) }}</code>
                     </div>
                   </n-popover>
                 </n-checkbox>

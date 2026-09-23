@@ -34,10 +34,12 @@ from app.core.db import SessionLocal, get_session
 from app.core.rate_limit import _redis_client
 from app.core.security import envelope_decrypt
 from app.core.tickets import take_once
+from app.core.ui_error import detail_of, ui_detail
 from app.core.ws_timeouts import HANDSHAKE_TIMEOUT, WsTimeout, receive_text_within
 from app.models.address import IPAddress
 from app.models.ssh_credential import SSHCredential
 from app.models.user import User
+from app.services import console_route
 from app.services.permission import can_use_vnc
 
 try:  # 與 RDP 同一個選用 aardwolf
@@ -163,7 +165,7 @@ async def issue_vnc_ticket(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     if not VNC_AVAILABLE:
-        raise HTTPException(status_code=503, detail="VNC 功能未安裝（缺 aardwolf 選用相依）")
+        raise HTTPException(status_code=503, detail=ui_detail("console_vnc_not_installed", "VNC 功能未安裝（缺 aardwolf 選用相依）"))
     from app.core.rate_limit import limit_per_ip
 
     await limit_per_ip(request, name="vnc")
@@ -172,7 +174,7 @@ async def issue_vnc_ticket(
     if ip is None:
         raise HTTPException(status_code=404, detail="Address not found")
     if not await can_use_vnc(session, user=user, ip=ip):
-        raise HTTPException(status_code=403, detail="無 VNC 連線權限")
+        raise HTTPException(status_code=403, detail=ui_detail("console_vnc_forbidden", "無 VNC 連線權限"))
 
     saved = (await session.execute(
         select(SSHCredential.id).where(
@@ -270,6 +272,8 @@ async def vnc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
             return
         allowed = await can_use_vnc(s, user=user, ip=ip)
         host = str(ip.ip).split("/")[0]
+        # 連線出口：直連或經由跳板（IP 覆寫 > 子網路 > 直連）
+        route = await console_route.resolve_route(s, ip)
     if not allowed:
         await websocket.close(code=4403)
         return
@@ -282,32 +286,34 @@ async def vnc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
 
     cap = get_settings().rdp_max_sessions
     if cap and _active_sessions >= cap:
-        await send({"type": "error", "code": "too_many", "message": f"連線已達上限（{cap}）"})
+        await send({"type": "error", **ui_detail("console_vnc_too_many",
+                                      f"連線已達上限（{cap}）", max=cap)})
         await websocket.close()
         return
 
     conn = None
     counted = False
+    tunnel: console_route.Tunnel | None = None
     started: datetime | None = None
     try:
         # 連上來卻不送設定的客戶端不可以無限期佔住這條連線（見 core/ws_timeouts）
         try:
             cfg = json.loads(await receive_text_within(
-                websocket, HANDSHAKE_TIMEOUT, what="連線設定"))
+                websocket, HANDSHAKE_TIMEOUT, what="config"))
         except WsTimeout as exc:
             with contextlib.suppress(Exception):
                 await websocket.send_text(json.dumps(
-                    {"type": "error", "code": "handshake_timeout", "message": str(exc)},
+                    {"type": "error", **detail_of(exc, "console_handshake_timeout")},
                     ensure_ascii=False))
             await websocket.close(code=4408)
             return
         if cfg.get("type") != "config":
-            await send({"type": "error", "code": "bad_config", "message": "缺少連線設定"})
+            await send({"type": "error", **ui_detail("console_no_config", "缺少連線設定")})
             await websocket.close()
             return
         port = int(cfg.get("port") or _DEFAULT_PORT)
         if not (1 <= port <= 65535):
-            await send({"type": "error", "code": "bad_config", "message": "連接埠須為 1–65535"})
+            await send({"type": "error", **ui_detail("console_bad_port", "連接埠須為 1–65535")})
             await websocket.close()
             return
         password = cfg.get("password") or ""
@@ -323,7 +329,8 @@ async def vnc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
                     cred = None
                 if (cred is None or cred.owner_user_id != user_id or cred.protocol != "vnc"
                         or (cred.target_ip_id is not None and str(cred.target_ip_id) != str(address_id))):
-                    await send({"type": "error", "code": "cred_not_found", "message": "找不到可用的已存密碼"})
+                    await send({"type": "error",
+                                **ui_detail("console_no_saved_password", "找不到可用的已存密碼")})
                     await websocket.close()
                     return
                 used_cred_id = cred.id
@@ -331,7 +338,8 @@ async def vnc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
             try:
                 password = envelope_decrypt(secrets_enc["password"], aad=cred_aad(user_id, "password"))
             except Exception:
-                await send({"type": "error", "code": "bad_key", "message": "已存密碼解密失敗"})
+                await send({"type": "error",
+                            **ui_detail("console_saved_password_decrypt", "已存密碼解密失敗")})
                 await websocket.close()
                 return
             async with SessionLocal() as s:
@@ -345,19 +353,32 @@ async def vnc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
         io.video_out_format = VIDEO_FORMAT.PNG
         io.clipboard_use_pyperclip = False
 
+        # 經跳板時把目標換成本機轉發埠（直連時 open_route 是零成本的）
+        try:
+            tunnel = await console_route.open_route(route, host, port)
+        except console_route.JumpHostError as exc:
+            await send({"type": "error", **detail_of(exc, "jump_failed")})
+            await websocket.close()
+            return
+        if tunnel.via:
+            await send({"type": "status", "state": "via_jump", "via": tunnel.via})
+        dial_host, dial_port = tunnel.host, tunnel.port
+
+        # 連接埠寫在 URL 裡（`create_connection_newtarget()` 只換 ip/hostname，不動埠）
         if password:
-            url = f"vnc+plain-password://{quote(password, safe='')}@{host}:{port}/?timeout={int(_CONNECT_TIMEOUT)}"
+            url = (f"vnc+plain-password://{quote(password, safe='')}@{dial_host}:{dial_port}/"
+                   f"?timeout={int(_CONNECT_TIMEOUT)}")
         else:
-            url = f"vnc://{host}:{port}/?timeout={int(_CONNECT_TIMEOUT)}"
+            url = f"vnc://{dial_host}:{dial_port}/?timeout={int(_CONNECT_TIMEOUT)}"
         del password
 
         factory = RDPConnectionFactory.from_url(url, io)
-        conn = factory.create_connection_newtarget(host, io)
+        conn = factory.create_connection_newtarget(dial_host, io)
         try:
             async with asyncio.timeout(_CONNECT_TIMEOUT):
                 _result, err = await conn.connect()
         except TimeoutError:
-            await send({"type": "error", "code": "connect_failed", "message": "連線逾時"})
+            await send({"type": "error", **ui_detail("console_connect_timeout", "連線逾時")})
             await websocket.close()
             return
         if err is not None:
@@ -376,6 +397,7 @@ async def vnc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
             actor_user_id=str(user_id), actor_ip=actor_ip, object_id=str(address_id),
             action="vnc.session_open",
             diff={"host": host, "port": port, "size": f"{width}x{height}",
+                  "via_jump_host": tunnel.via,
                   "credential_id": str(used_cred_id) if used_cred_id else None},
         )
         await send({"type": "status", "state": "connected", "width": width, "height": height})
@@ -386,11 +408,14 @@ async def vnc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
         pass
     except Exception:
         with contextlib.suppress(Exception):
-            await send({"type": "error", "code": "internal", "message": "連線發生未預期錯誤"})
+            await send({"type": "error", **ui_detail("console_internal", "連線發生未預期錯誤")})
     finally:
         if conn is not None:
             with contextlib.suppress(Exception):
                 await conn.terminate()
+        # 通道與 WS session 同生共死（連線收掉之後才還轉發）
+        if tunnel is not None:
+            await tunnel.aclose()
         if counted:
             _active_sessions -= 1
             if started is not None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Annotated, Any
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from sqlalchemy import func, or_, select
@@ -17,6 +18,7 @@ from app.api.v1.dependencies import (
 )
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.ui_error import detail_of
 from app.models.device import Device
 from app.models.librenms import LibreNMSDevice
 from app.models.vlan import VLAN, DeviceVLAN
@@ -25,6 +27,30 @@ from app.schemas.device import DeviceCreate, DeviceRead, DeviceUpdate
 from app.services.custom_field import CustomFieldError, validate_custom_fields
 
 router = APIRouter(prefix="/devices", tags=["devices"])
+
+
+def _web_base(api_url: str | None) -> str | None:
+    """把整合的 API 網址整理成 web 主控台的基底：去掉 /api2/json、/api/v0、/api 與結尾斜線。"""
+    if not api_url:
+        return None
+    base = api_url.rstrip("/")
+    for suf in ("/api2/json", "/api/v0", "/api"):
+        if base.endswith(suf):
+            base = base[: -len(suf)]
+            break
+    return base.rstrip("/") or None
+
+
+def _drop_port(url: str | None) -> str | None:
+    """去掉網址的埠（Wazuh：API 在 :55000，儀表板在同主機的 443）。"""
+    if not url:
+        return None
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if not host:
+        return None
+    netloc = f"[{host}]" if ":" in host else host
+    return urlunsplit((parts.scheme or "https", netloc, "", "", "")).rstrip("/")
 
 
 class DeviceVLANRead(StrictModel):
@@ -52,11 +78,16 @@ async def get_device_librenms(
     )).scalar_one_or_none()
     if r is None:
         return None
+    from app.models.librenms import LibreNMSInstance
+    inst = await session.get(LibreNMSInstance, r.instance_id)
+    web = _web_base(inst.api_url) if inst else None
+    url = f"{web}/device/device={r.legacy_device_id}" if web else None
     return {
         "hostname": r.hostname, "sysname": r.sysname, "primary_ip": str(r.primary_ip) if r.primary_ip else None,
         "hardware": r.hardware, "os": r.os, "version": r.version, "serial": r.serial,
         "uptime": r.uptime, "status": r.status,
         "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+        "url": url,
     }
 
 
@@ -88,7 +119,7 @@ async def get_device_integrations(
         if pr:
             ip_ids.append(pr.id)
             ip_strs.append(str(pr.ip).split("/")[0])
-    out: dict[str, Any] = {"wazuh": None, "vm": None}
+    out: dict[str, Any] = {"wazuh": None, "vm": None, "ocs": None}
     if not ip_ids:
         return out
     wa = (await session.execute(
@@ -100,12 +131,15 @@ async def get_device_integrations(
         )).scalar_one_or_none()
     if wa is not None:
         inst = await session.get(WazuhInstance, wa.instance_id)
+        # Wazuh 儀表板與 API 是不同服務：API 在 :55000，儀表板在同主機的 443。去掉埠即得。
+        dash = _drop_port(inst.api_url) if inst else None
+        wz_url = (f"{dash}/app/endpoints-summary#/agents?tab=welcome&agent={wa.agent_id}"
+                  if dash and wa.agent_id else None)
         out["wazuh"] = {
-            "agent_id": wa.agent_id, "name": wa.name,
+            "agent_id": wa.agent_id, "name": wa.name, "url": wz_url,
             "ip": str(wa.ip) if wa.ip else None, "status": wa.status,
             "os_platform": wa.os_platform, "os_version": wa.os_version,
             "agent_version": wa.agent_version, "group": wa.group,
-            "cve_critical": wa.cve_critical_count, "cve_high": wa.cve_high_count,
             # 資安組態評估（SCA）—— 目前唯一拿得到的資安體質指標
             "sca_policy": wa.sca_policy, "sca_score": wa.sca_score,
             "sca_pass": wa.sca_pass, "sca_fail": wa.sca_fail,
@@ -119,10 +153,50 @@ async def get_device_integrations(
     )).scalar_one_or_none()
     if vm is not None:
         cl = await session.get(VirtCluster, vm.cluster_id)
+        # Proxmox 深連結：叢集任一節點的 web UI（:8006）都能選到該 guest。
+        vm_url = None
+        if vm.legacy_vmid and (cl is None or (cl.type or "proxmox") == "proxmox"):
+            from app.models.virt import ProxmoxInstance
+            pinst = (await session.execute(
+                select(ProxmoxInstance).where(ProxmoxInstance.cluster_id == vm.cluster_id).limit(1)
+            )).scalar_one_or_none()
+            pbase = _web_base(pinst.api_url) if pinst else None
+            if pbase:
+                kind = "lxc" if (vm.kind == "ct") else "qemu"
+                vm_url = f"{pbase}/#v1:0:={kind}%2F{vm.legacy_vmid}"
         out["vm"] = {
             "name": vm.name, "node": vm.node, "status": vm.status,
             "vcpus": vm.vcpus, "memory_mb": vm.memory_mb,
-            "cluster": cl.name if cl else None,
+            "cluster": cl.name if cl else None, "url": vm_url,
+        }
+    # OCS Inventory：OCS 沒有自己的每台記錄表，是**透過網卡 MAC** 比對到既有 IP，再把資料補進
+    # 該 IP（作業系統／盤點時間／標籤／代理版本／備註／systemid）與裝置（序號／型號／廠牌）。
+    # 以「有 IP 被 OCS 盤點過」（ocs_id / os_ocs / last_seen_ocs 任一非空）當作此裝置有 OCS 資料。
+    ocs_row = (await session.execute(
+        select(IPAddress.os_ocs, IPAddress.last_seen_ocs, IPAddress.ocs_id,
+               IPAddress.ocs_tag, IPAddress.ocs_agent, IPAddress.ocs_notes)
+        .where(IPAddress.id.in_(ip_ids),
+               or_(IPAddress.os_ocs.isnot(None), IPAddress.last_seen_ocs.isnot(None),
+                   IPAddress.ocs_id.isnot(None)))
+        .order_by(IPAddress.last_seen_ocs.desc().nullslast())
+        .limit(1)
+    )).first()
+    if ocs_row is not None:
+        from app.models.ocs import OcsServer
+        srv = (await session.execute(
+            select(OcsServer).where(OcsServer.base_url.isnot(None))
+            .order_by(OcsServer.enabled.desc()).limit(1)
+        )).scalar_one_or_none()
+        ocs_url = None
+        if srv and srv.base_url and ocs_row.ocs_id is not None:
+            ocs_url = (f"{srv.base_url.rstrip('/')}/ocsreports/index.php"
+                       f"?function=computer&systemid={ocs_row.ocs_id}")
+        out["ocs"] = {
+            "os": ocs_row.os_ocs,
+            "last_inventory": ocs_row.last_seen_ocs.isoformat() if ocs_row.last_seen_ocs else None,
+            "serial": dev.serial, "model": dev.model, "vendor": dev.vendor,
+            "tag": ocs_row.ocs_tag, "agent": ocs_row.ocs_agent,
+            "notes": ocs_row.ocs_notes or [], "url": ocs_url,
         }
     return out
 
@@ -444,7 +518,7 @@ async def create_device(
             session, object_type="device", payload=payload.custom_fields
         )
     except CustomFieldError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=detail_of(exc, "custom_field_error")) from exc
     data = payload.model_dump()
     data["custom_fields"] = cf or None
     obj = Device(**data)
@@ -454,10 +528,12 @@ async def create_device(
         try:
             await assert_placement_ok(
                 session, rack_id=obj.rack_id, u_position=obj.u_position,
-                u_size=obj.u_size, rack_face=obj.rack_face, rack_side=obj.rack_side,
+                u_size=obj.u_size, rack_face=obj.rack_face, rack_slot=obj.rack_slot,
+                rack_slot_span=obj.rack_slot_span,
+                rack_vslot=obj.rack_vslot, rack_vslot_span=obj.rack_vslot_span,
             )
         except RackPlacementError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=detail_of(exc, "rack_placement_error")) from exc
     session.add(obj)
     await session.flush()
     await append_audit(
@@ -494,7 +570,7 @@ async def update_device(
                 session, object_type="device", payload=changes["custom_fields"]
             ) or None
         except CustomFieldError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=detail_of(exc, "custom_field_error")) from exc
     for k, v in changes.items():
         setattr(obj, k, v)
     # 放進機櫃時先防呆：U 位不可越界或與其他裝置（同安裝方向）重疊
@@ -503,11 +579,13 @@ async def update_device(
         try:
             await assert_placement_ok(
                 session, rack_id=obj.rack_id, u_position=obj.u_position,
-                u_size=obj.u_size, rack_face=obj.rack_face, rack_side=obj.rack_side,
+                u_size=obj.u_size, rack_face=obj.rack_face, rack_slot=obj.rack_slot,
+                rack_slot_span=obj.rack_slot_span,
+                rack_vslot=obj.rack_vslot, rack_vslot_span=obj.rack_vslot_span,
                 exclude_device_id=obj.id,
             )
         except RackPlacementError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=detail_of(exc, "rack_placement_error")) from exc
     # 設了主要 IP → 同時把該 IP 的 device_id 指回本裝置（雙向連結，IP 清單/拓樸才接得起來）
     if changes.get("primary_ip_id"):
         from app.models.address import IPAddress

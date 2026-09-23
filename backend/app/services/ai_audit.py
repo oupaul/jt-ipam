@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import asyncio
-import calendar
 import hashlib
 import ipaddress
 import json
@@ -24,7 +23,7 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -39,6 +38,10 @@ from app.models.subnet import Subnet
 from app.models.user import User
 from app.services.arp_precedence import normalize_mac
 from app.services.permission import visible_ids
+
+# 排程判斷住在 `services/schedule.py`（巡檢與異常偵測共用一份）。這裡再匯出，
+# 既有的 `from app.services.ai_audit import due` 與測試不必跟著改。
+from app.services.schedule import due  # noqa: F401
 from app.services.system_config import (
     get_ai_audit_last_run,
     get_llm_config,
@@ -270,6 +273,7 @@ _LANGUAGES = {
         "特別注意這些對照，寫錯會一眼看出不是台灣的產品：" + _ZH_TW_TERMS
     ),
     "en-US": "English",
+    "ja-JP": "Japanese（日本語。です・ます調で、専門用語はカタカナまたは英語のまま）",
 }
 
 
@@ -686,6 +690,7 @@ async def reconcile_findings(
                 AIFinding.status == "dismissed", AIFinding.fingerprint.is_not(None))
         )).all()
     }
+    dismissed_by_cat = await dismissed_subjects(session)
     existing = {
         f.fingerprint: f for f in (await session.execute(
             select(AIFinding).where(AIFinding.status == "open"))
@@ -701,6 +706,11 @@ async def reconcile_findings(
         seen.add(fp)
         if fp in dismissed_fps:
             continue          # 使用者判斷過是誤報 → 不再開啟
+        subj = subjects(it)
+        if subj and subj <= dismissed_by_cat.get(it.get("category") or "", set()):
+            # 這條講的每一台，使用者都已經在同一個分類下忽略過了 → 不要再開一筆。
+            # **有新對象時仍然會出現**（那是新資訊，不是重複），這正是想要的行為。
+            continue
         cur = existing.get(fp)
         if cur is not None:
             # 同一件事還在：更新敘述（模型可能改寫過），但保留原本的發現時間
@@ -723,21 +733,63 @@ async def reconcile_findings(
     return kept
 
 
-def fingerprint(item: dict[str, Any]) -> str:
-    """「同一件事」的指紋：分類＋依據資料裡的 IP 清單。
+def subjects(item: dict[str, Any]) -> set[str]:
+    """這條發現「在講哪些對象」——依據資料裡的位址，正規化後的集合。
 
-    刻意**不用標題**：模型每次都會重新措辭（「重複的紀錄」／「重複的 IP 位址紀錄」），
-    用標題比對等於幾乎每次都比不中，忽略過的東西照樣跳回來。位址清單穩定得多。
-
-    沒有 IP 可以指的發現退回用標題 —— 總比完全沒有指紋好。
+    只留位址：依據資料裡也會混進主機名稱與網段，那些每次措辭都不同，
+    拿來當識別只會讓同一件事每次都長得不一樣。
     """
     ev = item.get("evidence") or {}
     ips = ev.get("ips") if isinstance(ev, dict) else None
-    if isinstance(ips, list) and ips:
-        key = f"{item.get('category', '')}|" + ",".join(sorted(str(x).strip() for x in ips))
+    out: set[str] = set()
+    for raw in (ips or []):
+        text = str(raw).strip()
+        if not text or "/" in text:          # 網段不算對象（它是範圍，不是那台機器）
+            continue
+        try:
+            out.add(str(ipaddress.ip_address(text)))
+        except ValueError:
+            continue                          # 主機名稱之類的跳過
+    return out
+
+
+def fingerprint(item: dict[str, Any]) -> str:
+    """「同一件事」的指紋：分類＋依據資料裡的位址集合。
+
+    刻意**不用標題**：模型每次都會重新措辭（「重複的紀錄」／「重複的 IP 位址紀錄」），
+    用標題比對等於幾乎每次都比不中，忽略過的東西照樣跳回來。
+
+    ⚠️ 但光靠這個指紋**不夠**（2026-09-05 使用者回報「忽略了又出現，只好一直按忽略」）：
+    模型每次引用的位址是**不同的子集** —— 實機上同一件「IPMI 在服務網段」被拆成五筆，
+    分別引用 `{1.60}`、`{1.46}`、`{1.60,1.46}`、`{1.74,1.60,1.54}`。集合不同 → 指紋不同 →
+    忽略當然帶不過去。所以真正讓忽略生效的是 `dismissed_subjects()` 的**逐對象**比對，
+    這個指紋只負責「完全一樣的那一筆」與沒有位址可指的發現。
+
+    沒有位址可以指的發現退回用標題 —— 總比完全沒有指紋好。
+    """
+    subj = subjects(item)
+    if subj:
+        key = f"{item.get('category', '')}|" + ",".join(sorted(subj))
     else:
         key = f"{item.get('category', '')}|title:{item.get('title', '').strip().casefold()}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:64]
+
+
+async def dismissed_subjects(session: AsyncSession) -> dict[str, set[str]]:
+    """每個分類底下，使用者已經表示「這個對象不用再提」的位址集合。
+
+    忽略記在**對象**而不是那一筆發現上：使用者按下忽略的意思是
+    「這幾台機器的這件事我知道了」，不是「這串措辭我看過了」。
+    """
+    out: dict[str, set[str]] = {}
+    rows = (await session.execute(
+        select(AIFinding.category, AIFinding.evidence)
+        .where(AIFinding.status == "dismissed"))).all()
+    for category, evidence in rows:
+        got = subjects({"evidence": evidence})
+        if got:
+            out.setdefault(category or "", set()).update(got)
+    return out
 
 
 def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -778,95 +830,3 @@ async def latest_summary(session: AsyncSession) -> dict[str, Any]:
     return {"counts": counts, "total": sum(counts.values()), "ip_count": int(ip_count),
             "last_run_at": last.isoformat() if last else None}
 
-
-def _local_now() -> datetime:
-    """伺服器本地時間。排程時刻是使用者用牆上時鐘設的，不是 UTC。"""
-    return datetime.now().astimezone()
-
-
-def due(
-    last_run: datetime | None, times: list[str], now: datetime | None = None,
-    *, frequency: str = "daily", weekdays: list[int] | None = None,
-    month_day: int | None = None,
-) -> bool:
-    """排程判斷：自上次執行後，是否已經越過任何一個排定時刻。
-
-    排程拆成兩個維度 ——「**哪幾天**」×「**幾點**」：
-    - `frequency="daily"`：每天（既有行為，也是預設，升級不會改變既有安裝的排程）
-    - `frequency="weekly"` + `weekdays`：每週的指定幾天（1=週一 … 7=週日，可多選）
-    - `frequency="monthly"` + `month_day`：每月的指定某一天（1–31）
-
-    用「幾點幾分」而不是「每 N 小時」：間隔式排程會跟著每次的執行時間往後漂，
-    跑了幾天之後就沒人說得準它半夜還是上班時間在打 LLM。
-
-    `last_run` 為 None（剛啟用、還沒跑過）→ 下一輪就跑一次，之後才照時刻走。這是刻意的：
-    打開開關卻要等到下個月 1 號才有任何動靜，看起來就像功能壞了。
-    """
-    times = [t for t in times if _parse_hhmm(t) is not None]
-    if not times:
-        return False
-    if frequency == "weekly" and not weekdays:
-        return False          # 一天都沒選＝沒有排程，不能退化成每天都跑
-    if last_run is None:
-        return True
-    now = now or _local_now()
-    prev = _previous_occurrence(times, now, frequency=frequency,
-                                weekdays=weekdays, month_day=month_day)
-    if prev is None:
-        return False
-    return last_run.astimezone(now.tzinfo) < prev
-
-
-def _parse_hhmm(text: str) -> tuple[int, int] | None:
-    hh, _, mm = str(text).partition(":")
-    try:
-        h, m = int(hh), int(mm)
-    except ValueError:
-        return None
-    return (h, m) if 0 <= h <= 23 and 0 <= m <= 59 else None
-
-
-def _runs_on(day: datetime, frequency: str, weekdays: list[int] | None,
-             month_day: int | None) -> bool:
-    """這一天是不是排程日。"""
-    if frequency == "weekly":
-        return day.isoweekday() in set(weekdays or ())
-    if frequency == "monthly":
-        return day.day == _month_day_for(day, month_day)
-    return True
-
-
-def _month_day_for(day: datetime, month_day: int | None) -> int:
-    """把「每月第幾天」夾到該月實際存在的日子。
-
-    設 31 號卻遇到只有 30 天的月份時，落在該月最後一天，而不是整個月都不跑 ——
-    後者是這類排程最典型的壞法：條件永遠不成立，沒有錯誤也沒有紀錄，
-    看起來就只是「功能沒在動」。2 月同理。
-    """
-    d = int(month_day or 1)
-    last = calendar.monthrange(day.year, day.month)[1]
-    return max(1, min(d, last))
-
-
-def _previous_occurrence(
-    times: list[str], now: datetime, *, frequency: str = "daily",
-    weekdays: list[int] | None = None, month_day: int | None = None,
-) -> datetime | None:
-    """最近一個「已經過去」的排定時刻；找不到（例如剛設定完）回 None。
-
-    往回走日曆而不是只看昨天：週排程與月排程的上一次可能在好幾天前，
-    只退一天會把「服務停了幾天沒跑到」的那一輪漏掉。
-    """
-    hms = [hm for hm in (_parse_hhmm(t) for t in times) if hm is not None]
-    if not hms:
-        return None
-    # 往回找 400 天足以涵蓋任何月排程（最長間隔約 31 天）
-    for back in range(400):
-        day = now - timedelta(days=back)
-        if not _runs_on(day, frequency, weekdays, month_day):
-            continue
-        slots = [day.replace(hour=h, minute=m, second=0, microsecond=0) for h, m in hms]
-        passed = [t for t in slots if t <= now]
-        if passed:
-            return max(passed)
-    return None

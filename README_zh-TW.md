@@ -1,4 +1,4 @@
-# jt-ipam v0.6.1
+# jt-ipam v0.6.35
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/jasoncheng7115/jt-ipam)](https://github.com/jasoncheng7115/jt-ipam/commits/main)
@@ -11,9 +11,9 @@
 
 **🌐 [專案介紹網站 / Project site →](https://jasoncheng7115.github.io/jt-ipam/?lang=zh-TW)**
 
-> 可自架、以整合為核心的 IPAM — 操作流程沿襲 phpIPAM 使用者熟悉的風格、全新獨立開發，整合多家 DNS Server、LibreNMS、OPNsense、pfSense、FortiGate、Palo Alto、Windows DHCP Server、Proxmox VE、VMware ESXi / vCenter、Wazuh、Zabbix 與本地 AI。
+> 可自架、以整合為核心的 IPAM — 操作流程沿襲 phpIPAM 使用者熟悉的風格、全新獨立開發，整合多家 DNS Server、LibreNMS、OPNsense、pfSense、FortiGate、Palo Alto、MikroTik RouterOS、Windows DHCP Server、Proxmox VE、VMware ESXi / vCenter、Wazuh、Zabbix 與本地 AI。
 >
-> 作者：Jason Tools Co., Ltd.（節省工具箱）｜授權：AGPL-3.0｜English: [README.md](README.md)
+> 作者：Jason Tools Co., Ltd.（節省工具箱）｜授權：AGPL-3.0｜English: [README.md](README.md)｜日本語: [README_ja.md](README_ja.md)
 
 ---
 
@@ -24,12 +24,12 @@ phpIPAM 老使用者幾乎零學習成本；以現代技術全新打造（非基
 - **DNS**：PowerDNS、BIND 9、OPNsense Unbound、Univention UCS、Microsoft Windows DNS（讀取正反解狀態，可選擇性推送記錄）
 - **LibreNMS**：裝置同步、ARP / FDB 抓取、上線狀態互補、自動加入監控
 - **Zabbix**：監控面的唯讀補充 —— 主機↔IP 對應、把存活狀態當作實際狀態的額外證據、維護狀態，以及**監控涵蓋缺口**（IPAM 有主機名稱、Zabbix 卻沒在看的位址）。ARP／FDB 仍以 LibreNMS 為主，那不在 Zabbix 的內建資料裡
-- **基礎設施**：Proxmox VE、**VMware ESXi / vCenter（Beta）** —— 同一套設定同時涵蓋單機 ESXi 與 vCenter，走 vSphere API 唯讀盤點虛擬機、網卡與 IP，與 Proxmox 寫進同一組虛擬化資料表；Wazuh、OPNsense / pfSense（別名 / 規則 / NAT 同步），**FortiGate** —— 透過 FortiOS REST API 唯讀同步（DHCP 租約與發放範圍、ARP、IPsec 通道與 SSL-VPN 連線、防火牆政策、NAT、位址物件；支援多 VDOM），以及 **Palo Alto（Beta）** —— 透過 PAN-OS API 唯讀同步（ARP、DHCP 租約、含 App-ID 的安全政策、NAT、位址物件；支援多 vsys）
+- **基礎設施**：Proxmox VE、**VMware ESXi / vCenter（Beta）** —— 同一套設定同時涵蓋單機 ESXi 與 vCenter，走 vSphere API 唯讀盤點虛擬機、網卡與 IP，與 Proxmox 寫進同一組虛擬化資料表；Wazuh、OPNsense / pfSense（別名 / 規則 / NAT 同步），**FortiGate** —— 透過 FortiOS REST API 唯讀同步（DHCP 租約與發放範圍、ARP、IPsec 通道與 SSL-VPN 連線、防火牆政策、NAT、位址物件；支援多 VDOM），**Palo Alto（Beta）** —— 透過 PAN-OS API 唯讀同步（ARP、DHCP 租約、含 App-ID 的安全政策、NAT、位址物件；支援多 vsys），以及 **MikroTik RouterOS（Beta）** —— 透過 RouterOS v7 REST API 唯讀同步（防火牆規則 filter／mangle／NAT、address-list、DHCP 租約與發放範圍、VPN、ARP）。MikroTik 常是站台的主力路由器，所以同步序列執行、區段之間停頓、CPU 超過門檻就停掉本輪剩下的區段，並有回應大小上限（RouterOS 的 REST 沒有分頁）；重的區段預設關閉，連線診斷會回報每支端點的列數與耗時
 - **DHCP**：各家各自設定 —— OPNsense（Kea/ISC）與 pfSense 透過各自的 REST API 同步租約與發放範圍；**Windows DHCP Server（Beta）** 走 WinRM + PowerShell 唯讀（只跑 `Get-*`，需 WinRM 可連線，預設 5986/HTTPS）。落在發放範圍內的位址會在 IP 清單與詳細資料標示出來。
 - **Graylog**：提供 IP→主機名稱/FQDN 的 DSV 對照表端點，供 Graylog「DSV File from HTTP」資料配接器抓取
 - **本地 AI**：LLM Server 自然語言查詢 + 語意搜尋（預設自架、資料不外送；也可明確改接 OpenAI 相容端點），並提供 MCP server（stdio / Streamable HTTP）；實測搭配 `gemma4:26b` 效果良好。資安面：**防火牆規則異動偵測**（三家防火牆的規則每輪同步做快照 diff，半夜多出一條放行規則會通知管理員）、**IP 鑑識問答**（在 AI 對話問「這個 IP 上週是誰」，回欄位級異動＋ARP/MAC＋各來源主機名稱的證據時間軸）、**未授權 IP 的 AI 鑑識卡**（把 OUI／主機名稱／交換器埠彙整成「這最可能是什麼設備＋下一步查哪」的判讀，證據定界防 prompt-injection）
 
-也內建：**瀏覽器內遠端連線管理** —— SSH 終端機、**SFTP 檔案瀏覽器**（免另開工具就能上下傳檔案），外加 RDP、VNC 桌面與 **BMC 序列主控台**（IPMI SOL，不經作業系統的獨立連線）（RDP/VNC/BMC 為 **Beta**），全部在瀏覽器內，連線帳密預設不儲存、可選用**個人加密憑證金庫**（by-user、AES-GCM），物件層級 RBAC、單次 ticket→WebSocket 連線與完整稽核（RDP/VNC 走選用相依，僅在有預編譯 wheel 時才安裝，不影響基礎安裝）、**IP 申請審核流程**（可設多關卡會簽 / 依序關卡，站內 + Email 通知）、**DNS 記錄檢視**（找出沒有對應 IPAM 的記錄）、**掃描代理**（ICMP/ARP/反解/NetBIOS/mDNS/OS 探測；安裝時會在主機上自動裝一個，掃描一律由代理執行）、**憑證集中保管與派送**（商業 / 自簽憑證一次上傳，純 bash 代理依排程自動派送到 nginx/apache/caddy/haproxy/Proxmox VE·PMG·PBS/Zimbra…等服務並重載；另有 **Windows / IIS 的 PowerShell 代理**，匯入 Windows 憑證存放區、換上 HTTPS 繫結，並實際連線確認送出的是新憑證，不對就自動還原；私鑰加密保存、到期告警、可手動續簽）、**機房平面圖 + 機櫃 U 位圖**（含半 U / 正背面、SVG/PNG/draw.io 匯出）、**纜線追蹤**（多跳穿透）、IP 異動記錄與失聯 IP 回收、通用表格欄位選擇 + 多格式匯出。
+也內建：**瀏覽器內遠端連線管理** —— SSH 終端機、**SFTP 檔案瀏覽器**（免另開工具就能上下傳檔案），外加 RDP、VNC 桌面與 **BMC 序列主控台**（IPMI SOL，不經作業系統的獨立連線）（RDP/VNC/BMC 為 **Beta**），全部在瀏覽器內，連線帳密預設不儲存、可選用**個人加密憑證金庫**（by-user、AES-GCM），**跳板主機**（後端連不到的站台，主控台可改走「後端 → 跳板 → 目標」；出口設在子網路、個別 IP 可覆寫，主機金鑰必須先釘選才允許連線）、物件層級 RBAC、單次 ticket→WebSocket 連線與完整稽核（RDP/VNC 走選用相依，僅在有預編譯 wheel 時才安裝，不影響基礎安裝）、**IP 申請審核流程**（可設多關卡會簽 / 依序關卡，站內 + Email 通知）、**DNS 記錄檢視**（找出沒有對應 IPAM 的記錄）、**掃描代理**（ICMP/ARP/反解/NetBIOS/mDNS/OS 探測；安裝時會在主機上自動裝一個，掃描一律由代理執行）、**憑證集中保管與派送**（商業 / 自簽憑證一次上傳，純 bash 代理依排程自動派送到 nginx/apache/caddy/haproxy/Proxmox VE·PMG·PBS/Zimbra…等服務並重載；另有 **Windows / IIS 的 PowerShell 代理**，匯入 Windows 憑證存放區、換上 HTTPS 繫結，並實際連線確認送出的是新憑證，不對就自動還原；私鑰加密保存、到期告警、可手動續簽）、**機房平面圖 + 機櫃立面圖**（標準機櫃、工業機櫃與層架／鍍鉻層架／木質層架（IKEA IVAR 型），寬度可自訂、層高逐層設定、頂板上方也放得了設備、同一層還能上下疊放；同一列最多並排 6 台、正背面、SVG/PNG/draw.io 匯出）、**纜線追蹤**（多跳穿透）、IP 異動記錄與失聯 IP 回收、通用表格欄位選擇 + 多格式匯出。
 
 ## Graylog 記錄補實（DSV 對照表）
 
@@ -85,7 +85,7 @@ SOL 只是把主機的**序列埠**轉播出來，所以主機端要先設好序
 | **Proxmox VE** | 可自動建立 | 「信任虛擬化取得的 IP」 | **預設關閉** | 放進「包含它的最小網段」；分不出來就不建 |
 | **VMware / ESXi** | 可自動建立 | 「信任虛擬化取得的 IP」 | **預設關閉** | 放進「包含它的最小網段」；分不出來就不建 |
 | **OPNsense / pfSense** | 可自動建立（DHCP 租約） | 「自動建立 IPAM 沒有的位址」 | **預設關閉** | 放進「包含它的最小網段」；分不出來就不建 |
-| AdGuard / Wazuh / Zabbix / DNS / Windows DHCP / FortiGate / Palo Alto | **只比對既有，不建** | — | — | — |
+| AdGuard / Wazuh / Zabbix / DNS / Windows DHCP / FortiGate / Palo Alto / MikroTik | **只比對既有，不建** | — | — | — |
 | CSV 匯入 / phpIPAM 遷移 | 由匯入內容建立（使用者明示的動作） | — | — | 依匯入資料 |
 
 **共通規則**：自動建立一律走同一套判斷（`services/ip_autocreate.py`）——
@@ -106,7 +106,7 @@ SOL 只是把主機的**序列埠**轉播出來，所以主機端要先設好序
 
 ## 核心物件
 
-`區段 → 子網路 → IP 位址`，外加 `裝置` / `機櫃` / `地點`、`客戶`（管理單位）、`VLAN` / `VRF`、`NAT`、OPNsense / pfSense / FortiGate / Palo Alto 防火牆，以及 IEEE OUI 廠商對照表（每月更新）。
+`區段 → 子網路 → IP 位址`，外加 `裝置` / `機櫃` / `地點`、`客戶`（管理單位）、`VLAN` / `VRF`、`NAT`、OPNsense / pfSense / FortiGate / Palo Alto / MikroTik 防火牆，以及 IEEE OUI 廠商對照表（每月更新）。
 
 ## 權限（RBAC）
 
@@ -278,7 +278,7 @@ jt-ipam/
 
 - **Phase 1（完成）** — phpIPAM 對等功能 + 改良（區段/子網路/IP/VLAN/VRF/NAT/裝置/機櫃/地點/IP 申請、TOTP/API-Token/RBAC、phpIPAM 匯入、CSV/RIPE/TWNIC、視覺化子網路格、強制 TLS）
 - **Phase 2（完成）** — 多家 DNS + 深度 LibreNMS 整合（裝置/ARP/FDB/實際狀態）+ 異常偵測 + SHA-256 稽核鏈 + pgvector AI 語意搜尋
-- **Phase 3（完成）** — 租戶/聯絡人/佈線/電力/VPN/虛擬化 + Proxmox VE 同步 + Cytoscape 拓樸 + OIDC/SAML SSO + OPNsense / pfSense / FortiGate / Palo Alto 防火牆同步 + VMware ESXi / vCenter 盤點 + Wazuh agent 盤點 + Zabbix 監控涵蓋
+- **Phase 3（完成）** — 租戶/聯絡人/佈線/電力/VPN/虛擬化 + Proxmox VE 同步 + Cytoscape 拓樸 + OIDC/SAML SSO + OPNsense / pfSense / FortiGate / Palo Alto / MikroTik 防火牆同步 + VMware ESXi / vCenter 盤點 + Wazuh agent 盤點 + Zabbix 監控涵蓋
 - **Phase 4（完成、已縮減範圍）** — MCP server + 本地 LLM 自然語言（LLM Server）+ 外掛機制
 
 ### 機櫃圖嵌入其他系統

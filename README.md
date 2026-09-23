@@ -1,4 +1,4 @@
-# jt-ipam v0.6.1
+# jt-ipam v0.6.35
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/jasoncheng7115/jt-ipam)](https://github.com/jasoncheng7115/jt-ipam/commits/main)
@@ -11,9 +11,9 @@
 
 **🌐 [Project site / 專案介紹網站 →](https://jasoncheng7115.github.io/jt-ipam/?lang=en)**
 
-> A self-hosted, integration-focused IPAM, independently developed with an operation flow familiar to phpIPAM users, deeply integrated with multiple DNS servers, LibreNMS, OPNsense, pfSense, FortiGate, Palo Alto, Windows DHCP Server, Proxmox VE, VMware ESXi / vCenter, Wazuh, Zabbix, and a local LLM.
+> A self-hosted, integration-focused IPAM, independently developed with an operation flow familiar to phpIPAM users, deeply integrated with multiple DNS servers, LibreNMS, OPNsense, pfSense, FortiGate, Palo Alto, MikroTik RouterOS, Windows DHCP Server, Proxmox VE, VMware ESXi / vCenter, Wazuh, Zabbix, and a local LLM.
 >
-> By Jason Tools Co., Ltd. · License: AGPL-3.0 · 繁體中文: [README_zh-TW.md](README_zh-TW.md)
+> By Jason Tools Co., Ltd. · License: AGPL-3.0 · 繁體中文: [README_zh-TW.md](README_zh-TW.md) · 日本語: [README_ja.md](README_ja.md)
 
 ---
 
@@ -24,12 +24,12 @@ Familiar to phpIPAM users so they are productive from day one, but built from sc
 - **DNS** — PowerDNS, BIND 9, OPNsense Unbound, Univention UCS, Microsoft Windows DNS (reads forward/reverse status, optional record push)
 - **LibreNMS** — device sync, ARP / FDB harvesting, online-status reconciliation, auto-onboarding to monitoring
 - **Zabbix** — read-only complement on the monitoring side: host-to-IP mapping, availability as an extra evidence source for effective status, maintenance windows, and a **monitoring coverage gap** (addresses IPAM has a hostname for that Zabbix is not watching). ARP/FDB stay with LibreNMS — they are not part of Zabbix's built-in data
-- **Infrastructure** — Proxmox VE, **VMware ESXi / vCenter (Beta)** — one setup covering both a standalone ESXi host and vCenter, read-only over the vSphere API for virtual machines, NICs and addresses, landing in the same virtualisation tables as Proxmox; Wazuh, OPNsense / pfSense (alias / rule / NAT sync), **FortiGate** — read-only over the FortiOS REST API (DHCP leases and ranges, ARP, IPsec tunnels and SSL-VPN sessions, policies, NAT, address objects; multi-VDOM), and **Palo Alto (Beta)** — read-only over the PAN-OS API (ARP, DHCP leases, security policies with App-ID, NAT, address objects; multi-vsys)
+- **Infrastructure** — Proxmox VE, **VMware ESXi / vCenter (Beta)** — one setup covering both a standalone ESXi host and vCenter, read-only over the vSphere API for virtual machines, NICs and addresses, landing in the same virtualisation tables as Proxmox; Wazuh, OPNsense / pfSense (alias / rule / NAT sync), **FortiGate** — read-only over the FortiOS REST API (DHCP leases and ranges, ARP, IPsec tunnels and SSL-VPN sessions, policies, NAT, address objects; multi-VDOM), **Palo Alto (Beta)** — read-only over the PAN-OS API (ARP, DHCP leases, security policies with App-ID, NAT, address objects; multi-vsys), and **MikroTik RouterOS (Beta)** — read-only over the RouterOS v7 REST API (firewall filter/mangle/NAT rules, address lists, DHCP leases and ranges, VPN, ARP). A MikroTik is usually the site's main router, so sections run sequentially with pauses between them, the round stops once CPU load passes a threshold, and responses are size-capped (the RouterOS REST API has no pagination); the expensive sections are off by default and the connection diagnostic reports rows and seconds per endpoint
 - **DHCP** — each server is configured on its own: OPNsense (Kea/ISC) and pfSense sync leases and address ranges over their REST APIs; **Windows DHCP Server (Beta)** is read-only over WinRM + PowerShell (`Get-*` only, needs WinRM reachable — 5986/HTTPS by default). Addresses inside a pool are flagged in the IP list and detail view.
 - **Graylog** — exposes an IP→hostname/FQDN DSV lookup endpoint for Graylog's "DSV File from HTTP" data adapter
 - **Local AI** — natural-language queries and semantic search over LLM Server (self-hosted by default, so data never leaves the host; an OpenAI-compatible endpoint can be selected explicitly instead), plus an MCP server (stdio and Streamable HTTP transports) so external LLM clients can drive the IPAM; `gemma4:26b` works well in our testing Security-side AI: a **firewall rule-change sentinel** (per-sync snapshot diffs of all three firewall families; a permit rule appearing overnight notifies admins), **IP forensics in chat** (ask "who was this IP last week" and get the field-level change log, ARP/MAC bindings and per-source hostnames as an evidence timeline), and an **AI triage card for unauthorised IPs** (OUI vendor, hostnames and switch port assembled into "what this likely is and where to look next", with evidence fencing against prompt injection).
 
-Also built in: a **browser-based remote console** — an SSH terminal, an **SFTP file browser** (upload/download without a separate client), plus RDP and VNC desktops and a **BMC out-of-band serial console** (IPMI SOL) (RDP/VNC/BMC are **Beta**), in the browser — credentials are not stored by default, with an optional per-user **encrypted credential vault**, object-level RBAC, single-use ticket→WebSocket sessions and full audit (RDP/VNC use an optional dependency that is installed only when a prebuilt wheel is available, so the base install is unchanged), an **IP request approval workflow** (configurable multi-stage / parallel sign-off, with in-app + email notifications), **DNS record review** (find records with no matching IPAM address), a **scan agent** (ICMP/ARP/rDNS/NetBIOS/mDNS/OS probes; one is installed on the host automatically — scanning always runs through an agent), **central certificate storage & distribution** (upload a commercial / self-signed cert once; a pure-bash agent pulls it on a schedule and deploys it to nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and more, reloading the service — plus a **PowerShell agent for Windows / IIS** that imports into the Windows certificate store, repoints the HTTPS binding and verifies the switch over a real TLS connection, rolling back if it fails — with encrypted private keys, expiry alerts and manual renew), **floor plans + rack U-diagrams** (half-U, front/rear, SVG/PNG/draw.io export), **cable tracing** (multi-hop), an IP change log with stale-IP reclaim, and a universal table column-picker + multi-format export.
+Also built in: a **browser-based remote console** — an SSH terminal, an **SFTP file browser** (upload/download without a separate client), plus RDP and VNC desktops and a **BMC out-of-band serial console** (IPMI SOL) (RDP/VNC/BMC are **Beta**), in the browser — credentials are not stored by default, with an optional per-user **encrypted credential vault**, **jump hosts** (for sites the backend cannot reach directly, a console can go backend → jump host → target; the exit is set per subnet and can be overridden per address, and the jump host's key must be pinned before any connection is allowed), object-level RBAC, single-use ticket→WebSocket sessions and full audit (RDP/VNC use an optional dependency that is installed only when a prebuilt wheel is available, so the base install is unchanged), an **IP request approval workflow** (configurable multi-stage / parallel sign-off, with in-app + email notifications), **DNS record review** (find records with no matching IPAM address), a **scan agent** (ICMP/ARP/rDNS/NetBIOS/mDNS/OS probes; one is installed on the host automatically — scanning always runs through an agent), **central certificate storage & distribution** (upload a commercial / self-signed cert once; a pure-bash agent pulls it on a schedule and deploys it to nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and more, reloading the service — plus a **PowerShell agent for Windows / IIS** that imports into the Windows certificate store, repoints the HTTPS binding and verifies the switch over a real TLS connection, rolling back if it fails — with encrypted private keys, expiry alerts and manual renew), **floor plans + rack elevations** (standard racks, industrial enclosures and shelving including chrome wire and wooden (IKEA IVAR-style) shelving, with non-standard widths, a height you can set per level, an open top you can put things on, and devices stacked within one level; up to six devices side by side in one row, front/rear, SVG/PNG/draw.io export), **cable tracing** (multi-hop), an IP change log with stale-IP reclaim, and a universal table column-picker + multi-format export.
 
 ## Graylog log enrichment (DSV lookup)
 
@@ -86,7 +86,7 @@ source — and it matters, because the "unauthorised IPs" anomaly check is defin
 | **Proxmox VE** | May create | "Trust addresses from virtualization" | **off by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
 | **VMware / ESXi** | May create | "Trust addresses from virtualization" | **off by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
 | **OPNsense / pfSense** | May create (DHCP leases) | "Create addresses IPAM does not have" | **off by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
-| AdGuard / Wazuh / Zabbix / DNS / Windows DHCP / FortiGate / Palo Alto | **Match only, never create** | — | — | — |
+| AdGuard / Wazuh / Zabbix / DNS / Windows DHCP / FortiGate / Palo Alto / MikroTik | **Match only, never create** | — | — | — |
 | CSV import / phpIPAM migration | Created from the imported data (an explicit user action) | — | — | as imported |
 
 **Shared rule**: every auto-creation path uses the same decision
@@ -113,7 +113,7 @@ normally.
 
 ## Core entities
 
-`Section → Subnet → IPAddress`, plus `Device` / `Rack` / `Location`, `Customer` (managing unit), `VLAN` / `VRF`, `NAT`, OPNsense / pfSense / FortiGate / Palo Alto firewalls, and an IEEE OUI vendor table (monthly refresh).
+`Section → Subnet → IPAddress`, plus `Device` / `Rack` / `Location`, `Customer` (managing unit), `VLAN` / `VRF`, `NAT`, OPNsense / pfSense / FortiGate / Palo Alto / MikroTik firewalls, and an IEEE OUI vendor table (monthly refresh).
 
 ## Access control (RBAC)
 
@@ -285,7 +285,7 @@ jt-ipam/
 
 - **Phase 1 (done)** — phpIPAM-equivalent features + improvements (Section/Subnet/IP/VLAN/VRF/NAT/Devices/Racks/Locations/IP-Requests, TOTP/API-Token/RBAC, phpIPAM import, CSV/RIPE/TWNIC, visual subnet grid, forced TLS)
 - **Phase 2 (done)** — multi-vendor DNS + deep LibreNMS integration (device/ARP/FDB/effective-status) + anomaly detection + SHA-256 audit chain + pgvector AI semantic search
-- **Phase 3 (done)** — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox VE sync + Cytoscape topology + OIDC/SAML SSO + OPNsense / pfSense / FortiGate / Palo Alto firewall sync + VMware ESXi / vCenter inventory + Wazuh agent inventory + Zabbix monitoring coverage
+- **Phase 3 (done)** — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox VE sync + Cytoscape topology + OIDC/SAML SSO + OPNsense / pfSense / FortiGate / Palo Alto / MikroTik firewall sync + VMware ESXi / vCenter inventory + Wazuh agent inventory + Zabbix monitoring coverage
 - **Phase 4 (done, scoped)** — MCP server + local-LLM natural language (LLM Server) + plugin mechanism
 
 ### Embedding a rack diagram in another system

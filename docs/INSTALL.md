@@ -1,6 +1,6 @@
 # jt-ipam Install & Operations SOP
 
-> 繁體中文版：[INSTALL_zh-TW.md](INSTALL_zh-TW.md)
+> 繁體中文版：[INSTALL_zh-TW.md](INSTALL_zh-TW.md) · 日本語：[INSTALL_ja.md](INSTALL_ja.md)
 
 For **Proxmox LXC, bare metal, and VMs** (Ubuntu 22.04+/Debian 12+). The **primary, recommended** install
 uses **systemd + apt** directly (no Docker). A Docker Compose path exists but is **optional / secondary, not
@@ -354,6 +354,9 @@ Main config file: `/etc/jt-ipam/backend.env` (root:jtipam 0640)
 | `API_PUBLIC_URL` | ✓ | used for OIDC/SAML callbacks |
 | `CORS_ORIGINS` | ✓ | comma-separated |
 | `OUTBOUND_ALLOW_CIDRS` | — | safe_http SSRF allowlist; blank = public internet only |
+| `FDB_CURRENT_MAX_AGE_HOURS` | 24 | How long an FDB entry counts as current; older ones stay as history but no longer decide the switch port |
+| `FDB_RETENTION_DAYS` | 365 | FDB history retention in days; 0 = keep forever. Much longer than ARP on purpose -- the value of this table is knowing which port a machine used to be on |
+| `ARP_RETENTION_DAYS` | 30 | ARP entry retention in days; 0 = no pruning |
 | `OIDC_*` | — | enable OIDC SSO |
 | `SAML_*` | — | enable SAML SSO |
 | `LDAP_*` | — | LDAP/AD auth |
@@ -725,3 +728,27 @@ curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
 sudo apt install -y nodejs
 ```
 then re-run `pnpm install && pnpm build` in `/opt/jt-ipam/frontend`.
+
+## RDP console engines
+
+The browser RDP console can use either of two engines, selected under **Admin -> System settings**:
+
+- **aardwolf** (default) -- a pure-Python client. No extra processes, works against Windows targets.
+- **FreeRDP** -- broader compatibility. Linux RDP servers (xrdp, and the GNOME "Remote Login"
+  that Ubuntu 24 ships) reject aardwolf's NTLM authentication, because the library does not send
+  the message integrity code that those servers require. FreeRDP authenticates against them.
+
+FreeRDP needs packages that are **not installed by default**, because most sites never switch:
+
+```
+sudo apt-get install -y freerdp2-x11 xvfb xclip ffmpeg
+```
+
+or pass `--with-freerdp` to `jt-ipam.sh install`. An upgrade installs them automatically if the
+site has already selected the FreeRDP engine. `jt-ipam.sh doctor` reports which engine is in use
+and whether its packages are present, and the settings page shows the same thing with the exact
+command to run.
+
+ffmpeg is there for screen capture, not video: reading the framebuffer any other way we measured
+costs 334 ms per frame, which caps the console at under 3 fps.
+

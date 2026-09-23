@@ -415,7 +415,15 @@ async def stats_overview(session: AsyncSession, *, user: User) -> dict[str, Any]
 async def list_racks(
     session: AsyncSession, *, user: User, limit: int = 200, location_id: str | None = None,
 ) -> dict[str, Any]:
-    """列出機櫃（含所在地點與已掛裝置數）。問某機房要帶 location_id。"""
+    """列出機櫃／層架（含所在地點、已掛裝置、每一列還剩多少空間）。問某機房要帶 location_id。
+
+    **不是每一種機架都以 U 計**：層架（一般／鍍鉻／木質，如 IKEA IVAR）以「層」為單位，
+    層高可以逐層不同，而且最上面那片板的**上面**還能再放一排。
+
+    而且同一列可以左右並排、也可以上下疊放好幾台。只看「這一列有沒有東西」會把半滿的
+    那一層算成滿的，「還能放幾台」就答錯了 —— 所以這裡額外回 `rows_with_space`（哪幾列
+    還有空、還剩多少比例）與每台裝置的橫向／層內位置。
+    """
     limit = min(int(limit), 500)
     stmt = (select(Rack, Location.name)
             .outerjoin(Location, Location.id == Rack.location_id))
@@ -430,34 +438,73 @@ async def list_racks(
     total = int(await session.scalar(
         select(func.count()).select_from(stmt.subquery())) or 0)
     rows = (await session.execute(stmt.order_by(Rack.name).limit(limit))).all()
+    from app.services.rack import (
+        RACK_SLOTS,
+        has_open_top,
+        level_heights_mm,
+        placeable_levels,
+        uses_rack_units,
+    )
     out = []
     for rack, loc_name in rows:
         devs = list((await session.execute(
-            select(Device.name, Device.type, Device.u_position, Device.u_size, Device.rack_face)
+            select(Device.name, Device.type, Device.u_position, Device.u_size,
+                   Device.rack_face, Device.rack_slot, Device.rack_slot_span,
+                   Device.rack_vslot, Device.rack_vslot_span)
             .where(Device.rack_id == rack.id).order_by(Device.u_position)
         )).all())
-        # 以「實際被佔用的 U 列」計算，半 U（左/右兩台同列）只算一次，避免重複累加把空間算光
-        occupied_rows: set[int] = set()
-        for (_n, _t, pos, sz, _f) in devs:
+        kind = getattr(rack, "kind", None)
+        levels = not uses_rack_units(kind)
+        # 層架最上面那片板的上面也放得下 → 可放的位置比層數多一列
+        placeable = placeable_levels(kind, int(rack.u_height or 0))
+        # 每一列被佔掉多少「面積」：橫向比例 × 層內上下比例。只數「有沒有東西」會把
+        # 一層放了一台半寬裝置的情況當成整層滿了。
+        area: dict[int, float] = {}
+        for (_n, _t, pos, sz, _f, _hs, hsp, _vs, vsp) in devs:
             if pos is None:
                 continue
+            frac = ((float(hsp or RACK_SLOTS) / RACK_SLOTS)
+                    * (float(vsp or RACK_SLOTS) / RACK_SLOTS))
             for u in range(int(pos), int(pos) + int(sz or 1)):
-                occupied_rows.add(u)
+                area[u] = min(1.0, area.get(u, 0.0) + frac)
+        occupied_rows = set(area)
         used_u = len(occupied_rows)
-        free_u = max(rack.u_height - used_u, 0)
-        # 連續空檔（給「還能放多大的裝置」參考）
-        free_rows = sorted(set(range(1, rack.u_height + 1)) - occupied_rows)
+        free_u = max(placeable - used_u, 0)
+        # 完全空的列（給「還能放多大的裝置」參考）
+        free_rows = sorted(set(range(1, placeable + 1)) - occupied_rows)
         out.append({
             "id": str(rack.id), "name": rack.name, "u_height": rack.u_height,
+            # 型態決定單位與畫法：標準／工業機櫃以 U 計，三種層架以「層」計
+            "kind": kind, "uses_levels": levels,
+            "rows_label": "level" if levels else "U",
+            "open_top": has_open_top(kind),
+            "placeable_rows": placeable,
+            "level_heights_mm": (
+                [int(x) for x in level_heights_mm(kind, rack.row_height_mm,
+                                                  rack.level_heights, int(rack.u_height or 0))]
+                if levels else None),
             "location": loc_name, "device_count": len(devs),
             "used_u": used_u, "free_u": free_u, "free_u_rows": free_rows,
+            # 還有空位、但不是全空的那幾列（一層並排／疊放多台時最需要知道的就是這個）
+            "rows_with_space": [
+                {"row": u, "free_fraction": round(1.0 - a, 3)}
+                for u, a in sorted(area.items()) if a < 0.999
+            ],
             "devices": [
-                {"name": n, "type": t, "u_position": pos, "u_size": sz, "rack_face": f}
-                for (n, t, pos, sz, f) in devs
+                {"name": n, "type": t, "u_position": pos, "u_size": sz, "rack_face": f,
+                 # 橫向：起始格與跨幾格（整列＝0/60）；層內上下：同一套 60 格
+                 "rack_slot": hs, "rack_slot_span": hsp,
+                 "rack_vslot": vs, "rack_vslot_span": vsp}
+                for (n, t, pos, sz, f, hs, hsp, vs, vsp) in devs
             ],
             "description": rack.description,
         })
-    return {"scope": scope, "count": total, "returned": len(out), "racks": out}
+    return {"scope": scope, "count": total, "returned": len(out), "racks": out,
+            "slots_per_row": RACK_SLOTS,
+            "note": ("A row can hold several devices side by side (rack_slot/rack_slot_span) "
+                     "and stacked within the row (rack_vslot/rack_vslot_span), both on a "
+                     f"{RACK_SLOTS}-cell grid. Shelf kinds are counted in levels, not U — "
+                     "use rows_label. Check rows_with_space before saying a row is full.")}
 
 
 async def list_locations(
@@ -535,6 +582,10 @@ async def list_devices(
             "vendor": d.vendor, "model": d.model, "ip_count": ip_count,
             "customer": cust_name,
             "u_position": d.u_position, "u_size": d.u_size, "rack_face": d.rack_face,
+            # 同一列可以左右並排、也可以上下疊放：少了這四個欄位，同一層的兩台在
+            # AI 眼裡是同一個位置（60 格網格，整列＝0/60）
+            "rack_slot": d.rack_slot, "rack_slot_span": d.rack_slot_span,
+            "rack_vslot": d.rack_vslot, "rack_vslot_span": d.rack_vslot_span,
             "rack_id": str(d.rack_id) if d.rack_id else None,
         })
     return {"scope": scope, "count": total, "returned": len(out), "devices": out}
@@ -573,7 +624,15 @@ async def get_device(
     if dev.rack_id:
         rk = await session.get(Rack, dev.rack_id)
         if rk is not None:
-            rack_info = {"id": str(rk.id), "name": rk.name, "u_height": rk.u_height}
+            from app.services.rack import placeable_levels, uses_rack_units
+            rack_info = {
+                "id": str(rk.id), "name": rk.name, "u_height": rk.u_height,
+                # 型態決定單位：層架以「層」計，說成 U 就錯了
+                "kind": getattr(rk, "kind", None),
+                "uses_levels": not uses_rack_units(getattr(rk, "kind", None)),
+                "placeable_rows": placeable_levels(getattr(rk, "kind", None),
+                                                   int(rk.u_height or 0)),
+            }
     cust = await session.get(Customer, dev.customer_id) if dev.customer_id else None
     loc = await session.get(Location, dev.location_id) if dev.location_id else None
     # 電源埠 ↔ 插座（NetBox 風）
@@ -596,6 +655,9 @@ async def get_device(
         "location": loc.name if loc else None,
         # 機櫃 U 位資訊（讓 AI 能判斷占位 / 剩餘空間）
         "u_position": dev.u_position, "u_size": dev.u_size, "rack_face": dev.rack_face,
+        # 列內的橫向與上下位置（60 格網格，整列＝0/60）
+        "rack_slot": dev.rack_slot, "rack_slot_span": dev.rack_slot_span,
+        "rack_vslot": dev.rack_vslot, "rack_vslot_span": dev.rack_vslot_span,
         "rack": rack_info,
         "ips": [{"ip": str(ip), "hostname": hn, "mac": str(m) if m else None}
                 for ip, hn, m in ips],
@@ -1088,6 +1150,11 @@ async def get_ip_detail(session: AsyncSession, *, user: User, ip: str) -> dict[s
         "last_seen_scanner": obj.last_seen_scanner,
         "last_seen_librenms": obj.last_seen_librenms,
         "last_seen_dns": obj.last_seen_dns,
+        # OCS Inventory（透過網卡 MAC 比對到這個 IP 的資產盤點）
+        "last_seen_ocs": obj.last_seen_ocs,
+        "ocs_tag": obj.ocs_tag,
+        "ocs_agent": obj.ocs_agent,
+        "ocs_notes": obj.ocs_notes or [],
         # OS 偵測（依來源優先序 scanner/librenms/wazuh 解析）+ 探測項目
         **_os,
         "effective_probes": await _effective_probes(session, sub, obj),
@@ -1176,7 +1243,8 @@ async def list_subnet_ips(
 
 
 async def list_firewalls(session: AsyncSession, *, user: User, limit: int = 200) -> dict[str, Any]:
-    """所有防火牆清單（OPNsense / pfSense / FortiGate，不含密鑰）。每筆帶 `vendor` 標明廠牌。
+    """所有防火牆清單（OPNsense / pfSense / FortiGate / Palo Alto / MikroTik，不含密鑰）。
+    每筆帶 `vendor` 標明廠牌。
 
     **所有廠牌一起回**：只回其中一種的話，模型會拿一份不完整的清單當成全部去回答
     「我們有哪些防火牆」—— 那比答不出來更糟。新增廠牌時這裡一定要跟著加
@@ -1184,12 +1252,14 @@ async def list_firewalls(session: AsyncSession, *, user: User, limit: int = 200)
     """
     from app.models.firewall import OPNsenseFirewall
     from app.models.fortigate import FortiGateFirewall
+    from app.models.mikrotik import MikroTikRouter
     from app.models.paloalto import PaloAltoFirewall
     from app.models.pfsense import PfSenseFirewall
 
     out: list[dict[str, Any]] = []
     for vendor, model in (("opnsense", OPNsenseFirewall), ("pfsense", PfSenseFirewall),
-                          ("fortigate", FortiGateFirewall), ("paloalto", PaloAltoFirewall)):
+                          ("fortigate", FortiGateFirewall), ("paloalto", PaloAltoFirewall),
+                          ("mikrotik", MikroTikRouter)):
         rows = (await session.execute(select(model).limit(limit))).scalars().all()
         out.extend({
             "id": str(f.id), "vendor": vendor, "name": f.name,
@@ -1198,6 +1268,60 @@ async def list_firewalls(session: AsyncSession, *, user: User, limit: int = 200)
             "description": getattr(f, "description", None),
         } for f in rows)
     return {"firewalls": out[:limit]}
+
+
+async def list_mikrotik_rules(
+    session: AsyncSession, *, user: User,
+    router_name: str | None = None, table: str | None = None, limit: int = 200,
+) -> dict[str, Any]:
+    """MikroTik RouterOS 防火牆規則（唯讀鏡像）。可依路由器名稱與表（filter/nat/mangle）篩選。
+
+    依 `position` 排序而不是名稱：RouterOS 由上而下比對，第一條命中就決定結果 ——
+    順序本身就是語意，打散了規則集就讀不出行為。
+    """
+    from app.models.mikrotik import MikroTikRouter, MikroTikRule
+    stmt = select(MikroTikRule, MikroTikRouter.name).join(
+        MikroTikRouter, MikroTikRouter.id == MikroTikRule.router_id)
+    if router_name:
+        stmt = stmt.where(MikroTikRouter.name == router_name)
+    if table in ("filter", "nat", "mangle"):
+        stmt = stmt.where(MikroTikRule.table_name == table)
+    rows = (await session.execute(stmt.order_by(
+        MikroTikRule.table_name, MikroTikRule.position).limit(limit))).all()
+    return {"rules": [{
+        "router": name, "table": r.table_name, "chain": r.chain, "position": r.position,
+        "action": r.action, "disabled": r.disabled, "protocol": r.protocol,
+        "src_address": r.src_address, "dst_address": r.dst_address,
+        "src_port": r.src_port, "dst_port": r.dst_port,
+        "in_interface": r.in_interface, "out_interface": r.out_interface,
+        "to_addresses": r.to_addresses, "to_ports": r.to_ports, "comment": r.comment,
+    } for r, name in rows]}
+
+
+async def list_mikrotik_address_lists(
+    session: AsyncSession, *, user: User,
+    router_name: str | None = None, list_name: str | None = None, limit: int = 300,
+) -> dict[str, Any]:
+    """MikroTik 的 address-list（等同其他廠牌的別名）。
+
+    與其他家的差別：RouterOS 的清單是**逐筆位址**，不是一個物件裝很多成員 ——
+    所以一列就是一個位址，回傳可能很長（動態封鎖清單常常上萬筆）。
+    """
+    from app.models.mikrotik import MikroTikAddressList, MikroTikRouter
+    stmt = select(MikroTikAddressList, MikroTikRouter.name).join(
+        MikroTikRouter, MikroTikRouter.id == MikroTikAddressList.router_id)
+    if router_name:
+        stmt = stmt.where(MikroTikRouter.name == router_name)
+    if list_name:
+        stmt = stmt.where(MikroTikAddressList.list_name == list_name)
+    total = int(await session.scalar(
+        select(func.count()).select_from(stmt.subquery())) or 0)
+    rows = (await session.execute(stmt.order_by(
+        MikroTikAddressList.list_name, MikroTikAddressList.address).limit(limit))).all()
+    return {"total": total, "returned": len(rows), "entries": [{
+        "router": name, "list": e.list_name, "address": e.address,
+        "dynamic": e.dynamic, "timeout": e.timeout, "comment": e.comment,
+    } for e, name in rows]}
 
 
 async def list_dhcp_ranges(
@@ -1966,8 +2090,46 @@ async def list_wazuh_agents(
         "id": str(a.id), "agent_id": a.agent_id, "name": a.name, "ip": a.ip,
         "status": a.status, "os_platform": a.os_platform, "os_version": a.os_version,
         "agent_version": a.agent_version, "group": a.group,
-        "cve_critical": a.cve_critical_count, "cve_high": a.cve_high_count,
         "last_keep_alive": a.last_keep_alive,
+    } for a in rows]}
+
+
+async def list_ocs_computers(
+    session: AsyncSession, *, user: User, limit: int = 200,
+    subnet_cidr: str | None = None, subnet_id: str | None = None,
+    stale_days: int | None = None,
+) -> dict[str, Any]:
+    """OCS Inventory 盤點到的電腦（OS／資產標籤／代理版本／盤點時間／備註）。
+
+    OCS 沒有自己的每台記錄表 —— 它是**透過網卡 MAC** 比對到既有 IP，再把資料補上去，
+    所以這裡列的就是「有被 OCS 盤點過」的 IP。問某網段時要帶 subnet_cidr。
+    stale_days=N 只列「超過 N 天沒被盤點」的（找資產盤點缺口用）。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import or_
+
+    scope_ids, scope = await _scope_subnet(
+        session, user=user, subnet_cidr=subnet_cidr, subnet_id=subnet_id)
+    stmt = select(IPAddress).where(
+        or_(IPAddress.ocs_id.isnot(None), IPAddress.last_seen_ocs.isnot(None)))
+    if scope_ids is not None:
+        stmt = stmt.where(IPAddress.subnet_id.in_(scope_ids))
+    if stale_days is not None:
+        cutoff = datetime.now(UTC) - timedelta(days=max(0, int(stale_days)))
+        stmt = stmt.where(or_(IPAddress.last_seen_ocs.is_(None),
+                              IPAddress.last_seen_ocs < cutoff))
+    total = int(await session.scalar(
+        select(func.count()).select_from(stmt.subquery())) or 0)
+    rows = (await session.execute(
+        stmt.order_by(IPAddress.last_seen_ocs.desc().nullslast()).limit(min(int(limit), 500))
+    )).scalars().all()
+    return {"scope": scope, "count": total, "returned": len(rows), "computers": [{
+        "ip": str(a.ip).split("/")[0], "hostname": a.hostname,
+        "mac": str(a.mac) if a.mac else None,
+        "os": a.os_ocs, "tag": a.ocs_tag, "agent_version": a.ocs_agent,
+        "last_inventory": a.last_seen_ocs, "ocs_id": a.ocs_id,
+        "notes": a.ocs_notes or [],
     } for a in rows]}
 
 
@@ -2365,9 +2527,22 @@ async def list_anomalies(
             return {"error": f"unknown kind: {kind}", "available": sorted(detectors)}
         detectors = {key: detectors[key]}
     buckets = {k: list(await fn(session)) for k, fn in detectors.items()}
+    total = sum(len(v) for v in buckets.values())
+    # 一疊 0 對小模型來說不夠清楚 —— GitHub issue #34：查無結果時模型自己編了兩個
+    # 根本不在這套 IPAM 裡的位址（連 MAC 都是示範用的 VMware 前綴）。事實由查詢決定、
+    # 模型只負責敘述，所以把「沒有就是沒有」寫進**工具輸出**，不要指望提示詞。
+    note = (
+        "No anomalies were detected. Say exactly that. There is nothing to list — "
+        "do NOT invent example IPs, MACs, hostnames or subnets to illustrate."
+        if total == 0 else
+        "Report only the items listed here, copied verbatim. Every IP, MAC and hostname "
+        "in your answer must appear in this result."
+    )
     return {
+        "total": total,
         "counts": {k: len(v) for k, v in buckets.items()},
         "items": {k: v[:n] for k, v in buckets.items()},
+        "note": note,
     }
 
 
@@ -2515,9 +2690,14 @@ TOOLS: dict[str, dict[str, Any]] = {
     "list_racks": {
         "fn": list_racks,
         "description": (
-            "List racks (機櫃) with location, device count, total/used/free U, and each "
-            "mounted device's U position & size (u_position/u_size/rack_face). Use this to "
-            "answer how many more devices/U fit in a rack — free_u is the free U count."
+            "List racks and shelving units (機櫃／層架) with location, device count, "
+            "total/used/free rows, and each mounted device's position: u_position/u_size "
+            "plus rack_slot/rack_slot_span (side by side) and rack_vslot/rack_vslot_span "
+            "(stacked within one row), on a 60-cell grid. kind tells you the type "
+            "(rack / industrial / shelf / wire_shelf / wood_shelf); shelf kinds are counted "
+            "in LEVELS not U — use rows_label, and placeable_rows (shelves can also take "
+            "devices on top of the highest board). A row may hold several devices, so check "
+            "rows_with_space before saying a row is full."
         ),
         "parameters": {
             "type": "object",
@@ -2540,7 +2720,10 @@ TOOLS: dict[str, dict[str, Any]] = {
         "description": (
             "List or search devices (裝置). Optional name substring or type filter "
             "(server/switch/router/firewall/ap/storage/ipmi/other). Includes each device's "
-            "rack U position/size (u_position, u_size, rack_face) and rack_id."
+            "rack row position/size (u_position, u_size, rack_face), its position WITHIN "
+            "that row (rack_slot/rack_slot_span side by side, rack_vslot/rack_vslot_span "
+            "stacked, on a 60-cell grid; 0/60 means the whole row) and rack_id. On shelving "
+            "units a row is a LEVEL, not a U — call list_racks for the rack's kind."
         ),
         "parameters": {
             "type": "object",
@@ -2556,8 +2739,11 @@ TOOLS: dict[str, dict[str, Any]] = {
     "get_device": {
         "fn": get_device,
         "description": (
-            "Device details by id or name: IPs, VLANs (via LibreNMS), and its rack U "
-            "position/size (u_position, u_size, rack_face) + the rack it's mounted in."
+            "Device details by id or name: IPs, VLANs (via LibreNMS), its rack row "
+            "position/size (u_position, u_size, rack_face), its position within that row "
+            "(rack_slot/rack_slot_span, rack_vslot/rack_vslot_span on a 60-cell grid) and "
+            "the rack it is mounted in (the rack's kind and uses_levels fields say whether "
+            "rows are levels or U)."
         ),
         "parameters": {
             "type": "object",
@@ -2776,6 +2962,24 @@ TOOLS: dict[str, dict[str, Any]] = {
                         "Filter by firewall_name and/or vsys."),
         "parameters": {"type": "object", "properties": {
             "firewall_name": {"type": "string"}, "vsys": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+    },
+    "list_mikrotik_rules": {
+        "fn": list_mikrotik_rules,
+        "description": ("List MikroTik RouterOS firewall rules in evaluation order "
+                        "(RouterOS matches top-down; the order is the semantics). "
+                        "Filter by router_name and/or table (filter|nat|mangle)."),
+        "parameters": {"type": "object", "properties": {
+            "router_name": {"type": "string"},
+            "table": {"type": "string", "enum": ["filter", "nat", "mangle"]},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+    },
+    "list_mikrotik_address_lists": {
+        "fn": list_mikrotik_address_lists,
+        "description": ("List MikroTik address-list entries (RouterOS's equivalent of "
+                        "aliases; one row per address). Filter by router_name and/or list_name."),
+        "parameters": {"type": "object", "properties": {
+            "router_name": {"type": "string"}, "list_name": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
     },
     "list_firewall_rules": {
@@ -3132,6 +3336,11 @@ TOOLS: dict[str, dict[str, Any]] = {
         "description": "List power feeds (voltage/amperage/phase) and outlets (which device each outlet powers).",
         "parameters": {"type": "object", "properties": {"rack_id": {"type": "string", "description": "Restrict to one rack"}, "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
     },
+    "list_ocs_computers": {
+        "fn": list_ocs_computers,
+        "description": "List computers inventoried by OCS Inventory (OS, asset tag, agent version, last inventory time, notes). OCS matches machines to existing IPs by network-card MAC. If the question is about one subnet/CIDR you MUST pass subnet_cidr, otherwise the answer covers the whole system. Use stale_days=N to find assets not inventoried for N days. The reply carries 'scope' and 'count'; state them.",
+        "parameters": {"type": "object", "properties": {"subnet_cidr": {"type": "string", "description": "Restrict to this subnet, e.g. 198.51.100.0/24"}, "subnet_id": {"type": "string"}, "stale_days": {"type": "integer", "minimum": 0, "description": "Only computers not inventoried for this many days"}, "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+    },
     "list_wazuh_agents": {
         "fn": list_wazuh_agents,
         "description": "List Wazuh agents (status, OS, version, CVE critical/high counts). For the coverage GAP use wazuh_missing_agents instead. If the question is about one subnet/CIDR you MUST pass subnet_cidr, otherwise the answer covers the whole system. The reply carries 'scope' and 'count'; state them.",
@@ -3169,11 +3378,12 @@ GLOBAL_READ_TOOLS: frozenset[str] = frozenset({
     "list_vms", "list_wireless_links", "list_vpn_tunnels", "list_scan_agents",
     "list_arp", "list_fdb", "list_circuits", "list_providers", "list_asns",
     "list_tenants", "list_contacts", "list_ssids", "list_cables", "cable_trace",
-    "list_power", "list_wazuh_agents", "wazuh_missing_agents", "get_topology",
+    "list_power", "list_wazuh_agents", "wazuh_missing_agents", "list_ocs_computers", "get_topology",
     "list_attack_surface",
     "list_certificates", "list_cert_distribution",
     "list_dhcp_ranges", "list_fortigate_policies", "list_fortigate_addresses",
     "list_paloalto_policies", "list_paloalto_addresses",
+    "list_mikrotik_rules", "list_mikrotik_address_lists",
     # NAT 與防火牆規則是全域基礎設施資料 —— 與 list_nat / list_firewall_rules 同一層，
     # 不能因為它是「以 IP 為單位查」就鬆一級（改端點權限時要同步收 MCP，這裡踩過）。
     "check_ip_exposure",

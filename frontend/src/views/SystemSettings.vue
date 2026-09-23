@@ -7,17 +7,18 @@ import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NCard, NSpace, NIcon, NSelect, NInput, NInputNumber, NSwitch, NCheckbox, NCheckboxGroup,
-  NButton, NPopconfirm, NTag, useMessage,
+  NButton, NPopconfirm, NTag, NAlert, useMessage,
 } from "naive-ui";
 const origin = window.location.origin;
-import { AdminIcon, SaveIcon, RefreshIcon } from "@/icons";
+import { AdminIcon, SaveIcon, RefreshIcon, WarnIcon } from "@/icons";
 import { getRackEmbedConfig, setRackEmbedConfig, type RackEmbedConfig } from "@/api/racks";
 import { getLdap, putLdap, testLdap, testLdapAuth, type LdapConfig,
   getAuditForward, putAuditForward, testAuditForward, type AuditForward,
   getOidcConfig, putOidcConfig, testOidc, type OidcConfig,
   getSamlConfig, putSamlConfig, testSaml, type SamlConfig,
-  getConsoleSecurity, setConsoleSecurity,
-  getUiDisplay, setUiDisplay } from "@/api/system";
+  getConsoleSecurity, setConsoleSecurity, type RdpEngine,
+  getUiDisplay, setUiDisplay,
+  getDevicePortFilter, setDevicePortFilter } from "@/api/system";
 import { listGroups } from "@/api/admin";
 import { getAutolink, putAutolink, previewAutolink,
   type AutolinkConfig, type AutolinkPreview } from "@/api/system";
@@ -38,12 +39,37 @@ const { t } = useI18n();
 const msg = useMessage();
 
 // 地圖供應商
-// 連線管理資安：RDP 控制端貼上文字到被控端（預設關閉）
+// 連線管理資安：RDP 控制端貼上文字到被控端（預設關閉）＋ RDP 連線引擎
+// 兩個欄位共用同一個端點，所以每次都要把另一個一起送回去，否則會把它蓋成預設值
 const rdpClipPaste = ref(false);
+const rdpEngine = ref<RdpEngine>("aardwolf");
+// 這台機器能不能用 FreeRDP（後端算好的事實）。缺套件時要把安裝指令原樣顯示出來，
+// 讓管理者可以直接複製 —— 不要只說「不可用」。
+const freerdpOk = ref(true);
+const freerdpMissing = ref<string[]>([]);
+const freerdpCmd = ref("");
+const rdpEngineOpts = computed(() => [
+  { label: t("settings.system.rdp_engine_aardwolf"), value: "aardwolf" },
+  { label: t("settings.system.rdp_engine_freerdp"), value: "freerdp" },
+]);
 async function changeRdpClipPaste(v: boolean) {
+  const prev = rdpClipPaste.value;
   rdpClipPaste.value = v;
-  try { await setConsoleSecurity({ rdp_clipboard_paste: v }); msg.success(t("common.ok")); }
-  catch { rdpClipPaste.value = !v; msg.error(t("errors.network")); }
+  try {
+    await setConsoleSecurity({ rdp_clipboard_paste: v, rdp_engine: rdpEngine.value });
+    msg.success(t("common.ok"));
+  } catch { rdpClipPaste.value = prev; msg.error(t("errors.network")); }
+}
+async function changeRdpEngine(v: RdpEngine) {
+  const prev = rdpEngine.value;
+  rdpEngine.value = v;
+  try {
+    const c = await setConsoleSecurity({ rdp_clipboard_paste: rdpClipPaste.value, rdp_engine: v });
+    freerdpOk.value = c.freerdp_available ?? true;
+    freerdpMissing.value = c.freerdp_missing ?? [];
+    freerdpCmd.value = c.freerdp_install_cmd ?? "";
+    msg.success(t("common.ok"));
+  } catch { rdpEngine.value = prev; msg.error(t("errors.network")); }
 }
 
 // 異動記錄淡化天數（超過 N 天的項目以淡色顯示；0 = 不淡化）
@@ -53,6 +79,19 @@ async function changeDimDays(v: number | null) {
   changeLogDimDays.value = days;
   try { await setUiDisplay({ change_log_dim_days: days }); msg.success(t("common.ok")); }
   catch (e) { msg.error(apiErrMsg(e)); }
+}
+
+// 裝置連接埠匯入：偽介面過濾（總開關 + 名稱樣式清單，一行一個正則）
+const portFilterOn = ref(true);
+const portFilterText = ref("");
+async function savePortFilter() {
+  const patterns = portFilterText.value.split("\n").map((s) => s.trim()).filter(Boolean);
+  try {
+    const saved = await setDevicePortFilter({ filter_pseudo: portFilterOn.value, ignore_patterns: patterns });
+    portFilterOn.value = saved.filter_pseudo;
+    portFilterText.value = saved.ignore_patterns.join("\n");
+    msg.success(t("common.ok"));
+  } catch (e) { msg.error(apiErrMsg(e)); }
 }
 
 const mapProvider = ref<"builtin" | "osm" | "google">("builtin");
@@ -110,7 +149,7 @@ const livenessAvail = ref<LivenessSource[]>([]);
 
 const VENDOR_LABEL: Record<string, string> = {
   opnsense: "OPNsense", pfsense: "pfSense",
-  fortigate: "FortiGate", paloalto: "Palo Alto",
+  fortigate: "FortiGate", paloalto: "Palo Alto", mikrotik: "MikroTik",
 };
 
 /** `arp:opnsense` → 「ARP 表（OPNsense）」；沒有廠牌後綴的用既有翻譯。 */
@@ -388,7 +427,7 @@ async function doTestLdapAuth() {
   ldapAuthTesting.value = true;
   try {
     const r = await testLdapAuth(ldapTestUser.value, ldapTestPw.value);
-    msg.success(`✓ ${r.dn}${r.is_admin ? " · 管理員" : ""}${r.display_name ? " · " + r.display_name : ""}`, { duration: 8000 });
+    msg.success(`✓ ${r.dn}${r.is_admin ? ` · ${t("users.is_admin")}` : ""}${r.display_name ? " · " + r.display_name : ""}`, { duration: 8000 });
     ldapTestPw.value = "";
   } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("settings.system.ldap_test_fail")); }
   finally { ldapAuthTesting.value = false; }
@@ -416,7 +455,17 @@ async function doTestAf() {
 onMounted(() => {
   void loadRackEmbed();
   getUiDisplay().then((d) => { changeLogDimDays.value = d.change_log_dim_days; }).catch(() => {});
-  getConsoleSecurity().then((c) => { rdpClipPaste.value = c.rdp_clipboard_paste; }).catch(() => {});
+  getDevicePortFilter().then((d) => {
+    portFilterOn.value = d.filter_pseudo;
+    portFilterText.value = d.ignore_patterns.join("\n");
+  }).catch(() => {});
+  getConsoleSecurity().then((c) => {
+    rdpClipPaste.value = c.rdp_clipboard_paste;
+    rdpEngine.value = c.rdp_engine;
+    freerdpOk.value = c.freerdp_available ?? true;
+    freerdpMissing.value = c.freerdp_missing ?? [];
+    freerdpCmd.value = c.freerdp_install_cmd ?? "";
+  }).catch(() => {});
   getMapProvider().then((p) => { mapProvider.value = p; }).catch(() => {});
   getGoogleMapsKeyStatus().then((s) => { gmapsKeyStatus.value = s; }).catch(() => {});
   getRackNameAlign().then((a) => { rackAlign.value = a; }).catch(() => {});
@@ -481,6 +530,17 @@ async function doPreviewAutolink() {
             <n-switch :value="rdpClipPaste" @update:value="changeRdpClipPaste" />
             <div class="hint">{{ t("settings.system.rdp_clip_paste_hint") }}</div>
           </div>
+          <div class="fld">
+            <label>{{ t("settings.system.rdp_engine") }}</label>
+            <n-select :value="rdpEngine" :options="rdpEngineOpts" @update:value="changeRdpEngine" />
+            <div class="hint">{{ t("settings.system.rdp_engine_hint") }}</div>
+            <!-- 缺套件就講清楚缺哪些、怎麼裝；選了 FreeRDP 卻沒裝是會連不上的，要用警示色 -->
+            <n-alert v-if="!freerdpOk" :type="rdpEngine === 'freerdp' ? 'error' : 'warning'"
+                     :bordered="false" style="margin-top:8px">
+              <div>{{ t("settings.system.rdp_engine_missing", { pkgs: freerdpMissing.join("、") }) }}</div>
+              <code class="rdp-install-cmd">{{ freerdpCmd }}</code>
+            </n-alert>
+          </div>
         </div>
       </n-card>
 
@@ -523,6 +583,30 @@ async function doPreviewAutolink() {
         </div>
       </n-card>
 
+      <!-- 裝置連接埠匯入：偽介面過濾 -->
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_device_ports") }}</span></template>
+        <div class="ss-grid">
+          <div class="fld">
+            <label>{{ t("settings.system.port_filter_pseudo") }}</label>
+            <n-switch v-model:value="portFilterOn" />
+            <div class="hint">{{ t("settings.system.port_filter_pseudo_hint") }}</div>
+          </div>
+          <div class="fld" style="grid-column: 1 / -1">
+            <label>{{ t("settings.system.port_ignore_patterns") }}</label>
+            <n-input v-model:value="portFilterText" type="textarea" :disabled="!portFilterOn"
+                     :autosize="{ minRows: 4, maxRows: 12 }"
+                     placeholder="^ethernet_\d+$" style="font-family: monospace" />
+            <div class="hint">{{ t("settings.system.port_ignore_patterns_hint") }}</div>
+          </div>
+          <div class="fld">
+            <n-button type="primary" size="small" @click="savePortFilter">
+              <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
+            </n-button>
+          </div>
+        </div>
+      </n-card>
+
       <!-- 上線判定 -->
       <n-card class="ss-group" size="small">
         <template #header><span class="ss-h">{{ t("system_settings.grp_liveness") }}</span></template>
@@ -550,6 +634,10 @@ async function doPreviewAutolink() {
               </div>
             </div>
           </n-checkbox-group>
+          <div class="ss-warn">
+            <n-icon :size="15" :component="WarnIcon" />
+            <span>{{ t("system_settings.liveness_no_aging_warn") }}</span>
+          </div>
           <div class="hint">{{ t("system_settings.liveness_sources_hint") }}</div>
         </div>
       </n-card>
@@ -973,11 +1061,14 @@ async function doPreviewAutolink() {
    原本只對「卡片內容的直接子元素」下間距，但很多區塊是包在 grid / div 裡的，
    於是開關與底下的欄位就貼在一起（使用者回報：轉送稽核記錄那格最明顯）。
    這裡改成三條規則一起管：卡片第一層、相鄰的欄位、以及開關列與後面的東西。 */
+/* 卡片內「直向堆疊」的區塊之間留白。
+   ⚠️ 間距只能加在**直向容器**上，不可以用「相鄰兄弟就補上邊距」——
+   欄位並排時（.ss-grid 的兩、三欄）那條規則會把右邊那欄整個往下推 14px，
+   看起來就是左右沒對齊（使用者在「顯示與地圖」與 GeoIP 兩處都抓到）。 */
 .ss-group :deep(.n-card__content) > * + * { margin-top: 16px; }
-/* 相鄰欄位之間（含被 grid / div 包住的） */
-.ss-group :deep(.fld + .fld) { margin-top: 14px; }
-.ss-group :deep(.fld + div),
-.ss-group :deep(div + .fld) { margin-top: 14px; }
+/* 直向排列的容器用 gap，橫向排列的（.ss-grid）由它自己的 gap 負責 */
+.ss-group :deep(.n-card__content) { display: flex; flex-direction: column; }
+.ss-group :deep(.n-card__content) > .fld + .fld { margin-top: 14px; }
 /* 開關列之後一定要留白：開關本身沒有下邊界，視覺上會黏住下一個欄位的標題 */
 .ss-group :deep(.n-switch) { margin-bottom: 2px; }
 .ss-group :deep(.fld > .n-space) { margin-bottom: 6px; }
@@ -985,6 +1076,8 @@ async function doPreviewAutolink() {
 .ss-group :deep(.n-button + .hint),
 .ss-group :deep(.ss-row + .hint) { margin-top: 10px; }
 .ss-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+/* 只有一個欄位時就別佔半格：右半邊空著、說明卻提早換行（使用者回報）。 */
+.ss-grid > :only-child { grid-column: 1 / -1; }
 /* 寬螢幕改三欄，把右邊的空間用掉 */
 @media (min-width: 1500px) { .ss-grid { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 640px) { .ss-grid { grid-template-columns: 1fr; } }
@@ -999,10 +1092,17 @@ async function doPreviewAutolink() {
 }
 /* 固定欄寬的網格：每一格一樣寬，列與列才對得齊 */
 .ss-src-grid {
-  flex: 1 1 auto; display: grid; gap: 8px 14px;
-  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); max-width: 940px;
+  /* ⚠️ `min-width: 0` 不能省：flex 子項預設 min-width:auto，撐不小於內容的最小寬度，
+     視窗一窄格線就整片衝出卡片外（實測 820px 視窗下超出 195px）。 */
+  /* `width: 100%` 是關鍵：只給 flex 屬性時，格線的寬度仍會由內容決定（欄數 × 最小欄寬），
+     視窗一窄就整片衝出卡片外。明確綁定容器寬度之後，欄數才會跟著縮。 */
+  flex: 1 1 auto; min-width: 0; width: 100%; display: grid; gap: 8px 14px;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); max-width: 940px;
 }
-.ss-src-item { line-height: 22px; }
+/* 選項本身也要能縮：長標籤（Wazuh 代理 keep-alive）在窄欄位裡要換行而不是撐開格線 */
+.ss-src-item { min-width: 0; }
+.ss-src-item :deep(.n-checkbox__label) { white-space: normal; }
+.ss-src-item { line-height: 22px; min-width: 0; }
 .ss-src-name { vertical-align: middle; }
 .ss-src-tag { margin-left: 4px; vertical-align: middle; }
 @media (max-width: 900px) {
@@ -1012,7 +1112,19 @@ async function doPreviewAutolink() {
 .fld-narrow-input :deep(.n-input-number) { max-width: 260px; }
 .fld label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 5px; }
 .hint { font-size: 11px; opacity: 0.65; margin-top: 4px; }
+/* 「不會過期」是會讓判定失真的選項 —— 從灰色說明裡拉出來，別讓它埋在一整段字裡 */
+.ss-warn {
+  display: flex; align-items: flex-start; gap: 6px; margin-top: 10px;
+  padding: 8px 10px; border-radius: 8px; font-size: 12.5px; line-height: 1.6;
+  color: #a2680a; background: rgba(240, 160, 32, 0.12);
+  border: 1px solid rgba(240, 160, 32, 0.35);
+}
 .ss-row { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
 .ss-status { margin-top: 12px; font-size: 12px; display: flex; flex-direction: column; gap: 3px; }
 .db-row { display: flex; gap: 8px; align-items: center; }
+.rdp-install-cmd {
+  display: block; margin-top: 6px; padding: 5px 8px; border-radius: 4px;
+  background: rgba(0, 0, 0, .06); font-size: 12px;
+  white-space: pre-wrap; word-break: break-all; user-select: all;
+}
 </style>

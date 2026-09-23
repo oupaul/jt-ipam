@@ -1,3 +1,4 @@
+import type { ServerMessage } from "@/utils/wsError";
 import { apiClient } from "@/api/client";
 
 export interface GraylogDsv { enabled: boolean; fmt: string; path: string; token: string; }
@@ -137,6 +138,7 @@ export interface LLMConfig {
   /** 金鑰只回「有沒有設」，本身不回傳到瀏覽器。 */
   api_key_set?: boolean;
   embedding_model: string;
+  embedding_base_url: string;
   chat_model: string;
   timeout: number;
   num_ctx?: number | null;
@@ -158,6 +160,7 @@ export interface LLMConfigPatch {
   url?: string;
   api_key?: string;
   embedding_model?: string;
+  embedding_base_url?: string;
   chat_model?: string;
   timeout?: number;
   num_ctx?: number | null;
@@ -200,8 +203,15 @@ export interface OllamaModel {
   parameter_size: string | null;
 }
 
-export async function listOllamaModels(): Promise<{ models: OllamaModel[]; error?: string }> {
-  const { data } = await apiClient.get<{ models: OllamaModel[]; error?: string }>(
+/** `error_detail` 是結構化訊息（代碼＋參數），句子由前端組；`error` 是舊欄位的退路。 */
+export interface OllamaModelsResult {
+  models: OllamaModel[];
+  error?: string;
+  error_detail?: ServerMessage;
+}
+
+export async function listOllamaModels(): Promise<OllamaModelsResult> {
+  const { data } = await apiClient.get<OllamaModelsResult>(
     "/api/v1/system/llm/models",
   );
   return data;
@@ -209,6 +219,8 @@ export async function listOllamaModels(): Promise<{ models: OllamaModel[]; error
 
 export interface VersionInfo {
   current: string;
+  /** SPDX 授權識別字（來自後端；與 pyproject / package.json / LICENSE 綁在一起） */
+  license?: string;
   python: string;
   packages: Record<string, string | null>;
   frontend?: Record<string, string | null>;
@@ -241,18 +253,38 @@ export async function checkLatestVersion(): Promise<LatestVersion> {
   return data;
 }
 
-// 連線管理資安設定（目前：RDP 控制端貼上文字到被控端）
-export interface ConsoleSecurity { rdp_clipboard_paste: boolean }
+// 連線管理資安設定（RDP 控制端貼上文字到被控端、RDP 連線引擎）
+export type RdpEngine = "aardwolf" | "freerdp";
+export interface ConsoleSecurity {
+  rdp_clipboard_paste: boolean;
+  rdp_engine: RdpEngine;
+  // 唯讀：這台機器實際上能不能用 FreeRDP 引擎，缺什麼、怎麼裝（由後端算）
+  freerdp_available?: boolean;
+  freerdp_missing?: string[];
+  freerdp_install_cmd?: string;
+}
+/** PUT 只送得改的那兩個欄位；可用性是伺服器算出來的事實，送回去會被擋（422）。 */
+export type ConsoleSecurityPatch = Pick<ConsoleSecurity, "rdp_clipboard_paste" | "rdp_engine">;
 export async function getConsoleSecurity(): Promise<ConsoleSecurity> {
   const { data } = await apiClient.get<ConsoleSecurity>("/api/v1/system/console-security");
   return data;
 }
-export async function setConsoleSecurity(p: ConsoleSecurity): Promise<ConsoleSecurity> {
+export async function setConsoleSecurity(p: ConsoleSecurityPatch): Promise<ConsoleSecurity> {
   const { data } = await apiClient.put<ConsoleSecurity>("/api/v1/system/console-security", p);
   return data;
 }
 
 // 介面顯示設定（系統層；目前：異動記錄淡化天數）
+export interface DevicePortFilter { filter_pseudo: boolean; ignore_patterns: string[] }
+export async function getDevicePortFilter(): Promise<DevicePortFilter> {
+  const { data } = await apiClient.get<DevicePortFilter>("/api/v1/system/device-port-filter");
+  return data;
+}
+export async function setDevicePortFilter(p: DevicePortFilter): Promise<DevicePortFilter> {
+  const { data } = await apiClient.put<DevicePortFilter>("/api/v1/system/device-port-filter", p);
+  return data;
+}
+
 export interface UiDisplay { change_log_dim_days: number }
 export async function getUiDisplay(): Promise<UiDisplay> {
   const { data } = await apiClient.get<UiDisplay>("/api/v1/system/ui-display");

@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import PlainTextResponse
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +23,7 @@ from app.api.v1.dependencies import (
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
+from app.core.ui_error import ui_detail
 from app.models.ip_hostname import HOSTNAME_SOURCES
 from app.schemas.base import StrictModel
 from app.services import os_precedence
@@ -420,9 +422,65 @@ async def put_ui_display(
     return UiDisplayOut(change_log_dim_days=days)
 
 
-class ConsoleSecurityOut(StrictModel):
+class DevicePortFilterOut(StrictModel):
+    # 匯入裝置連接埠時，過濾掉符合這些名稱樣式（正則）的偽介面（Windows NDIS / WAN Miniport
+    # 等）。filter_pseudo 是總開關；關閉時匯入不過濾也不清除。
+    filter_pseudo: bool = True
+    ignore_patterns: list[str] = Field(default_factory=list)
+
+
+@router.get("/device-port-filter", response_model=DevicePortFilterOut)
+async def get_device_port_filter_endpoint(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> DevicePortFilterOut:
+    from app.services.system_config import get_device_port_filter
+    cfg = await get_device_port_filter(session)
+    return DevicePortFilterOut(**cfg)
+
+
+@router.put("/device-port-filter", response_model=DevicePortFilterOut)
+async def put_device_port_filter(
+    payload: DevicePortFilterOut,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> DevicePortFilterOut:
+    from app.services.system_config import set_device_port_filter
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "device_ports", "filter_pseudo": payload.filter_pseudo,
+              "ignore_patterns": payload.ignore_patterns},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    cfg = await set_device_port_filter(
+        session, filter_pseudo=payload.filter_pseudo,
+        ignore_patterns=payload.ignore_patterns, updated_by_user_id=user.id)
+    return DevicePortFilterOut(**cfg)
+
+
+class ConsoleSecurityIn(StrictModel):
+    """可以改的部分。"""
+
     # 允許 RDP 控制端把文字貼到被控端（剪貼簿單向重導；預設關閉）
     rdp_clipboard_paste: bool = False
+    # RDP 連線引擎：aardwolf（預設，純 Python）或 freerdp（相容性較好，需外部行程）
+    rdp_engine: Literal["aardwolf", "freerdp"] = "aardwolf"
+
+
+class ConsoleSecurityOut(ConsoleSecurityIn):
+    """再加上「這台機器實際上能不能用」。
+
+    設定頁要看得到這一段：選項擺在那裡、按下去才發現缺套件，比沒有這個選項更糟。
+    缺什麼與怎麼裝都由後端算好 —— 前端不該自己維護一份套件清單（兩份遲早不一致）。
+    """
+
+    freerdp_available: bool = False
+    freerdp_missing: list[str] = []
+    freerdp_install_cmd: str = ""
 
 
 @public_router.get("/console-security", response_model=ConsoleSecurityOut)
@@ -430,29 +488,51 @@ async def get_console_security(
     _user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ConsoleSecurityOut:
-    from app.services.system_config import get_rdp_clipboard_paste
-    return ConsoleSecurityOut(rdp_clipboard_paste=await get_rdp_clipboard_paste(session))
+    from app.services.system_config import get_rdp_clipboard_paste, get_rdp_engine
+    return _console_security_out(
+        rdp_clipboard_paste=await get_rdp_clipboard_paste(session),
+        rdp_engine=await get_rdp_engine(session),
+    )
 
 
 @router.put("/console-security", response_model=ConsoleSecurityOut, dependencies=[Depends(require_admin)])
 async def put_console_security(
-    payload: ConsoleSecurityOut,
+    payload: ConsoleSecurityIn,
     user: CurrentUser,
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ConsoleSecurityOut:
-    from app.services.system_config import set_rdp_clipboard_paste
+    from app.services.system_config import set_rdp_clipboard_paste, set_rdp_engine
     await append_audit(
         session, actor_user_id=str(user.id),
         actor_ip=request.client.host if request.client else None,
         actor_user_agent=request.headers.get("user-agent"),
         object_type="system", object_id=None, action="update",
-        diff={"target": "console_security", "rdp_clipboard_paste": payload.rdp_clipboard_paste},
+        # 換引擎會改變「連得上／連不上」，稽核要看得出是誰換的
+        diff={"target": "console_security",
+              "rdp_clipboard_paste": payload.rdp_clipboard_paste,
+              "rdp_engine": payload.rdp_engine},
         request_id=getattr(request.state, "request_id", None),
     )
     enabled = await set_rdp_clipboard_paste(
         session, enabled=payload.rdp_clipboard_paste, updated_by_user_id=user.id)
-    return ConsoleSecurityOut(rdp_clipboard_paste=enabled)
+    engine = await set_rdp_engine(
+        session, engine=payload.rdp_engine, updated_by_user_id=user.id)
+    return _console_security_out(rdp_clipboard_paste=enabled, rdp_engine=engine)
+
+
+def _console_security_out(*, rdp_clipboard_paste: bool, rdp_engine: str) -> ConsoleSecurityOut:
+    from app.services.rdp_freerdp import FREERDP_APT_HINT, availability
+
+    av = availability()
+    missing = list(av["missing_packages"]) + list(av["missing_modules"])
+    return ConsoleSecurityOut(
+        rdp_clipboard_paste=rdp_clipboard_paste,
+        rdp_engine=rdp_engine,  # type: ignore[arg-type]
+        freerdp_available=bool(av["ok"]),
+        freerdp_missing=missing,
+        freerdp_install_cmd="" if av["ok"] else FREERDP_APT_HINT,
+    )
 
 
 # 本機地圖圖磚代理（OSM）：讓「OpenStreetMap」供應商在維持嚴格 CSP（img-src 'self'）+ COEP require-corp
@@ -655,6 +735,7 @@ async def _liveness_candidates(
     from app.models.firewall import OPNsenseFirewall
     from app.models.fortigate import FortiGateFirewall
     from app.models.librenms import LibreNMSInstance
+    from app.models.mikrotik import MikroTikRouter
     from app.models.paloalto import PaloAltoFirewall
     from app.models.pfsense import PfSenseFirewall
     from app.models.wazuh import WazuhInstance
@@ -673,6 +754,7 @@ async def _liveness_candidates(
         "pfsense": await _has(PfSenseFirewall),
         "fortigate": await _has(FortiGateFirewall),
         "paloalto": await _has(PaloAltoFirewall),
+        "mikrotik": await _has(MikroTikRouter),
     }
     out: list[LivenessSourceOut] = []
     for key in LIVENESS_SOURCES:
@@ -800,6 +882,8 @@ class LLMConfigOut(StrictModel):
     api_key_set: bool = False
     url: str
     embedding_model: str
+    # 嵌入模型的位址；空＝沿用 url（GitHub issue #33：兩種模型常分開部署）
+    embedding_base_url: str = ""
     chat_model: str
     timeout: float
     num_ctx: int | None = None
@@ -823,6 +907,8 @@ class LLMConfigPatch(StrictModel):
     api_key: Annotated[str | None, Field(min_length=0, max_length=512)] = None
     url: Annotated[str | None, Field(min_length=4, max_length=512)] = None
     embedding_model: Annotated[str | None, Field(min_length=1, max_length=128)] = None
+    # 空字串＝清掉，回到「沿用對話模型的位址」，所以 min_length 是 0
+    embedding_base_url: Annotated[str | None, Field(min_length=0, max_length=512)] = None
     chat_model: Annotated[str | None, Field(min_length=1, max_length=128)] = None
     timeout: Annotated[float | None, Field(ge=1.0, le=600.0)] = None
     # 0 / 空＝沿用模型/Ollama 預設；上限取寬鬆合理值（128k）
@@ -852,6 +938,7 @@ def _llm_out(cfg: Any) -> LLMConfigOut:
     return LLMConfigOut(
         enabled=cfg.enabled, url=cfg.url,
         embedding_model=cfg.embedding_model,
+        embedding_base_url=getattr(cfg, "embedding_base_url", None) or "",
         chat_model=cfg.chat_model, timeout=cfg.timeout,
         provider=cfg.provider, api_key_set=bool(cfg.api_key),
         num_ctx=cfg.num_ctx,
@@ -891,6 +978,7 @@ async def patch_llm(
         api_key=changes.get("api_key"),
         url=changes.get("url"),
         embedding_model=changes.get("embedding_model"),
+        embedding_base_url=changes.get("embedding_base_url"),
         chat_model=changes.get("chat_model"),
         timeout=changes.get("timeout"),
         num_ctx=changes.get("num_ctx"),
@@ -969,10 +1057,26 @@ async def list_ollama_models(
     headers = ai_mod.auth_headers(provider, getattr(cfg, "api_key", None))
     try:
         resp = await safe_request("GET", url, timeout=10.0, headers=headers)
+    except UnsafeOutboundURL as exc:
+        # 被自己的 SSRF 防護擋下**是預期內的結果**，不是伺服器故障 —— 尤其
+        # 預設的 Ollama 位址就是 loopback（`http://127.0.0.1:11434`），而 loopback
+        # 在 safe_http 是一律封鎖的。原本這裡只接 httpx 的錯誤，於是設定頁一開就是
+        # 四個 500，畫面上只有「伺服器發生錯誤」，看不出被擋的是哪個位址、怎麼放行。
+        return {"models": [], "error_detail": ui_detail(
+            "llm_models_ssrf_blocked",
+            f"{exc} —— 這個位址被連外防護擋下了。若確定要連到這台機器上的服務，"
+            f"請在 backend.env 的 OUTBOUND_ALLOW_CIDRS 加入該網段（例如 127.0.0.0/8）"
+            f"後重啟後端。",
+            reason=str(exc)[:200],
+        )}
     except httpx.HTTPError as exc:
-        return {"models": [], "error": f"{type(exc).__name__}: {exc}"}
+        return {"models": [], "error_detail": ui_detail(
+            "llm_models_unreachable", f"{type(exc).__name__}: {exc}",
+            reason=f"{type(exc).__name__}: {exc}"[:200])}
     if resp.status_code != 200:
-        return {"models": [], "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+        return {"models": [], "error_detail": ui_detail(
+            "llm_models_http", f"HTTP {resp.status_code}: {resp.text[:200]}",
+            status=resp.status_code, body=resp.text[:200])}
     return {"models": ai_mod.parse_models(resp.json() or {}, provider)}
 
 
@@ -1201,7 +1305,17 @@ def _gather_version_info() -> dict[str, Any]:
     from importlib.metadata import version as _pkgver
     from pathlib import Path
 
-    from app.version import __version__
+    from app.version import __license__, __version__
+
+    # 授權條款：優先讀安裝後的套件 metadata（那份是由 pyproject 產生的，不會與封裝
+    # 脫節）；沒有 metadata 時（直接從原始碼跑）退回程式碼裡的常數。
+    def _license() -> str:
+        try:
+            from importlib.metadata import metadata as _dist_meta
+            declared = _dist_meta("jt-ipam-backend").get("License")
+        except Exception:
+            declared = None
+        return declared or __license__
 
     # 後端 Python 套件（含連線管理用：asyncssh〔SSH〕、aardwolf〔RDP/VNC，選用〕、
     #                    websockets〔PVE noVNC/xterm 主控台代理〕、Pillow）
@@ -1275,11 +1389,39 @@ def _gather_version_info() -> dict[str, Any]:
     }
     return {
         "current": __version__,
+        "license": _license(),
         "python": sys.version.split()[0],
         "packages": versions,
         "frontend": frontend,
         "host": host,
     }
+
+
+@router.get("/doctor", dependencies=[Depends(require_admin)])
+async def system_doctor(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """系統診斷（admin）：後端查得到的檢查一次跑完，每一項都附「該怎麼修」。
+
+    由來（2026-09-05 客戶回報）：儀表板數得出 55 台裝置、裝置清單卻是 500 加空白，
+    原因是資料庫結構落後於程式。系統其實查得出來，卻沒有任何地方講 ——
+    這一支就是把「後端知道但沒說」的事情攤開來。
+
+    系統層的檢查（systemd、nginx、備份檔、掃描代理）後端看不到，回應裡會註明，
+    要用伺服器上的 `jt-ipam.sh doctor`。
+    """
+    from app.services.self_check import run_checks
+    return (await run_checks(session)).as_dict()
+
+
+@router.get("/doctor/report", response_class=PlainTextResponse,
+            dependencies=[Depends(require_admin)])
+async def system_doctor_report(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> str:
+    """同一份診斷的純文字版 —— 給「下載記錄檔」用，可直接貼進工單。"""
+    from app.services.self_check import run_checks
+    return (await run_checks(session)).as_text()
 
 
 @router.get("/version", dependencies=[Depends(require_admin)])
@@ -1315,6 +1457,27 @@ async def get_version_info() -> dict[str, Any]:
                        "used_by": "Tools → IP addresses → traceroute"},
         "tracepath": {"present": caps["tracepath"], "package": "iputils-tracepath",
                       "used_by": "traceroute fallback"},
+    }
+    # FreeRDP 引擎要的那幾個。列在這裡是因為這一頁正是管理員用來確認「這台裝了什麼」
+    # 的地方 —— 選了 FreeRDP 卻連不上時，第一個該看的就是這裡，而不是去翻日誌。
+    import shutil as _shutil
+
+    from app.services.rdp_freerdp import REQUIRED_BINARIES
+    _rdp_used_by = {
+        "xfreerdp": "RDP console (FreeRDP engine)",
+        "Xvfb": "RDP console (FreeRDP engine) — virtual display",
+        "ffmpeg": "RDP console (FreeRDP engine) — screen capture",
+    }
+    for exe, pkg in REQUIRED_BINARIES.items():
+        info["host"]["optional_tools"][exe] = {
+            "present": _shutil.which(exe) is not None,
+            "package": pkg,
+            "used_by": _rdp_used_by.get(exe, "RDP console (FreeRDP engine)"),
+        }
+    info["host"]["optional_tools"]["xclip"] = {
+        "present": _shutil.which("xclip") is not None,
+        "package": "xclip",
+        "used_by": "RDP console (FreeRDP engine) — clipboard paste",
     }
     return info
 
@@ -1620,6 +1783,7 @@ async def integration_presence(
     from app.models.esxi import ESXiInstance
     from app.models.firewall import OPNsenseFirewall
     from app.models.fortigate import FortiGateFirewall
+    from app.models.mikrotik import MikroTikRouter
     from app.models.paloalto import PaloAltoFirewall
     from app.models.pfsense import PfSenseFirewall
     from app.models.virt import ProxmoxInstance
@@ -1632,6 +1796,7 @@ async def integration_presence(
         ("fortigate", FortiGateFirewall),
         ("zyxel", ZyxelFirewall),
         ("paloalto", PaloAltoFirewall),
+        ("mikrotik", MikroTikRouter),
         ("dns", DNSServer),
         ("cert_agents", CertAgent),
         ("proxmox", ProxmoxInstance),

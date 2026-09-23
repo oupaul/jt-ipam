@@ -32,6 +32,7 @@ import IpRoleTags from "@/components/IpRoleTags.vue";
 import { ArrowLeft as ArrowLeftIcon } from "@iconoir/vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useCustomers } from "@/composables/useCustomers";
+import { listJumpHosts } from "@/api/jumpHosts";
 import { useChangeLogDim } from "@/composables/useChangeLogDim";
 import { useRouter } from "vue-router";
 import { getDevice, listDevices, type Device } from "@/api/basic";
@@ -44,6 +45,15 @@ import OsIcon from "@/components/OsIcon.vue";
 
 const router = useRouter();
 const { options: customerOptions, labelFor: customerLabelFor, ensureLoaded: ensureCustomersLoaded } = useCustomers();
+// 主控台的連線出口（issue #24）。跳板清單只有 admin 讀得到 —— 讀不到就不顯示這個欄位。
+const jumpOptions = ref<{ label: string; value: string }[]>([]);
+async function loadJumpOptions() {
+  try {
+    jumpOptions.value = (await listJumpHosts()).items
+      .filter((j) => j.enabled)
+      .map((j) => ({ label: `${j.name}（${j.username}@${j.host}:${j.port}）`, value: j.id }));
+  } catch { jumpOptions.value = []; }
+}
 const { isOld: isOldLog } = useChangeLogDim();
 const devices = ref<Device[]>([]);
 
@@ -138,6 +148,21 @@ async function loadRelatedNat() {
 // 此 IP 被哪些防火牆規則／別名管到（反向查詢）。
 // 防火牆規則屬全域基礎設施資料：無 has_global_read 的帳號不打這支、也不顯示區塊。
 const fwInfo = ref<{ rules: any[]; nat: any[]; aliases: any[] } | null>(null);
+
+/** 防火牆規則的「命中原因」：後端給結構，句子在這裡組。
+ *
+ * 後端原本直接回中文句子（「來源：網段 X 涵蓋」），結果**英文與日文介面也照樣出中文**
+ * —— 伺服器產生的顯示文字沒有辦法跟著使用者的語言走。所以後端改回
+ * `{side, code, value}`，翻譯留在這裡。新增命中種類時，三個語系的 `fw_why_*` 都要補。
+ */
+function fwMatchText(m: unknown): string {
+  if (!m) return "";
+  if (typeof m === "string") return m;            // 舊版後端（升級中的短暫並存）
+  const { side, code, value } = m as { side?: string; code?: string; value?: string };
+  if (!code) return "";
+  const why = t(`addresses.fw_why_${code}`, { value: value ?? "" });
+  return t(side === "dst" ? "addresses.fw_match_dst" : "addresses.fw_match_src", { why });
+}
 const auth = useAuthStore();
 async function loadFirewall() {
   fwInfo.value = null;
@@ -154,9 +179,12 @@ function goNat() {
   void router.push({ name: "nat" });
 }
 
-function goDevice(id: string | null | undefined) {
+function goDevice(id: string | null | undefined, card?: string) {
   if (!id) return;
-  void router.push({ name: "device-detail", params: { id } });
+  void router.push({
+    name: "device-detail", params: { id },
+    ...(card ? { query: { card } } : {}),
+  });
 }
 
 // 後端原始值 → i18n 顯示；找不到 key 就回原值
@@ -266,6 +294,7 @@ interface FormState {
   ptr_ignore: boolean;
   note: string;
   customer_id: string | null;
+  jump_host_id: string | null;
   device_id: string | null;
   hostname_source_pin: string;  // "" = 自動 (跟全域優先序)
   ssh_enabled: boolean;
@@ -287,6 +316,7 @@ function emptyForm(): FormState {
     owner: "", switch_port: "",
     ptr_ignore: false, note: "",
     customer_id: null,
+    jump_host_id: null,
     device_id: null,
     hostname_source_pin: "",
     ssh_enabled: false,
@@ -379,6 +409,7 @@ function fromAddress(a: IPAddress): FormState {
     ptr_ignore: !!a.ptr_ignore,
     note: a.note ?? "",
     customer_id: a.customer_id ?? null,
+    jump_host_id: a.jump_host_id ?? null,
     device_id: (a as any).device_id ?? null,
     hostname_source_pin: a.hostname_source_pin ?? "",
     ssh_enabled: !!a.ssh_enabled,
@@ -418,6 +449,7 @@ watch(
     }
     if (props.show) {
       void ensureCustomersLoaded();
+      void loadJumpOptions();
       void loadDevices();
       void loadDhcpRanges();
       void loadRelations();
@@ -613,6 +645,7 @@ async function save() {
         switch_port: form.value.switch_port.trim() || null,
         note: form.value.note.trim() || null,
         customer_id: form.value.customer_id ?? null,
+        jump_host_id: form.value.jump_host_id ?? null,
         device_id: form.value.device_id ?? null,
       });
       msg.success(t("common.ok"));
@@ -980,6 +1013,16 @@ async function remove() {
                                :label="t('addresses.last_seen_wazuh')">
             {{ fmtDateTime(props.address?.last_seen_wazuh) }}
           </n-descriptions-item>
+          <!-- 盤點時間可點 → 帶到裝置頁並捲到 OCS 卡片（沒連到裝置時就只是純文字） -->
+          <n-descriptions-item v-if="props.address?.last_seen_ocs"
+                               :label="t('addresses.last_seen_ocs')">
+            <a v-if="props.address?.device_id" class="ocs-jump"
+               :title="t('addresses.last_seen_ocs_jump')"
+               @click="goDevice(props.address?.device_id, 'ocs')">
+              {{ fmtDateTime(props.address?.last_seen_ocs) }}
+            </a>
+            <template v-else>{{ fmtDateTime(props.address?.last_seen_ocs) }}</template>
+          </n-descriptions-item>
           <!-- 防火牆給的證據逐來源列出。以前這些全被寫成「掃描代理」，於是沒有代理的站台
                也看得到掃描代理的時間 —— 現在照實顯示是哪一台防火牆、哪一種表看到的。 -->
           <n-descriptions-item v-for="[k, v] in fwSeen" :key="k" :label="fwSeenLabel(k)">
@@ -1006,7 +1049,7 @@ async function remove() {
                style="font-size: 12.5px; line-height: 1.8">
             <n-tag size="tiny" style="margin-right: 6px">{{ r.source_type }}</n-tag>
             {{ r.firewall }}｜{{ r.action }} {{ r.src }} → {{ r.dst }}{{ r.dst_port ? ":" + r.dst_port : "" }}
-            <span style="opacity:.6">（{{ r.match }}{{ r.descr ? "；" + r.descr : "" }}）</span>
+            <span style="opacity:.6">（{{ fwMatchText(r.match) }}{{ r.descr ? "；" + r.descr : "" }}）</span>
           </div>
           <div v-if="fwInfo.aliases.length" style="font-size: 12.5px; margin-top: 4px">
             {{ t("addresses.fw_aliases") }}：
@@ -1095,7 +1138,7 @@ async function remove() {
         <!-- edit mode -->
         <n-form v-else label-placement="top">
           <n-form-item v-if="isCreate" :label="t('addresses.ip')" required style="margin-bottom: 12px">
-            <n-input v-model:value="createIp" placeholder="192.168.1.10" />
+            <n-input v-model:value="createIp" placeholder="198.51.100.10" />
           </n-form-item>
           <n-space :size="12" :wrap-item="false" style="flex-wrap: wrap">
             <n-form-item :label="t('addresses.hostname')" style="flex: 1 1 300px">
@@ -1150,6 +1193,13 @@ async function remove() {
           <n-form-item :label="t('nav.customers')">
             <n-select v-model:value="form.customer_id" :options="customerOptions"
                       :placeholder="t('common.not_specified')" clearable filterable />
+          </n-form-item>
+          <n-form-item v-if="jumpOptions.length" :label="t('jump_hosts.exit')">
+            <n-space vertical :size="4" style="width: 100%">
+              <n-select v-model:value="form.jump_host_id" :options="jumpOptions"
+                        :placeholder="t('jump_hosts.exit_inherit')" clearable filterable />
+              <span style="font-size: 11px; opacity: .7">{{ t("jump_hosts.exit_hint") }}</span>
+            </n-space>
           </n-form-item>
           <n-form-item :label="t('nav.devices')">
             <n-space vertical :size="4" style="width: 100%">
@@ -1310,6 +1360,12 @@ async function remove() {
 </template>
 
 <style scoped>
+.ocs-jump {
+  cursor: pointer;
+  color: var(--n-primary-color, #18a058);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
 .nat-ref {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 10px; border-radius: 6px;

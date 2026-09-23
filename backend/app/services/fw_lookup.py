@@ -18,8 +18,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def _field_matches(field: Any, aip: Any, alias_names: set[str]) -> str | None:
-    """規則欄位是否明確涵蓋這個 IP。回傳命中原因；None＝不命中（含 any）。"""
+def _field_matches(field: Any, aip: Any, alias_names: set[str]) -> dict[str, Any] | None:
+    """規則欄位是否明確涵蓋這個 IP。回傳命中原因；None＝不命中（含 any）。
+
+    回傳的是**結構**（`{"code": ..., "value": ...}`）而不是寫好的句子：這段文字會
+    直接顯示在畫面上，寫成中文句子等於不論使用者選英文或日文都看到中文 ——
+    實際被回報過。翻譯交給前端的 i18n，後端只講「命中的是哪一種、命中的值是什麼」。
+    """
     if field is None:
         return None
     if isinstance(field, dict):
@@ -33,18 +38,25 @@ def _field_matches(field: Any, aip: Any, alias_names: set[str]) -> str | None:
     if not text or text.lower() in ("any", "*", "all"):
         return None
     if text in alias_names:
-        return f"別名 {text} 的成員"
+        return {"code": "alias_member", "value": text}
     host = text.split("/")[0]
     try:
         if "/" in text:
             if aip in ipaddress.ip_network(text, strict=False):
-                return f"網段 {text} 涵蓋"
+                return {"code": "net_covers", "value": text}
             return None
         if ipaddress.ip_address(host) == aip:
-            return "位址完全相符"
+            return {"code": "exact", "value": text}
     except ValueError:
         return None
     return None
+
+
+def _match_payload(why_src: dict | None, why_dst: dict | None) -> dict[str, Any]:
+    """命中原因＋命中在哪一側，交給前端組句子。"""
+    side = "dst" if why_dst else "src"
+    why = why_dst or why_src or {}
+    return {"side": side, "code": why.get("code"), "value": why.get("value")}
 
 
 def _member_covers(members: list | None, aip: Any) -> bool:
@@ -67,6 +79,7 @@ async def rules_touching_ip(session: AsyncSession, ip: str) -> dict[str, Any]:
     from app.models.firewall import OPNsenseFirewall, OPNsenseSyncedAlias
     from app.models.firewall_rule import OPNsenseRule
     from app.models.fortigate import FortiGateFirewall, FortiGatePolicy
+    from app.models.mikrotik import MikroTikAddressList, MikroTikRouter, MikroTikRule
     from app.models.nat import NATTranslation
     from app.models.paloalto import PaloAltoFirewall, PaloAltoPolicy
     from app.models.pfsense import PfSenseFirewall, PfSenseSyncedAlias
@@ -101,7 +114,7 @@ async def rules_touching_ip(session: AsyncSession, ip: str) -> dict[str, Any]:
                 "src": str(r.source_net or "any"), "dst": str(r.destination_net or "any"),
                 "dst_port": str(getattr(r, "destination_port", "") or ""),
                 "descr": (r.description or "")[:120],
-                "match": ("目的：" + why_dst) if why_dst else ("來源：" + why_src),
+                "match": _match_payload(why_src, why_dst),
             })
 
     # ── pfSense 規則（JSONB）──
@@ -120,7 +133,7 @@ async def rules_touching_ip(session: AsyncSession, ip: str) -> dict[str, Any]:
                     "src": str(r.get("source") or "any"), "dst": str(r.get("destination") or "any"),
                     "dst_port": str(r.get("destination_port") or ""),
                     "descr": (r.get("descr") or "")[:120],
-                    "match": ("目的：" + why_dst) if why_dst else ("來源：" + why_src),
+                    "match": _match_payload(why_src, why_dst),
                 })
 
     # ── FortiGate 政策 ──
@@ -139,7 +152,7 @@ async def rules_touching_ip(session: AsyncSession, ip: str) -> dict[str, Any]:
                 "protocol": str(getattr(r, "service", "") or ""),
                 "src": str(getattr(r, "srcaddr", "") or ""), "dst": str(getattr(r, "dstaddr", "") or ""),
                 "dst_port": "", "descr": (r.name or "")[:120],
-                "match": ("目的：" + why_dst) if why_dst else ("來源：" + why_src),
+                "match": _match_payload(why_src, why_dst),
             })
 
     # ── Palo Alto 安全政策 ──
@@ -163,7 +176,44 @@ async def rules_touching_ip(session: AsyncSession, ip: str) -> dict[str, Any]:
                 "src": str(getattr(r, "source", "") or ""),
                 "dst": str(getattr(r, "destination", "") or ""),
                 "dst_port": "", "descr": (r.name or "")[:120],
-                "match": ("目的：" + why_dst) if why_dst else ("來源：" + why_src),
+                "match": _match_payload(why_src, why_dst),
+            })
+
+    # ── MikroTik address-list ──
+    # RouterOS 的「別名」是逐筆位址的清單（不是一個物件裝很多成員），所以這裡
+    # 一列就是一個成員；同名清單只需回報一次。
+    mt_names = {f.id: f.name for f in (await session.execute(
+        select(MikroTikRouter))).scalars().all()}
+    mt_lists: set[str] = set()
+    for entry in (await session.execute(select(MikroTikAddressList))).scalars().all():
+        if entry.list_name in mt_lists or not _member_covers(entry.address, aip):
+            continue
+        mt_lists.add(entry.list_name)
+        alias_names.add(entry.list_name)
+        out["aliases"].append({"source_type": "mikrotik", "name": entry.list_name,
+                               "descr": (entry.comment or "")[:120]})
+
+    # ── MikroTik 防火牆規則 ──
+    # 規則裡寫的可能是位址、也可能是 `list:<清單名>`（同步時的標記），
+    # 後者靠上面收集到的 alias_names 命中。
+    for r in (await session.execute(select(MikroTikRule).where(
+            MikroTikRule.table_name != "mangle"))).scalars().all():
+        if r.disabled:
+            continue
+        why_src = _field_matches(
+            (r.src_address or "").removeprefix("list:"), aip, alias_names)
+        why_dst = _field_matches(
+            (r.dst_address or "").removeprefix("list:"), aip, alias_names)
+        if why_src or why_dst:
+            out["rules"].append({
+                "source_type": "mikrotik", "firewall": mt_names.get(r.router_id, "?"),
+                "action": r.action,
+                "interface": f"{r.in_interface or ''}->{r.out_interface or ''}",
+                "protocol": r.protocol or "",
+                "src": r.src_address or "", "dst": r.dst_address or "",
+                "dst_port": r.dst_port or "",
+                "descr": f"[{r.table_name}/{r.chain or ''}] {(r.comment or '')}"[:120],
+                "match": _match_payload(why_src, why_dst),
             })
 
     # ── NAT：指向（或來自）這個 IP 的對應 ──
@@ -229,9 +279,10 @@ async def attack_surface(session: AsyncSession) -> list[dict[str, Any]]:
 
     # ── NAT port forwards（各廠牌共用的正規化表）──
     from app.models.fortigate import FortiGateFirewall
+    from app.models.mikrotik import MikroTikRouter as _MT
     from app.models.paloalto import PaloAltoFirewall as _PA
     inst_names: dict[str, str] = {}
-    for model in (OPNsenseFirewall, PfSenseFirewall, FortiGateFirewall, _PA):
+    for model in (OPNsenseFirewall, PfSenseFirewall, FortiGateFirewall, _PA, _MT):
         for f in (await session.execute(select(model))).scalars().all():
             inst_names[str(f.id)] = f.name
     for n in (await session.execute(

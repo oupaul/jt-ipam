@@ -42,6 +42,55 @@ Release flow: run the checklist → all green → bump version → deploy
 - [ ] Core CRUD: sections / subnets / addresses / devices / customers / locations / racks
 - [ ] Audit chain: write operations are audited and chain integrity verifies
 
+## 3c. Failures that come from the data, not the code — **whenever a read schema, an integration writer, or a recurring producer changes**
+
+Three defects in one release (0.6.9) shared a shape the plan above does not catch: **the code is
+correct, the data is legitimate, and the page still breaks — with nothing on screen saying why.**
+None of them would have been found by "does the endpoint return 200 on a clean database".
+
+### Read schemas must not be stricter than the database
+
+A customer saw the dashboard count 55 devices while the device list returned Internal Server Error
+and showed nothing. `DeviceRead` inherited the write-side limits (`vendor`/`model` ≤ 64 chars,
+`u_position` 1–99) but those columns are `text` and an unconstrained `integer` — so an integration
+wrote a value the database accepts and the read path rejects, and **one row killed the whole page**.
+
+- [ ] For every read schema touched this release, compare each constrained field against the real
+  column (`\d <table>`): a `max_length` on a `text` column, or a `ge`/`le` on an unconstrained
+  `integer`, is a latent 500 waiting for an integration to write a longer value
+- [ ] Constraints that the **database** enforces (CHECK, enum, varchar(n)) may stay strict on read —
+  those values cannot exist
+- [ ] Admin → System check → **data health** must report zero rows. It validates every row with the
+  real read schemas, so "green here" means "the list pages can render this database"
+
+> **Diagnostic shortcut worth remembering:** a count that works while the list 500s means the failure
+> is *per-row serialization*, not the query — `count(*)` reads no columns, `select(Model)` reads all
+> of them. The same asymmetry appears when the schema is behind (a missing column).
+
+### An "ignore" must survive the next run of whatever produced the finding
+
+AI audit findings came back after every run and had to be dismissed again and again, because the
+identity was "category + the exact set of cited addresses" and the model cites a different subset
+each time.
+
+- [ ] For any dismiss / acknowledge / mute action: dismiss it, **run the producer again**, and
+  confirm it does not reappear — pressing the button once is not a test of the button
+- [ ] Confirm the opposite too: when genuinely **new** subjects appear, it *does* surface again.
+  An "ignore" that also swallows new information is worse than one that does not stick
+- [ ] Identity must not depend on model wording, ordering, or the exact subset cited
+
+### If the system can detect it, the system must say it
+
+An interrupted upgrade left the database behind the code. The backend could determine this at
+startup; instead every page that reads full records returned 500 and the operator was left guessing.
+
+- [ ] Any condition detectable at startup or during a request (schema drift, missing extension,
+  unbuilt frontend, unreachable dependency) is **logged as an error and surfaced in the UI**, not
+  left to be inferred from failures
+- [ ] The message names the fix, not just the symptom
+- [ ] Support questions are a test failure: if diagnosing an issue required asking the customer to
+  run SQL or read logs, that diagnosis belongs in Admin → System check instead
+
 ## 3b. Authentication realms & account identity
 
 Login spans local / LDAP / RADIUS / OIDC / SAML, and the same human legitimately owns
@@ -94,8 +143,13 @@ to see what a customer sees.**
   deleted, and `doctor` agrees with reality
 - [ ] Run it for **the oldest supported distro and the newest** (`debian:12`,
   `ubuntu:24.04`); PG-major and Node-version differences live there
-- [ ] **Upgrade**: against a previous-version environment run
-  `scripts/jt-ipam.sh upgrade`; it upgrades cleanly and can roll back if needed
+- [ ] **Upgrade — required, and separate from the above**: `scripts/test-upgrade.sh` exits 0.
+  Fresh install and upgrade share almost no code, so passing the fresh-install gate says
+  nothing about existing sites. Point it at the tree you are about to publish
+  (`JT_IPAM_REPO=/path/to/candidate`), not at the last release — otherwise you are testing
+  the version you already shipped. It writes a row *before* upgrading and checks it survived:
+  losing data is the worst upgrade failure and it does not make any command exit non-zero
+- [ ] Against a previous-version environment `scripts/jt-ipam.sh upgrade` also rolls back if needed
 - [ ] If this release added a directory / package / service / DB extension / env,
   confirm **`install` and `upgrade` are both in sync** — and that `doctor` checks it
 - [ ] **`scripts/jt-ipam.sh doctor` on prod after deploying**: every line green, or
@@ -124,9 +178,19 @@ the reverse proxy dropped the WebSocket upgrade.
 
 - [ ] `cd frontend && pnpm exec playwright test smoke` (no backend; self-starts
   vite preview) all green
+- [ ] **Seed the fixtures first**: `POSTGRES_DB=jt_ipam_e2e python -m tests.seed_e2e`
+  (from `backend/`). Several specs assert on specific records, and some of them
+  *change* that data as they run -- dismissing an AI finding, for one -- so a second
+  run without re-seeding fails on state left by the first. The failure looks exactly
+  like a regression, which is how an hour gets spent on nothing
 - [ ] Against a deployed instance (`E2E_BASE_URL` + `E2E_ADMIN_PASS`) run the
   **whole** suite: `pnpm test:e2e`. Data-dependent specs need real data — run those
   against a deployed instance, not an empty test DB
+- [ ] **A list page is not proved by opening it.** Compare what the page claims
+  (the "共 N 筆" footer) against what the server reports, on a data set larger than
+  one page: a page that fetches only the first page and then paginates in the
+  browser looks perfectly healthy until someone has more records than that
+  (GitHub issue #27: 95 sections, 50 shown, footer saying 50)
 - [ ] **Every changed page opened in an actual browser**, console watched: no errors,
   no blank regions, no `undefined` / raw JSON / untranslated i18n keys on screen
 - [ ] **A new spec covering what this release changed.** Assert on the effect, not on
@@ -134,12 +198,37 @@ the reverse proxy dropped the WebSocket upgrade.
   saving, compare the downloaded bytes. "已上傳" on screen is not evidence
 - [ ] **Measure geometry, don't eyeball it** — `boundingBox()` whenever the point is
   alignment, overlap or spacing; a screenshot hides a 16px error
+- [ ] **Check narrow widths too.** A layout defect usually only exists below some width, so a
+  test that runs at one wide viewport proves nothing: options spilled outside their card at
+  820px while every existing test was green (reported by the user, v0.6.2). Any spec that
+  asserts layout walks several widths (1500 / 1180 / 900 / 820 / 700), and the route sweep runs
+  at 900px asserting no page scrolls horizontally
 - [ ] New text checked in both locales (switch to English, confirm no key leaks)
 - [ ] **Every route opens**: `playwright test e2e/all-routes.spec.ts` green. It parses the
   route list out of `src/router/index.ts`, so a new page is covered automatically — and it
   fails on blank screens, JS exceptions, failed API calls and untranslated keys. This exists
   because the sweep used to visit 22 of 78 routes: forty-odd pages had never been opened by
   any test. A page that only a human ever opens is a page nothing is checking
+
+## 5g. Messages the server writes on the screen — **whenever an error message is added or changed**
+
+The backend must not send finished sentences. Anything a person reads goes out as
+`{code, params, message}` (`app/core/ui_error.py`) and the sentence is assembled from
+`errors.<code>` in the browser. A Chinese sentence written into the backend shows up
+*as Chinese* in the English and Japanese interfaces, and nothing errors — this shipped
+undetected for the entire life of the English translation.
+
+- [ ] `pytest tests/test_ui_error_codes.py` — every code in the source has a translation
+  in all three locales (the test walks the source; a missing key is otherwise silent)
+- [ ] New codes: read the fallback sentence in each locale and check the parameters are
+  actually interpolated. A translation that drops `{reason}` **removes the diagnosis** —
+  "pfSense returned an error" without saying whether it was DNS, a refusal or a certificate
+- [ ] Switch the UI to English and Japanese and trigger at least one of the new errors for
+  real. Codes used for *flow* (not just display) need extra care: the response interceptor
+  flattens `detail` to a string, so read the code from `detail_code` — the Proxmox two-factor
+  prompt was broken this exact way and nobody noticed
+- [ ] No Chinese words passed as parameters (`what="下載"`): put the distinction in the code
+  (`sftp_download_too_large`), or the English sentence ends up with a Chinese word in it
 
 ## 5d. System export / import (cross-instance migration) — **run in full every release that touches it**
 
@@ -267,6 +356,89 @@ defect is in *what the model was able to ask*.
   same goes for an ESXi host FQDN longer than 128 chars in `node`. A name coming from a third-party
   platform has no length we get to assume.
 - [ ] Delete instance; periodic `jt-ipam-sync` picks up enabled instances every ~5 min without errors.
+
+## 7b2. MikroTik RouterOS integration (Admin → 整合 MikroTik) — **Beta**
+
+> **The point of this integration is not to slow the router down.** At the site that asked for it,
+> the MikroTik boxes are the *main* routers, so the safeguards are the feature — test them, not
+> just the field parsing. RouterOS needs `www-ssl` enabled and an account with `api` + `read`.
+
+- [ ] Add router: URL + username/password, **Verify TLS off** for a self-signed cert; save
+  (password write-only, never returned). Editing with an empty password leaves it unchanged.
+- [ ] **Test connection** reports RouterOS version, board name, identity, CPU before/after, and
+  **rows + seconds for every endpoint**. Numbers are the whole point: "ARP 12,000 rows / 3.2s" is
+  how an administrator decides whether to enable that section.
+- [ ] A menu the device does not have (`/ip/dhcp-server` on a switch, `/interface/wireguard` on
+  RouterOS 7.0) shows as **absent, not an error** — a switch must not finish a sync covered in red.
+- [ ] **RouterOS 6.x is named**: pointing at a v6 device must say "this is RouterOS 6.x, which has
+  no REST API", not a vague connection failure.
+- [ ] **Sequential, never parallel**: watch the router's own connection/CPU graph during a sync —
+  only one request should be in flight at a time. (Packet capture, or RouterOS `/tool/profile`.)
+- [ ] **Back-off works**: lower the CPU threshold to something the router already exceeds (e.g. 1%)
+  and sync → the round stops early, the list shows the「提早停止」tag with a reason, and
+  `last_error` stays **empty** (stopping early is not a failure).
+- [ ] **Size cap**: set the response cap to 1 MiB on a router with a large address list → that
+  section aborts with a readable message naming the limit, and **the other sections still run**.
+- [ ] **ARP is reachable-only**: an entry the router shows as `stale` or `permanent` must not stamp
+  the IP as online. (Check `arp_seen` on the IP — only `reachable` entries may appear.)
+- [ ] **DHCP three-table join**: ranges only appear when pool ↔ dhcp-server ↔ network line up; a
+  pool used by PPP/hotspot (no DHCP server pointing at it) must **not** show up as a DHCP range.
+  A subnet that already has a gateway or DNS set is **not** overwritten.
+- [ ] **Rule order is preserved**: the read-only view lists rules in the router's own order
+  (RouterOS matches top-down). Moving a rule in Winbox must **not** raise a rule-change alert;
+  editing one must.
+- [ ] Delete the router → its `dhcp_pool_ranges` and `nat_translations` rows go with it, and
+  no other source's rows are touched.
+
+## 7l. Console jump host (issue #24 phase 1) — **whenever a console or the routing changes**
+
+> The failure mode here is not "cannot connect", it is **"connected to someone else"**. Sites that
+> need a jump host are usually the sites with overlapping private ranges, so a console that quietly
+> falls back to a direct connection reaches a *different customer's* machine — with no error anywhere.
+> Test every console, not just SSH.
+
+**Standing up a real jump host takes two minutes** (do not skip this and test only the unit level):
+
+```bash
+D=/tmp/jump; mkdir -p $D && cd $D
+ssh-keygen -q -t ed25519 -f hostkey -N ''
+ssh-keygen -q -t ed25519 -f clientkey -N ''
+cp clientkey.pub authorized_keys
+printf 'Port 2242\nListenAddress 127.0.0.1\nHostKey %s/hostkey\nPidFile %s/sshd.pid\n' $D $D > sshd_config
+printf 'AuthorizedKeysFile %s/authorized_keys\nPermitRootLogin prohibit-password\n' $D >> sshd_config
+printf 'PasswordAuthentication no\nUsePAM no\nStrictModes no\nAllowTcpForwarding yes\n' >> sshd_config
+printf 'Subsystem sftp /usr/lib/openssh/sftp-server\n' >> sshd_config
+/usr/sbin/sshd -f $D/sshd_config -E $D/sshd.log
+```
+
+`StrictModes no` is needed because sshd rejects an `authorized_keys` under a world-writable `/tmp`.
+The same sshd can play both roles: register it as the jump host, and point the target IP record at
+`127.0.0.1` port 2242 so the forward lands back on it.
+
+- [ ] **Fingerprint first**: a jump host with no pinned host key must **refuse to connect** and say so.
+  Test connection returns the fingerprint *without* sending credentials; only after Trust and save
+  does it actually log in.
+- [ ] **Wrong fingerprint**: change the pinned value → connecting must fail with a man-in-the-middle
+  warning, not a generic error.
+- [ ] **Resolution order**: set a jump host on the subnet and a *different* one on the IP → the IP
+  wins. Disable the jump host → falls back to direct (disabling is an admin action, it must not
+  brick a batch of consoles).
+- [ ] **All four tunnelled consoles** (SSH / SFTP / RDP / VNC), each through the jump:
+  - SSH: the status bar shows「經由跳板：<name>」and a real shell responds
+  - SFTP: a directory listing appears (this proves both directions, not just server→browser)
+  - RDP / VNC: check the **port**, not just the host — aardwolf's `create_connection_newtarget()`
+    replaces the ip/hostname but keeps the port from the URL, so a missing port means connecting to
+    `127.0.0.1:3389` — the backend host itself
+- [ ] **BMC refuses**: an address with a jump host must return a readable "IPMI is UDP, an SSH
+  tunnel only forwards TCP" error — **never** a silent direct connection
+- [ ] **Connection reuse and limit**: open several sessions to the same jump host → one SSH
+  connection is shared (check with `ss -tnp` on the jump); exceeding `max_sessions` is refused with
+  a readable message; after the last session closes the connection goes away
+- [ ] **Failure returns the reference**: force a forward failure a few times (wrong target port),
+  then confirm normal sessions still work — a leaked reference count silently uses up the limit
+- [ ] **Session lifetime**: close the browser tab → the forward disappears from the jump host
+- [ ] **Deleting a jump host** warns how many subnets/addresses will fall back to direct
+- [ ] Audit records `via_jump_host` on every session open
 
 ## 7c. Integration sync resilience — **applies to every integration, not just the one you changed**
 

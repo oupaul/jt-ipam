@@ -23,6 +23,7 @@ from sqlalchemy import true as sa_true
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
 from app.core.security import decrypt_secret, encrypt_secret
 from app.models.address import IPAddress
@@ -659,18 +660,76 @@ async def sync_fdb(
                     )
                 )
             ).scalar_one_or_none()
+            first_at, last_at = _fdb_times(entry, now)
             if existing is None:
                 session.add(FDBEntry(
                     mac=mac, vlan_id_num=vlan_int,
                     instance_id=instance.id, device_id=d.id,
                     port_name=port_name, source="librenms",
-                    first_seen_at=now, last_seen_at=now,
+                    first_seen_at=first_at, last_seen_at=last_at,
                 ))
                 inserted += 1
             else:
-                existing.last_seen_at = now
+                # 只往前走：上游若回了較舊的時間（分頁、重送），不要把末見時間往回改
+                if existing.last_seen_at is None or last_at > existing.last_seen_at.replace(
+                        tzinfo=existing.last_seen_at.tzinfo or UTC):
+                    existing.last_seen_at = last_at
                 updated += 1
     return seen, inserted, updated
+
+
+def _fdb_times(row: dict[str, Any], now: datetime) -> tuple[datetime, datetime]:
+    """一筆 FDB 的首見／末見時間。
+
+    LibreNMS 自己就記了 `created_at` / `updated_at`（實機驗過：某筆是 2021 年首見、
+    當天才更新）。把它們蓋成 jt-ipam 的同步時間，等於把「這個 MAC 在這個埠待了幾年」
+    變成「今天才第一次看到」—— 而那正是查案時最想知道的事。
+
+    上游給的東西不能直接信：解不出來就退回同步時間，不讓一筆壞資料炸掉整批同步。
+    """
+    def _parse(v: object) -> datetime | None:
+        if not isinstance(v, str) or not v:
+            return None
+        try:
+            dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+    first = _parse(row.get("created_at")) or now
+    last = _parse(row.get("updated_at")) or now
+    # 上游偶爾會給出 updated < created（時鐘、資料修補）；末見不該早於首見
+    return (first, max(first, last))
+
+
+def current_fdb_cutoff(*, now: datetime | None = None, max_age_hours: int = 24) -> datetime:
+    """「目前仍有效」的界線。超過這個時間沒再被看到的條目只算歷史。"""
+    return (now or datetime.now(UTC)) - timedelta(hours=max_age_hours)
+
+
+def is_current(entry: Any, cutoff: datetime) -> bool:
+    last = getattr(entry, "last_seen_at", None)
+    if last is None:
+        return False
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    return last >= cutoff
+
+
+async def prune_stale_fdb(session: AsyncSession, *, max_age_days: int = 365) -> int:
+    """刪掉超過保留期限的 FDB 條目；回傳刪除筆數。0 = 永久保留。
+
+    ARP 早就有回收（`prune_stale_arp`），FDB 沒有 —— 只會無限累積。但保留期限預設
+    給得長（一年）：這張表的價值就是「那台機器以前接在哪個埠」，砍太快等於把查案的
+    依據丟掉。
+    """
+    if max_age_days <= 0:
+        return 0
+    cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
+    res = await session.execute(
+        delete(FDBEntry).where(FDBEntry.last_seen_at < cutoff)
+    )
+    return int(res.rowcount or 0)
 
 
 async def derive_switch_ports(session: AsyncSession, instance: LibreNMSInstance) -> int:
@@ -684,9 +743,13 @@ async def derive_switch_ports(session: AsyncSession, instance: LibreNMSInstance)
     from app.services.ip_history import log_change
 
     # FDB（有 port_name 的）：mac → list[(device_id, port)]；同時算每個 (device,port) 的 MAC 數
+    # **只採用近期仍被看到的條目**。這張表刻意保留歷史（MAC 搬過的每個埠都留著），
+    # 但「目前接在哪」不能讓半年前的舊埠參與投票 —— 那會讓 switch_port 指向一個早就
+    # 搬走的位置，而畫面上完全看不出哪裡不對。
+    cutoff = current_fdb_cutoff(max_age_hours=get_settings().fdb_current_max_age_hours)
     rows = (await session.execute(
         select(FDBEntry.mac, FDBEntry.device_id, FDBEntry.port_name)
-        .where(FDBEntry.port_name.is_not(None))
+        .where(FDBEntry.port_name.is_not(None), FDBEntry.last_seen_at >= cutoff)
     )).all()
     if not rows:
         return 0
@@ -995,6 +1058,12 @@ async def sync_device_ports(session: AsyncSession, instance: LibreNMSInstance) -
 
     對 server / switch / OPNsense 等任何受監控裝置都有效；只新增缺少的埠，不刪既有
     （使用者手動建立或改名的埠保留）。回傳新增的埠數。
+
+    **`ifAlias` → `device_ports.description`**：交換器上設的 port description
+    （「人資-王小明-10.0.0.5」這種）是現場最有價值的一欄，本來沒有拉進來（使用者回報）。
+    ⚠️ 只有**真正是描述**的才寫：Linux 主機的 `ifAlias` 會等於 `ifName`／`ifDescr`
+    （實機上一整台都是 `eno1np0` 這種），照抄只會把說明欄塞滿介面名稱。
+    LibreNMS 沒有值時不動既有說明（與 MAC 同一條規則）。
     """
     ldevs = list((await session.execute(
         select(LibreNMSDevice).where(
@@ -1007,15 +1076,18 @@ async def sync_device_ports(session: AsyncSession, instance: LibreNMSInstance) -
         try:
             pdata = await _api_get(
                 instance,
-                f"/api/v0/devices/{d.legacy_device_id}/ports?columns=ifName,ifType,ifPhysAddress",
+                f"/api/v0/devices/{d.legacy_device_id}/ports"
+                "?columns=ifName,ifAlias,ifDescr,ifType,ifPhysAddress",
                 timeout=20.0,
             )
         except LibreNMSError as exc:
             logging.getLogger(__name__).debug(
                 "librenms ports fetch failed for %s: %s", d.legacy_device_id, exc)
             continue
-        # ifName → 此埠自身的實體 MAC（ifPhysAddress），正規化成小寫冒號格式
+        # ifName → (此埠自身的實體 MAC, 交換器上設的描述)
         name_mac: dict[str, str | None] = {}
+        # 說明要**整台一起看**才分得出「人寫的」與「韌體樣板」（見 _port_descriptions）
+        name_descr = _port_descriptions(list(pdata.get("ports") or []))
         for p in (pdata.get("ports") or []):
             # device_ports.name 上限 255；Windows NDIS 過濾介面描述可能更長 → 先截斷，
             # 讓「既有名稱比對」與 upsert 用同一個值，也不再 StringDataRightTruncation。
@@ -1030,13 +1102,17 @@ async def sync_device_ports(session: AsyncSession, instance: LibreNMSInstance) -
         )).scalars().all())
         for n in sorted(name_mac):
             mac = name_mac[n]
+            descr = name_descr.get(n)
             # 用 ON CONFLICT upsert：避免「多台 LibreNMS 裝置對映到同一台 jt-ipam 裝置」或同一輪
             # 重複處理時，INSERT 撞 device_port_unique_name (device_id, name) 而中斷整批同步（issue #12）。
             ins = pg_insert(DevicePort).values(
-                device_id=d.jt_ipam_device_id, name=n, type="network", mac_address=mac)
-            if mac:  # 有埠 MAC 才覆寫；沒有就不動既有欄位
+                device_id=d.jt_ipam_device_id, name=n, type="network",
+                mac_address=mac, description=descr)
+            # 有值才覆寫；LibreNMS 沒給就不動既有欄位（別把使用者填的東西清掉）
+            updates = {k: v for k, v in (("mac_address", mac), ("description", descr)) if v}
+            if updates:
                 stmt = ins.on_conflict_do_update(
-                    index_elements=["device_id", "name"], set_={"mac_address": mac})
+                    index_elements=["device_id", "name"], set_=updates)
             else:
                 stmt = ins.on_conflict_do_nothing(index_elements=["device_id", "name"])
             await session.execute(stmt)
@@ -1044,6 +1120,56 @@ async def sync_device_ports(session: AsyncSession, instance: LibreNMSInstance) -
                 created += 1
                 existing_names.add(n)
     return created
+
+
+def _port_descriptions(ports: list[dict[str, Any]]) -> dict[str, str]:
+    """哪些 `ifAlias` 真的是「人寫給這個埠的說明」—— 逐台判斷，不是逐筆。
+
+    `ifAlias` 是 IF-MIB 裡唯一由管理員設定的欄位（交換器上的 `description`），
+    所以要拉的是它，不是 `ifDescr`（那是設備自己產生的、不可設定）。問題在於**沒設過的
+    埠不會是空白**：各家會塞不同的東西，實機上看到三種：
+
+    - Linux 主機：`ifAlias` ＝ `ifName`（`eno1np0`）
+    - Cisco Nexus：`ifAlias` ＝ `ifName` ＝ `ifDescr`（`Eth1/1/1`）
+    - D-Link DGS-1510：`ifAlias` ＝ `ifDescr` ＝ 韌體樣板
+      （`D-Link Corporation DGS-1510-28X … Port 24 on Unit 1`）
+
+    所以判準不能只比對某一個欄位，而是問：**這串字有沒有帶出「埠自己的名字」以外的資訊**。
+    兩個訊號：
+
+    1. 等於 `ifName` → 沒有資訊。
+    2. 把數字抽掉之後，同一台機器上有三個以上的埠共用同一串 → 那是機器產生的樣板
+       （`… Port 1 on Unit 1` / `… Port 2 on Unit 1` 抽掉數字後完全一樣），不是人寫的。
+
+    3. 等於 `ifDescr` → 那是設備自己產生的字（IF-MIB 定義 `ifDescr` 是廠牌／型號／版本，
+       不是管理員能設的欄位）。實機上 D-Link 的 `cpu0`、`L2VLAN 1` 這種**一次性**樣板
+       只有這個訊號抓得到 —— 它們每台只出現一次，訊號 2 的「重複三次」擋不住。
+
+    ⚠️ 訊號 3 的前提：沒有設備會把管理員設的說明同時反映進 `ifDescr`。三種實機樣態都成立，
+    IF-MIB 的定義也支持。若哪天遇到反例（`ifDescr` 跟著人寫的說明一起變），要改的是這一條，
+    而不是整套判斷。
+    """
+    import re
+
+    aliases: dict[str, str] = {}
+    for p in ports:
+        name = (p.get("ifName") or "").strip()[:255]
+        alias = (p.get("ifAlias") or "").strip()
+        descr = (p.get("ifDescr") or "").strip()
+        if name and alias and alias != name and alias != descr:
+            aliases[name] = alias
+
+    # 抽掉數字後相同 → 同一套樣板（`Port 1 on Unit 1` 與 `Port 2 on Unit 1` 視為同一串）
+    shape_count: dict[str, int] = {}
+    for alias in aliases.values():
+        shape = re.sub(r"\d+", "#", alias)
+        shape_count[shape] = shape_count.get(shape, 0) + 1
+
+    return {
+        name: alias[:500]
+        for name, alias in aliases.items()
+        if shape_count[re.sub(r"\d+", "#", alias)] < 3
+    }
 
 
 def _norm_mac(raw: object) -> str | None:

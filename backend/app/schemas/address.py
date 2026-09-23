@@ -34,6 +34,8 @@ class IPAddressBase(StrictModel):
     ptr_ignore: bool = False
     note: Annotated[str | None, Field(max_length=2048)] = None
     customer_id: uuid.UUID | None = None
+    #: 主控台的連線出口（issue #24）：空＝繼承上層或直連
+    jump_host_id: uuid.UUID | None = None
     custom_fields: dict[str, Any] | None = None
 
     @field_validator("ip", mode="before")
@@ -117,6 +119,8 @@ class IPAddressUpdate(StrictModel):
     ptr_ignore: bool | None = None
     note: Annotated[str | None, Field(max_length=2048)] = None
     customer_id: uuid.UUID | None = None
+    #: 主控台的連線出口（issue #24）：空＝繼承上層或直連
+    jump_host_id: uuid.UUID | None = None
     custom_fields: dict[str, Any] | None = None
     # feature A：固定以某來源 hostname 為準（"" / null = 跟全域優先序）
     hostname_source_pin: Annotated[str | None, Field(max_length=16)] = None
@@ -182,6 +186,8 @@ class IPAddressRead(IPAddressBase):
     #: 「上線 (scanner)」（見 services/arp_seen.py）。
     arp_seen: dict[str, str] = {}
     last_seen_dns: datetime | None
+    #: OCS Inventory 最後一次盤點到這個 IP（顯示用、非活性訊號）
+    last_seen_ocs: datetime | None = None
     effective_status: str | None
     # 所屬 subnet 是否啟用掃描；前端用來判定「沒掃描的網段不該標離線紅燈」
     subnet_scan_enabled: bool | None = None

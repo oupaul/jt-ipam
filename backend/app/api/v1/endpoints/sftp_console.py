@@ -42,6 +42,7 @@ from app.core.db import SessionLocal, get_session
 from app.core.rate_limit import _redis_client
 from app.core.security import envelope_decrypt
 from app.core.tickets import take_once
+from app.core.ui_error import detail_of, ui_detail
 from app.core.ws_timeouts import (
     HANDSHAKE_TIMEOUT,
     WsTimeout,
@@ -51,6 +52,7 @@ from app.core.ws_timeouts import (
 from app.models.address import IPAddress
 from app.models.ssh_credential import SSHCredential
 from app.models.user import User
+from app.services import console_route
 from app.services.permission import can_use_sftp
 from app.services.sftp import (
     CHUNK_BYTES,
@@ -96,7 +98,7 @@ async def issue_sftp_ticket(
         raise HTTPException(status_code=404, detail="Address not found")
     if not await can_use_sftp(session, user=user, ip=ip):
         # 不洩漏存在性差異 —— 一律 403（與 SSH 相同）
-        raise HTTPException(status_code=403, detail="無 SSH／SFTP 連線權限")
+        raise HTTPException(status_code=403, detail=ui_detail("console_sftp_forbidden", "無 SSH／SFTP 連線權限"))
 
     ticket = secrets.token_urlsafe(32)
     payload = json.dumps({"user_id": str(user.id), "ip_id": str(ip.id)})
@@ -137,7 +139,7 @@ async def _connect_kwargs(
     username = (cfg.get("username") or "").strip()
     port = int(cfg.get("port") or 22)
     if not (1 <= port <= 65535):
-        raise SftpError("連接埠須為 1–65535")
+        raise SftpError("連接埠須為 1–65535", code="console_bad_port")
     auth = cfg.get("auth")
     credential_id = cfg.get("credential_id")
     kw: dict[str, Any] = {}
@@ -152,7 +154,7 @@ async def _connect_kwargs(
             if (cred is None or cred.owner_user_id != user_id
                     or (cred.target_ip_id is not None
                         and str(cred.target_ip_id) != str(address_id))):
-                raise SftpError("找不到可用的已存帳密")
+                raise SftpError("找不到可用的已存帳密", code="console_no_saved_credential")
             username = cred.username
             auth = cred.auth_type
             secrets_enc = dict(cred.secrets_enc or {})
@@ -176,10 +178,10 @@ async def _connect_kwargs(
         kw["client_keys"] = [asyncssh.import_private_key(pk, passphrase=pp)]
         kw["preferred_auth"] = ("publickey",)
     else:
-        raise SftpError("缺少認證方式")
+        raise SftpError("缺少認證方式", code="console_no_auth_method")
 
     if not username:
-        raise SftpError("缺少帳號")
+        raise SftpError("缺少帳號", code="console_no_username")
     return username, port, kw
 
 
@@ -230,6 +232,8 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
             return
         allowed = await can_use_sftp(s, user=user, ip=ip)
         host = str(ip.ip).split("/")[0]
+        # 連線出口：直連或經由跳板（IP 覆寫 > 子網路 > 直連）
+        route = await console_route.resolve_route(s, ip)
     if not allowed:
         await websocket.close(code=4403)
         return
@@ -253,6 +257,7 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
 
     conn = None
     sftp = None
+    tunnel: console_route.Tunnel | None = None
     port = 22          # 先給預設值：錯誤處理會用到，設定還沒讀到就失敗時不能是未定義
     #: 上傳途中收到的指令（客戶端放棄這次上傳、直接送下一個要求）—— 留著下一輪處理
     carry_over: str | None = None
@@ -260,21 +265,28 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
         # 連上來卻不送設定的客戶端不可以無限期佔住這條連線（見 core/ws_timeouts）
         try:
             cfg = json.loads(await receive_text_within(
-                websocket, HANDSHAKE_TIMEOUT, what="連線設定"))
+                websocket, HANDSHAKE_TIMEOUT, what="config"))
         except WsTimeout as exc:
             with contextlib.suppress(Exception):
                 await websocket.send_text(json.dumps(
-                    {"type": "error", "code": "handshake_timeout", "message": str(exc)},
+                    {"type": "error", **detail_of(exc, "console_handshake_timeout")},
                     ensure_ascii=False))
             await websocket.close(code=4408)
             return
         if cfg.get("type") != "config":
-            await send({"type": "error", "message": "缺少連線設定"})
+            await send({"type": "error", **ui_detail("console_no_config", "缺少連線設定")})
             return
         username, port, kw = await _connect_kwargs(cfg, user_id=user_id,
                                                    address_id=address_id)
+        # 經跳板時把目標換成本機轉發埠（直連時 open_route 是零成本的）
+        try:
+            tunnel = await console_route.open_route(route, host, port)
+        except console_route.JumpHostError as exc:
+            await send({"type": "error", **detail_of(exc, "jump_failed")})
+            return
+        dial_host, dial_port = tunnel.host, tunnel.port
         conn = await asyncssh.connect(
-            host, port=port, username=username, known_hosts=None,
+            dial_host, port=dial_port, username=username, known_hosts=None,
             connect_timeout=_CONNECT_TIMEOUT,
             **LEGACY_SSH_ALGS, **kw,
         )
@@ -284,8 +296,10 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
             cwd = await sftp.realpath(".")
         except Exception:
             cwd = "/"
-        await audit("sftp_open", {"host": host, "port": port, "username": username})
-        await send({"type": "ready", "cwd": str(cwd)})
+        await audit("sftp_open", {"host": host, "port": port, "username": username,
+                                  "via_jump_host": tunnel.via})
+        # 經跳板時要講出來：畫面上的位址是目標，實際路徑多了一跳
+        await send({"type": "ready", "cwd": str(cwd), "via_jump_host": tunnel.via})
 
         while True:
             if carry_over is not None:
@@ -298,7 +312,7 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
             try:
                 req = json.loads(msg)
             except ValueError:
-                await send({"type": "error", "message": "訊息格式錯誤"})
+                await send({"type": "error", **ui_detail("console_bad_frame", "訊息格式錯誤")})
                 continue
             op = req.get("type")
             # 這次指令的編號（客戶端給的）。**回覆一定要帶回去** —— 客戶端靠它把回覆
@@ -339,7 +353,7 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
                 elif op == "get":
                     path = failed_path = normalize_path(req.get("path"), cwd=str(cwd))
                     st = await sftp.stat(path)
-                    size = check_size(getattr(st, "size", None), what="下載")
+                    size = check_size(getattr(st, "size", None), what="download")
                     await reply({"type": "file_begin", "path": path,
                                 "name": path.rsplit("/", 1)[-1], "size": size})
                     async with sftp.open(path, "rb") as fh:
@@ -355,7 +369,7 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
 
                 elif op == "put":
                     path = failed_path = normalize_path(req.get("path"), cwd=str(cwd))
-                    size = check_size(req.get("size"), what="上傳")
+                    size = check_size(req.get("size"), what="upload")
                     # ⚠️ 先把檔案開起來，成功了才叫對方送資料。
                     # 反過來（先說 put_ready 再開檔）在開檔失敗時會壞掉：客戶端已經
                     # 開始送二進位框，而伺服器跳去回報錯誤、回到主迴圈讀「文字訊息」，
@@ -443,9 +457,10 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
                         with contextlib.suppress(Exception):
                             await sftp.remove(path)
                         await reply({"type": "error", "op": "put", "path": path,
-                                    "code": "put_stalled",
-                                    "message": f"上傳中斷（已寫入 {written}/{size} 位元組，"
-                                               f"檔案已移除）"})
+                                     **ui_detail("put_stalled",
+                                                 f"上傳中斷（已寫入 {written}/{size} 位元組，"
+                                                 f"檔案已移除）",
+                                                 written=written, size=size)})
                         failed_path = None
                         continue
                     await reply({"type": "ok", "op": "put", "path": path, "bytes": written})
@@ -499,10 +514,10 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
                             # 目錄，才講得出「還有幾個項目」以及下一步能做什麼。
                             message, was_empty = await describe_rmdir_failure(
                                 sftp, path, exc)
+                            # describe_rmdir_failure 已經給了代碼與參數；was_empty 只影響
+                            # 前端要不要提示「先清空」，不必再另外造一個代碼。
                             await reply({"type": "error", "op": "delete", "path": path,
-                                        "code": "dir_empty_required" if was_empty
-                                                else "dir_not_empty",
-                                        "message": message})
+                                         "was_empty": was_empty, **message})
                             failed_path = None
                             continue
                         await reply({"type": "ok", "op": "delete", "path": path})
@@ -516,11 +531,13 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
                 elif op == "close":
                     break
                 else:
-                    await reply({"type": "error", "message": f"不支援的操作：{op}"})
+                    await reply({"type": "error",
+                                 **ui_detail("console_unsupported_op",
+                                             f"不支援的操作：{op}", op=str(op))})
             except SftpError as exc:
                 log.info("sftp op failed", session=session_tag, op=op,
                          err=f"{type(exc).__name__}: {exc}")
-                await reply({"type": "error", "message": str(exc)})
+                await reply({"type": "error", **detail_of(exc, "sftp_error")})
             except (asyncssh.SFTPError, OSError) as exc:
                 # 回給使用者的是人話，但日誌要留原始型別與訊息 —— 「遠端拒絕」有十幾種
                 # 原因，少了這一行就只能猜（實際查一個上傳失敗查了三輪）
@@ -528,8 +545,7 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
                          err=f"{type(exc).__name__}: {exc}")
                 # 遠端拒絕（權限不足、檔案不存在…）是正常情況，要把原因說成人話：
                 # 原本直接回 "SFTPNoSuchFile: No such file"，看不出是哪條路徑
-                await reply({"type": "error",
-                            "message": friendly_error(exc, path=failed_path)})
+                await reply({"type": "error", **friendly_error(exc, path=failed_path)})
 
     except WebSocketDisconnect:
         end_reason = "ws_disconnect"
@@ -538,14 +554,13 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
         with_suppress = getattr(websocket, "client_state", None)
         if with_suppress is not None:
             try:
-                await send({"type": "error", "message": str(exc)})
+                await send({"type": "error", **detail_of(exc, "sftp_error")})
             except Exception:
                 pass
     except (asyncssh.Error, OSError) as exc:
         end_reason = f"{type(exc).__name__}: {exc}"
         try:
-            await send({"type": "error",
-                        "message": friendly_connect_error(exc, host=host, port=port)})
+            await send({"type": "error", **friendly_connect_error(exc, host=host, port=port)})
         except Exception:
             pass
     finally:
@@ -557,6 +572,9 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
             sftp.exit()
         if conn is not None:
             conn.close()
+        # 通道與 WS session 同生共死：連線關掉之後才還，否則轉發會在還有人用時被收掉
+        if tunnel is not None:
+            await tunnel.aclose()
         await _audit(actor_user_id=str(user_id), actor_ip=actor_ip, object_id=aid,
                      action="sftp_close", diff={"host": host})
         try:

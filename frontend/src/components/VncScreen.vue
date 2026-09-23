@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { wsErrorText } from "@/utils/wsError";
 /**
  * VNC 畫面（原生 canvas）。先換 ticket → 開 WebSocket → 橋接後端 aardwolf VNCConnection。
  * 密碼只在連線時送出，前端不保存（或選已存密碼以 reference 連線）。
@@ -59,6 +60,8 @@ onMounted(loadCreds);
 
 type Phase = "form" | "connecting" | "connected" | "closed" | "error";
 const phase = ref<Phase>("form");
+// 這條連線是否經由跳板（issue #24）：畫面上的位址是目標，實際路徑多了一跳
+const viaJump = ref("");
 const errorMsg = ref("");
 
 const form = reactive({ password: "", port: 5900 });
@@ -229,7 +232,8 @@ async function connect() {
         break;
       }
       case "status":
-        if (payload.state === "connected") {
+        if (payload.state === "via_jump") { viaJump.value = payload.via || ""; }
+        else if (payload.state === "connected") {
           phase.value = "connected";
           // VNC 桌面尺寸由伺服器決定 → 依回傳尺寸設定 canvas，並套用縮放
           if (canvasEl.value && payload.width && payload.height) {
@@ -247,7 +251,7 @@ async function connect() {
         break;
       case "error":
         phase.value = "error";
-        errorMsg.value = payload.message || payload.code || t("vnc.err_generic");
+        errorMsg.value = wsErrorText(payload, t("vnc.err_generic"));
         break;
     }
   };
@@ -346,6 +350,9 @@ onBeforeUnmount(teardown);
           <span class="vnc-ip">{{ ip }}</span>
           <n-tag v-if="hostname" size="small" :bordered="false" round>{{ hostname }}</n-tag>
           <span class="conn-proto conn-proto--vnc">VNC</span>
+          <n-tag v-if="viaJump" size="small" type="warning" :bordered="false" round>
+            {{ t("jump_hosts.via") }}：{{ viaJump }}
+          </n-tag>
           <n-tag v-if="deviceName" size="small" type="info" :bordered="false" round>{{ deviceName }}</n-tag>
           <n-tag size="small" type="warning" :bordered="false" round>{{ t("vnc.beta") }}</n-tag>
         </span>

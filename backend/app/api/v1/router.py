@@ -31,12 +31,15 @@ from app.api.v1.endpoints import (
     investigate,
     ip_changes,
     ip_requests,
+    jump_hosts,
     librenms,
     locations,
     migration,
+    mikrotik,
     nat,
     notifications,
     novnc_console,
+    ocs,
     oui,
     paloalto,
     pfsense,
@@ -99,6 +102,7 @@ api_v1_router.include_router(addresses.router)
 api_v1_router.include_router(ssh_console.router)
 api_v1_router.include_router(sftp_console.router)
 api_v1_router.include_router(ssh_credentials.router)
+api_v1_router.include_router(jump_hosts.router)
 api_v1_router.include_router(rdp_console.router)
 api_v1_router.include_router(vnc_console.router)
 api_v1_router.include_router(novnc_console.router)
@@ -143,10 +147,14 @@ api_v1_router.include_router(pfsense.view_router)
 api_v1_router.include_router(event_rules.router)
 api_v1_router.include_router(fortigate.router)
 api_v1_router.include_router(paloalto.router)
+api_v1_router.include_router(mikrotik.router)
 api_v1_router.include_router(fortigate.view_router)
 api_v1_router.include_router(zyxel.router)
 api_v1_router.include_router(zyxel.view_router)
 api_v1_router.include_router(paloalto.view_router)
+api_v1_router.include_router(mikrotik.view_router)
+api_v1_router.include_router(ocs.router)
+api_v1_router.include_router(ocs.view_router)
 api_v1_router.include_router(wazuh.router)
 api_v1_router.include_router(zabbix.router)
 api_v1_router.include_router(zabbix.view_router)

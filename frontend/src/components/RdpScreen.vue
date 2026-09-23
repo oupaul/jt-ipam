@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { wsErrorText } from "@/utils/wsError";
 /**
  * RDP 畫面（原生 canvas）。先換 ticket → 開 WebSocket → 橋接後端 aardwolf。
  * 後端把畫面以 PNG tile 串流過來畫到 canvas；鍵鼠/滾輪事件回送。
@@ -84,6 +85,8 @@ onMounted(loadCreds);
 
 type Phase = "form" | "connecting" | "connected" | "closed" | "error";
 const phase = ref<Phase>("form");
+// 這條連線是否經由跳板（issue #24）：畫面上的位址是目標，實際路徑多了一跳
+const viaJump = ref("");
 const errorMsg = ref("");
 
 const form = reactive({
@@ -277,8 +280,24 @@ async function startSession(w: number, h: number) {
         break;
       }
       case "status":
-        if (payload.state === "connected") { phase.value = "connected"; nextTick(() => canvasEl.value?.focus()); }
+        if (payload.state === "connected") {
+          // 後端回報的才是實際尺寸（FreeRDP 會把寬度捨成偶數）。照要求的尺寸開 canvas
+          // 會多出一欄永遠黑著的像素，mapXY 的比例也跟著差那一格 —— 愈靠右偏得愈多。
+          const aw = Number(payload.width) || 0, ah = Number(payload.height) || 0;
+          if (aw > 0 && ah > 0 && canvasEl.value
+              && (canvasEl.value.width !== aw || canvasEl.value.height !== ah)) {
+            canvasEl.value.width = aw; canvasEl.value.height = ah;
+            srvW = aw; srvH = ah;
+            applyScale();
+          }
+          phase.value = "connected"; nextTick(() => canvasEl.value?.focus());
+        }
+        else if (payload.state === "via_jump") viaJump.value = payload.via || "";
         else if (payload.state === "disconnected") phase.value = "closed";
+        break;
+      case "notice":
+        // 非致命提醒（例如「這個字元打不出來」）。後端已經自己節流成一次一連線。
+        msg.warning(wsErrorText(payload));
         break;
       case "clip_ack":
         if (payload.ok && payload.n > 0) msg.success(t("rdp.paste_sent", { n: payload.n }));
@@ -286,7 +305,7 @@ async function startSession(w: number, h: number) {
         break;
       case "error":
         phase.value = "error";
-        errorMsg.value = payload.message || payload.code || t("rdp.err_generic");
+        errorMsg.value = wsErrorText(payload, t("rdp.err_generic"));
         break;
     }
   };
@@ -299,7 +318,8 @@ async function startSession(w: number, h: number) {
   };
 }
 
-// 「重新調整大小」：以目前視窗大小重新連線（aardwolf 無法連線中熱改解析度 → 重建 session 取得原生清晰畫面）
+// 「重新調整大小」：以目前視窗大小重新連線。RDP 本身沒有連線中改解析度的路（那要 display-control
+// 通道），兩個引擎都一樣 → 重建 session 取得原生清晰畫面。
 async function reconnectFit() {
   if (!sessionCfg) return;
   phase.value = "connecting";
@@ -408,6 +428,9 @@ onBeforeUnmount(teardown);
           <span class="rdp-ip">{{ ip }}</span>
           <n-tag v-if="hostname" size="small" :bordered="false" round>{{ hostname }}</n-tag>
           <span class="conn-proto conn-proto--rdp">RDP</span>
+          <n-tag v-if="viaJump" size="small" type="warning" :bordered="false" round>
+            {{ t("jump_hosts.via") }}：{{ viaJump }}
+          </n-tag>
           <n-tag v-if="deviceName" size="small" type="info" :bordered="false" round>{{ deviceName }}</n-tag>
           <n-tag size="small" type="warning" :bordered="false" round>{{ t("rdp.beta") }}</n-tag>
         </span>

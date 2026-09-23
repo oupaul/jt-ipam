@@ -48,9 +48,11 @@ from app.models.ip_cooldown import IPCooldown
 from app.models.ip_hostname import IPHostnameObservation
 from app.models.ip_liveness import IPLivenessDay
 from app.models.ip_request import IPRequest, IPRequestEvent, IPRequestStageApproval
+from app.models.jump_host import JumpHost
 from app.models.librenms import ARPEntry, FDBEntry, LibreNMSDevice, LibreNMSInstance
 from app.models.location import Location, Rack
 from app.models.migration_mapping import PhpIPAMMigrationMapping
+from app.models.mikrotik import MikroTikAddressList, MikroTikRouter, MikroTikRule
 from app.models.nat import NATTranslation
 from app.models.notification import Notification, WebhookSubscription
 from app.models.oui import OUIVendor
@@ -134,9 +136,13 @@ __all__ = [
     "IPRequest",
     "IPRequestEvent",
     "IPRequestStageApproval",
+    "JumpHost",
     "LibreNMSDevice",
     "LibreNMSInstance",
     "Location",
+    "MikroTikAddressList",
+    "MikroTikRouter",
+    "MikroTikRule",
     "NATTranslation",
     "Notification",
     "OPNsenseAliasMapping",

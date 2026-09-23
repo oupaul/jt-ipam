@@ -8,6 +8,7 @@ DB 有設就用 DB，否則用 env。
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -15,9 +16,11 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.config import get_settings
 from app.models.system_setting import SystemSetting
+from app.services.schedule import MIN_INTERVAL_MINUTES
 
 LLM_KEY = "llm"
 _TTL_SEC = 60.0
@@ -75,6 +78,10 @@ class LLMConfig:
     # LM Studio / OpenRouter…）。**預設 ollama** —— 接雲端等於把網段、主機名稱、拓樸
     # 送到外部服務，那是使用者要明確選擇的事，不是升版就自動改變的行為。
     provider: str = "ollama"
+    # 嵌入模型的位址。留空＝沿用 url（對話模型那一台）—— 兩種模型常常是分開部署的，
+    # 位址自然不同（GitHub issue #33）。供應商、金鑰與逾時仍共用；需要連到**不同供應商**
+    # 的嵌入服務是另一件事，目前不支援。
+    embedding_base_url: str | None = None
     api_key: str | None = None      # 明文（已解密）；僅供 openai 相容端點的 Bearer
     # 對外提供 MCP（讓其它系統以 HTTP 呼叫 /api/mcp）：預設關閉，打開才接受外部 MCP 呼叫。
     mcp_external_enabled: bool = False
@@ -166,6 +173,8 @@ async def get_llm_config(session: AsyncSession) -> LLMConfig:
             cfg.url = str(v["url"])
         if v.get("embedding_model"):
             cfg.embedding_model = str(v["embedding_model"])
+        if v.get("embedding_base_url"):
+            cfg.embedding_base_url = str(v["embedding_base_url"])
         if v.get("chat_model"):
             cfg.chat_model = str(v["chat_model"])
         if v.get("provider") in ("ollama", "openai"):
@@ -230,6 +239,7 @@ async def set_llm_config(
     enabled: bool | None = None,
     url: str | None = None,
     embedding_model: str | None = None,
+    embedding_base_url: str | None = None,
     chat_model: str | None = None,
     timeout: float | None = None,
     num_ctx: int | None = None,
@@ -253,6 +263,9 @@ async def set_llm_config(
     if enabled is not None: current["enabled"] = bool(enabled)
     if url is not None: current["url"] = str(url).strip().rstrip("/")
     if embedding_model is not None: current["embedding_model"] = embedding_model.strip()
+    # 空字串＝清掉，回到「沿用對話模型的位址」
+    if embedding_base_url is not None:
+        current["embedding_base_url"] = str(embedding_base_url).strip().rstrip("/")
     if chat_model is not None: current["chat_model"] = chat_model.strip()
     if ai_audit_enabled is not None: current["ai_audit_enabled"] = bool(ai_audit_enabled)
     # 空字串＝清掉，回去沿用對話模型（不是「存一個空模型名」）
@@ -354,6 +367,136 @@ async def set_ai_audit_last_run(session: AsyncSession, *, at: datetime) -> None:
     await session.commit()
 
 
+# ─────────────────── 異常偵測（排程）───────────────────
+ANOMALY_KEY = "anomaly"
+
+
+@dataclass
+class AnomalyConfig:
+    """異常偵測的排程設定。
+
+    **預設關閉**：排程會發通知給所有管理員，升級不該讓任何站台突然開始發信。
+    時刻／頻率的形狀刻意與巡檢排程一致（同一個 `services/schedule.due` 判斷），
+    使用者在兩個地方看到的是同一套語意。
+    """
+
+    schedule_enabled: bool = False
+    times: list[str] = field(default_factory=lambda: ["04:00"])
+    frequency: str = "daily"          # daily / weekly / monthly / interval
+    weekdays: list[int] = field(default_factory=lambda: [1])   # 1=週一 … 7=週日
+    month_day: int = 1
+    # 「每隔 N 分鐘」用。下限由 schedule.MIN_INTERVAL_MINUTES 決定（timer 週期）——
+    # 設得比 timer 還密不會更即時，只會讓人以為設定沒生效。
+    interval_minutes: int = 60
+
+
+async def get_anomaly_config(session: AsyncSession) -> AnomalyConfig:
+    cfg = AnomalyConfig()
+    row = await session.get(SystemSetting, ANOMALY_KEY)
+    v = row.value if row and isinstance(row.value, dict) else {}
+    if isinstance(v.get("schedule_enabled"), bool):
+        cfg.schedule_enabled = v["schedule_enabled"]
+    times = normalize_times(v.get("times"))
+    if times:
+        cfg.times = times
+    if str(v.get("frequency", "")) in ("daily", "weekly", "monthly", "interval"):
+        cfg.frequency = str(v["frequency"])
+    if v.get("interval_minutes") is not None:
+        try:
+            cfg.interval_minutes = max(int(v["interval_minutes"]), MIN_INTERVAL_MINUTES)
+        except (TypeError, ValueError):
+            pass
+    days = normalize_weekdays(v.get("weekdays"))
+    if days:
+        cfg.weekdays = days
+    if v.get("month_day") is not None:
+        try:
+            d = int(v["month_day"])
+            if 1 <= d <= 31:
+                cfg.month_day = d
+        except (TypeError, ValueError):
+            pass
+    return cfg
+
+
+async def set_anomaly_config(
+    session: AsyncSession, *,
+    schedule_enabled: bool | None = None,
+    times: list[str] | None = None,
+    frequency: str | None = None,
+    weekdays: list[int] | None = None,
+    month_day: int | None = None,
+    interval_minutes: int | None = None,
+) -> AnomalyConfig:
+    row = await session.get(SystemSetting, ANOMALY_KEY)
+    if row is None:
+        row = SystemSetting(key=ANOMALY_KEY, value={})
+        session.add(row)
+    v = dict(row.value or {})
+    if schedule_enabled is not None:
+        v["schedule_enabled"] = bool(schedule_enabled)
+    if times is not None:
+        t = normalize_times(times)
+        if t:
+            v["times"] = t
+    if frequency in ("daily", "weekly", "monthly", "interval"):
+        v["frequency"] = frequency
+    if interval_minutes is not None:
+        v["interval_minutes"] = max(int(interval_minutes), MIN_INTERVAL_MINUTES)
+    if weekdays is not None:
+        d = normalize_weekdays(weekdays)
+        if d:
+            v["weekdays"] = d
+    if month_day is not None and 1 <= int(month_day) <= 31:
+        v["month_day"] = int(month_day)
+    row.value = v
+    flag_modified(row, "value")
+    await session.flush()
+    return await get_anomaly_config(session)
+
+
+async def get_anomaly_last_run(session: AsyncSession) -> datetime | None:
+    """上次排程執行的時間。與巡檢同理：不能從「最後一筆發現」回推 ——
+    一次乾淨的偵測什麼都不會留下，那會被判成從沒跑過而每輪重跑。"""
+    row = await session.get(SystemSetting, ANOMALY_KEY)
+    if row and isinstance(row.value, dict):
+        v = row.value.get("last_run_at")
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v)
+            except ValueError:
+                return None
+    return None
+
+
+async def set_anomaly_last_run(session: AsyncSession, *, at: datetime) -> None:
+    row = await session.get(SystemSetting, ANOMALY_KEY)
+    if row is None:
+        row = SystemSetting(key=ANOMALY_KEY, value={})
+        session.add(row)
+    row.value = {**(row.value or {}), "last_run_at": at.isoformat()}
+    flag_modified(row, "value")
+    await session.flush()
+
+
+async def get_anomaly_seen(session: AsyncSession) -> dict[str, list[str]]:
+    """上次通知過的發現指紋，逐類別一份。用來只通知「新的」。"""
+    row = await session.get(SystemSetting, ANOMALY_KEY)
+    v = row.value if row and isinstance(row.value, dict) else {}
+    seen = v.get("seen")
+    return seen if isinstance(seen, dict) else {}
+
+
+async def set_anomaly_seen(session: AsyncSession, seen: dict[str, list[str]]) -> None:
+    row = await session.get(SystemSetting, ANOMALY_KEY)
+    if row is None:
+        row = SystemSetting(key=ANOMALY_KEY, value={})
+        session.add(row)
+    row.value = {**(row.value or {}), "seen": seen}
+    flag_modified(row, "value")
+    await session.flush()
+
+
 # ─────────────────── AI chat 歷程保留設定 ───────────────────
 AI_CHAT_KEY = "ai_chat"
 _DEFAULT_RETENTION_DAYS = 90
@@ -416,6 +559,52 @@ async def set_rdp_clipboard_paste(
     return bool(enabled)
 
 
+# RDP 主控台的連線引擎。
+#
+# `aardwolf` 是純 Python、零外部行程，一路以來的預設。它的限制在 asyauth 0.0.23：
+# NTLM 的 MIC 沒有實作（原始碼裡是一行 TODO）。伺服器的 CHALLENGE 只要帶
+# `MsvAvTimestamp`，MS-NLMP 就要求用戶端回 MIC，而 FreeRDP 的伺服器端會強制檢查 ——
+# gnome-remote-desktop 用的正是它。實測（2026-09-17，Ubuntu 24 + GNOME 遠端登入）：
+# 同一台、同一組帳密，FreeRDP 認證成功，aardwolf 回 STATUS_LOGON_FAILURE。
+#
+# `freerdp` 則相容性站在業界標準那邊，代價是要外部行程與虛擬顯示。
+#
+# ⚠️ 預設**留在 aardwolf**，直到 FreeRDP 後端完整做完並驗證過。Windows 目標本來就
+# 連得上，貿然換掉會讓能用的東西變不能用。有測試釘住這個預設值。
+RDP_ENGINES: tuple[str, ...] = ("aardwolf", "freerdp")
+_RDP_ENGINE_DEFAULT = "aardwolf"
+
+
+async def get_rdp_engine(session: AsyncSession) -> str:
+    row = await session.get(SystemSetting, CONSOLE_SECURITY_KEY)
+    if row and isinstance(row.value, dict):
+        engine = row.value.get("rdp_engine")
+        # 認不得的值當成預設，不要讓一筆壞設定把整個主控台變成連不上
+        if engine in RDP_ENGINES:
+            return str(engine)
+    return _RDP_ENGINE_DEFAULT
+
+
+async def set_rdp_engine(
+    session: AsyncSession, *, engine: str, updated_by_user_id: uuid.UUID | None = None,
+) -> str:
+    if engine not in RDP_ENGINES:
+        raise ValueError(f"unknown rdp engine: {engine!r}")
+    row = await session.get(SystemSetting, CONSOLE_SECURITY_KEY)
+    if row is None:
+        row = SystemSetting(key=CONSOLE_SECURITY_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    # 這把 key 底下還有剪貼簿設定 —— 要合併，不能整包換掉
+    current = dict(row.value or {})
+    current["rdp_engine"] = engine
+    row.value = current
+    row.updated_by = updated_by_user_id
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(row, "value")
+    await session.commit()
+    return engine
+
+
 # ─────────────────── 介面顯示設定（UI display）───────────────────
 UI_DISPLAY_KEY = "ui_display"
 _DEFAULT_CHANGE_LOG_DIM_DAYS = 30
@@ -452,6 +641,70 @@ async def set_change_log_dim_days(
 # ─────────────────── Graylog DSV 查表（lookup table adapter）───────────────────
 
 GRAYLOG_DSV_KEY = "graylog_dsv"
+
+
+DEVICE_PORTS_KEY = "device_ports"
+
+# 從整合來源匯入裝置連接埠時，符合這些樣式的視為「偽介面」而略過／清除：Windows 端點的
+# NDIS 過濾器、WAN Miniport、通道等（LibreNMS 從 ifIndex 產生 ethernet_N / wireless_N /
+# ppp_N…）。實體交換器與 Linux 埠名不會長這樣。管理者可在系統設定調整這份清單。
+DEFAULT_PORT_IGNORE_PATTERNS = [
+    r"^ethernet_\d+$",
+    r"^wireless_\d+$",
+    r"^ppp_\d+$",
+    r"^tunnel_\d+$",
+    r"^loopback_\d+$",
+    r"^isatap_\d+$",
+    r"^teredo_\d+$",
+]
+
+
+def _clean_port_patterns(raw: Any) -> list[str]:
+    """整理埠過濾樣式：去空白、丟掉無法編譯的正則（比照 normalize_times，一個壞值不該讓整組失效）。"""
+    out: list[str] = []
+    for item in raw if isinstance(raw, list) else []:
+        p = str(item).strip()
+        if not p:
+            continue
+        try:
+            re.compile(p)
+        except re.error:
+            continue
+        if p not in out:
+            out.append(p)
+    return out
+
+
+async def get_device_port_filter(session: AsyncSession) -> dict[str, Any]:
+    """裝置連接埠匯入的偽介面過濾設定：filter_pseudo（總開關）＋ ignore_patterns（樣式清單）。"""
+    row = await session.get(SystemSetting, DEVICE_PORTS_KEY)
+    v = dict(row.value) if (row and isinstance(row.value, dict)) else {}
+    pats = _clean_port_patterns(v.get("ignore_patterns"))
+    return {
+        "filter_pseudo": bool(v.get("filter_pseudo", True)),
+        "ignore_patterns": pats or list(DEFAULT_PORT_IGNORE_PATTERNS),
+    }
+
+
+async def set_device_port_filter(
+    session: AsyncSession, *, filter_pseudo: bool, ignore_patterns: Any,
+    updated_by_user_id: uuid.UUID | None = None,
+) -> dict[str, Any]:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    pats = _clean_port_patterns(ignore_patterns) or list(DEFAULT_PORT_IGNORE_PATTERNS)
+    row = await session.get(SystemSetting, DEVICE_PORTS_KEY)
+    if row is None:
+        row = SystemSetting(key=DEVICE_PORTS_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    cur = dict(row.value or {})
+    cur["filter_pseudo"] = bool(filter_pseudo)
+    cur["ignore_patterns"] = pats
+    row.value = cur
+    row.updated_by = updated_by_user_id
+    flag_modified(row, "value")
+    await session.commit()
+    return {"filter_pseudo": bool(filter_pseudo), "ignore_patterns": pats}
 
 
 RACK_EMBED_KEY = "rack_embed"
@@ -1043,6 +1296,29 @@ async def set_notification_channels(
 # ─────────────────── 通知矩陣（哪些事件、走哪些管道）───────────────────
 NOTIFY_MATRIX_KEY = "notification_matrix"
 # 可通知事件登錄（矩陣的列）：(key, 預設站內, 預設 email)。新增事件只要在這裡加一列。
+# 異常偵測逐類別的通知事件。
+#
+# 原本只有一列 `anomaly.detected`：十種發現要嘛全通知、要嘛全不通知。但這十種的份量
+# 差很多 ——「非法 DHCP 伺服器」要立刻處理，「失聯 IP」比較像每週整理一次的清單。
+# 混在一起的下場是使用者為了不被吵而整類關掉，真正要緊的那幾種也一起消失。
+#
+# 舊的 `anomaly.detected` 不再出現在設定頁（一列講不出作用的總開關只會讓人猜誰說了算），
+# 但**仍然是升級時的預設來源**：已經把異常通知的 Email 打開的站台，升級後十類都還開著。
+ANOMALY_EVENTS: tuple[str, ...] = (
+    "anomaly.ip_conflicts",
+    "anomaly.mac_drifts",
+    "anomaly.ghost_ips",
+    "anomaly.unauthorized_ips",
+    "anomaly.rogue_dhcp",
+    "anomaly.external_exposure",
+    "anomaly.dangling_dns",
+    "anomaly.duplicate_ip_records",
+    "anomaly.suspicious_changes",
+    "anomaly.fw_rule_rot",
+    "anomaly.mac_flapping",
+)
+LEGACY_ANOMALY_EVENT = "anomaly.detected"
+
 NOTIFY_EVENTS: tuple[tuple[str, bool, bool], ...] = (
     ("ip_request.created", True, True),    # 審核者：有新 IP 申請待審
     ("ip_request.approved", True, True),   # 申請人：申請已核准（含配發 IP）
@@ -1050,8 +1326,21 @@ NOTIFY_EVENTS: tuple[tuple[str, bool, bool], ...] = (
     ("cert.expiring", True, False),        # 憑證即將到期 / 已過期
     ("cert.deployed", True, False),        # 代理成功部署新憑證
     ("cert.drift", True, False),           # 憑證飄移（某代理未套到最新版）
-    ("anomaly.detected", True, False),     # 異常偵測有新發現
+    *((ev, True, False) for ev in ANOMALY_EVENTS),   # 異常偵測（逐類別）
     ("firewall.rules_changed", True, False),  # 防火牆規則有異動
+    # 「東西壞了卻沒人知道」三類。只在開始與恢復時發（見 services/state_alert）。
+    ("integration.sync_failed", True, False),  # 整合同步失敗／恢復
+    ("agent.offline", True, False),            # 掃描／憑證代理失聯／恢復
+    ("system.health", True, False),            # 系統檢查未通過／恢復
+    ("dhcp.pool_exhausted", True, False),      # DHCP 集區快用完／回到門檻以下
+    ("jump_host.key_changed", True, True),     # 跳板主機金鑰改變（資安事件，預設連 Email 都開）
+    ("cert.fetch_failed", True, False),        # 憑證來源抓取失敗／恢復
+    # 這兩個原本直接推通知、設定頁上沒有對應的列 —— 使用者收得到卻關不掉
+    ("audit.chain_broken", True, True),        # 稽核鏈驗證失敗（資安事件）
+    ("ip.stale", True, False),                 # 失聯 IP 提醒
+    # 權限變更是低頻高影響 → 預設連 Email 都開；暴力破解只在「多個帳號同時被鎖」時發
+    ("security.privilege_changed", True, True),
+    ("security.brute_force", True, False),
 )
 
 
@@ -1063,13 +1352,27 @@ async def get_notification_matrix(session: AsyncSession) -> dict[str, dict[str, 
     """回傳通知矩陣 {event: {in_app, email}}，未設定的事件用預設值補齊。"""
     out = _default_matrix()
     row = await session.get(SystemSetting, NOTIFY_MATRIX_KEY)
-    if row and isinstance(row.value, dict):
-        for k, v in row.value.items():
-            if k in out and isinstance(v, dict):
-                if isinstance(v.get("in_app"), bool):
-                    out[k]["in_app"] = v["in_app"]
-                if isinstance(v.get("email"), bool):
-                    out[k]["email"] = v["email"]
+    stored = row.value if row and isinstance(row.value, dict) else {}
+
+    # 升級路徑：舊資料只有一列 anomaly.detected。逐類別的設定還沒存在時，
+    # 沿用那一列的值 —— 否則已經打開 Email 的站台會在升級當下被靜靜關掉，
+    # 而畫面上看起來只是「預設值」。第一次儲存之後就以逐類別的設定為準。
+    legacy = stored.get(LEGACY_ANOMALY_EVENT)
+    if isinstance(legacy, dict):
+        for ev in ANOMALY_EVENTS:
+            if ev in stored:
+                continue
+            if isinstance(legacy.get("in_app"), bool):
+                out[ev]["in_app"] = legacy["in_app"]
+            if isinstance(legacy.get("email"), bool):
+                out[ev]["email"] = legacy["email"]
+
+    for k, v in stored.items():
+        if k in out and isinstance(v, dict):
+            if isinstance(v.get("in_app"), bool):
+                out[k]["in_app"] = v["in_app"]
+            if isinstance(v.get("email"), bool):
+                out[k]["email"] = v["email"]
     return out
 
 

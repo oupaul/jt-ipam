@@ -10,8 +10,10 @@ import {
   darkTheme,
   zhTW,
   enUS,
+  jaJP,
   dateZhTW,
   dateEnUS,
+  dateJaJP,
 } from "naive-ui";
 import { storeToRefs } from "pinia";
 import { useUiStore } from "@/stores/ui";
@@ -23,8 +25,14 @@ const { effectiveTheme, locale } = storeToRefs(ui);
 onMounted(() => { void ui.hydrateFromServer(); });
 
 const naiveTheme = computed(() => (effectiveTheme.value === "dark" ? darkTheme : null));
-const naiveLocale = computed(() => (locale.value === "zh-TW" ? zhTW : enUS));
-const naiveDateLocale = computed(() => (locale.value === "zh-TW" ? dateZhTW : dateEnUS));
+// naive-ui 自己的語系包（日期挑選器、分頁、上傳等內建字串）。少一種語言時，
+// 元件內建的字會退回英文，而外圍是日文 —— 畫面上會一半一半。
+const naiveLocale = computed(() =>
+  locale.value === "zh-TW" ? zhTW : locale.value === "ja-JP" ? jaJP : enUS,
+);
+const naiveDateLocale = computed(() =>
+  locale.value === "zh-TW" ? dateZhTW : locale.value === "ja-JP" ? dateJaJP : dateEnUS,
+);
 
 // 共用：品牌綠 + 較大圓角，給整站一致的調性
 const PRIMARY = "#18a058";
@@ -197,6 +205,11 @@ td.col-actions .n-space { flex-wrap: nowrap !important; }
 
 /* 文字選取色：用半透明品牌綠 tint，淺色/深色主題下文字都看得到
    （原本淺色主題選取色太深會把字蓋掉） */
+/* 清單 MAC 欄的 OUI 廠商（#38）：utils/macVendor.ts 產生，render 函式的元素吃不到 scoped style */
+.mac-cell { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
+.mac-cell__vendor {
+  font-size: 11px; opacity: 0.72; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
 ::selection { background: rgba(24, 160, 88, 0.30); }
 ::-moz-selection { background: rgba(24, 160, 88, 0.30); }
 ::-webkit-scrollbar { width: 11px; height: 11px; }

@@ -53,6 +53,13 @@ if [[ -x "$ROOT/backend/.venv/bin/python" ]]; then
     fi
   fi
 
+  # 這兩支守的是安裝／升級腳本本身（CLI 分派、歷史分歧時的自動復原）。
+  # 原本沒有被任何 CI 跑到 —— 沒有人跑的守門等於沒有。
+  step "installer/upgrade shell tests"
+  for t in "$ROOT"/scripts/tests/*.sh; do
+    if bash "$t" >/dev/null 2>&1; then ok "$(basename "$t")"; else bash "$t" 2>&1 | tail -20; bad "$(basename "$t")"; fi
+  done
+
   step "backend pytest collect"
   if .venv/bin/pytest -q --collect-only >/dev/null 2>&1; then ok "pytest collect"; else bad "pytest collect"; fi
 
@@ -69,7 +76,24 @@ else
 fi
 
 # ── frontend ──
+# The build needs Node >= 20 (vite 6). A machine shared with other projects may
+# well have an older Node as the system one -- and it must stay that way, or the
+# other projects break. So: if the Node in PATH is too old, switch to the version
+# in .nvmrc through nvm, for this script only. Failing loudly beats a build that
+# dies inside esbuild with an error that names neither Node nor the version.
 if [[ -d "$ROOT/frontend/node_modules" ]]; then
+  node_major="$(node -v 2>/dev/null | sed 's/^v//; s/\..*//')"
+  if [[ -z "$node_major" || "$node_major" -lt 20 ]]; then
+    if [[ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]]; then
+      # shellcheck disable=SC1091
+      . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" && nvm use >/dev/null 2>&1 || nvm use 20 >/dev/null 2>&1
+      echo "node: switched to $(node -v 2>/dev/null) via nvm (system node was v${node_major:-none})"
+    fi
+    node_major="$(node -v 2>/dev/null | sed 's/^v//; s/\..*//')"
+    if [[ -z "$node_major" || "$node_major" -lt 20 ]]; then
+      bad "node >= 20 required (found $(node -v 2>/dev/null || echo none)); install it or run: nvm install"
+    fi
+  fi
   cd "$ROOT/frontend"
   step "frontend vue-tsc"
   if npx vue-tsc --noEmit; then ok "vue-tsc"; else bad "vue-tsc"; fi

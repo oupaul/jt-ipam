@@ -24,6 +24,58 @@ log()  { echo -e "\033[1;32m[jt-ipam]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[warn]\033[0m $*" >&2; }
 die()  { echo -e "\033[1;31mFATAL:\033[0m $*" >&2; exit 1; }
 
+# -- where to send an operator when something fails --
+#
+# Every failure path ends in exit != 0, so the hint is printed from a single EXIT
+# trap instead of being repeated at 20 call sites (and forgotten at the 21st --
+# including the failures nobody wrote a message for, where `set -e` just stops).
+#
+# The page is trilingual (Chinese / English / Japanese) and the language is chosen
+# here, from the OS locale, rather than left to the reader: someone whose terminal
+# is already Japanese should not land on an English page and then have to find the
+# switch. Anything else gets English, which is the page default.
+# 「服務起來了」不等於「在服務」。systemd 的 is-active 在行程 exec 的那一刻就是 active，
+# 而 uvicorn 還要載入整個應用程式才開始接受連線；固定 `sleep N` 在忙碌的機器上不夠 ——
+# 升級剛跑完前端建置，那正是機器最忙的時候。實測：升級回報成功、站台仍回 502。
+#
+# 所以用「連得到」當判準，而且要連**必須經過後端**的路徑。連不到就等，等不到就明講。
+wait_until_serving() {
+    local url="$1" timeout="${2:-90}" waited=0 code
+    while (( waited < timeout )); do
+        code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 3 "$url" 2>/dev/null || echo 000)"
+        # 1xx–4xx 都代表後端答了話（401 未登入是完全正常的答覆）；000 是連不上，5xx 多半是代理拿不到後端
+        [[ "$code" =~ ^[1-4] ]] && return 0
+        sleep 2
+        waited=$((waited + 2))
+    done
+    return 1
+}
+
+DOCS_BASE="${JT_IPAM_DOCS_BASE:-https://jasoncheng7115.github.io/jt-ipam}"
+troubleshooting_url() {
+    case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+        zh_*|zh|zh-*|zh.*) echo "${DOCS_BASE}/troubleshooting.html?lang=zh-TW" ;;
+        ja_*|ja|ja-*|ja.*) echo "${DOCS_BASE}/troubleshooting.html?lang=ja" ;;
+        *)                 echo "${DOCS_BASE}/troubleshooting.html?lang=en" ;;
+    esac
+}
+HELP_HINT=1          # set to 0 around an exit that is a user choice, not a failure
+_HINT_SHOWN=0
+print_help_hint() {
+    [[ "${HELP_HINT}" == "1" ]] || return 0
+    [[ "${_HINT_SHOWN}" == "1" ]] && return 0
+    _HINT_SHOWN=1
+    echo >&2
+    echo -e "\033[1;36mInstall / upgrade troubleshooting:\033[0m $(troubleshooting_url)" >&2
+    echo    "  Health check on this host:  sudo bash $0 doctor" >&2
+}
+on_exit_hint() {
+    local rc=$?
+    # 2 = usage / unknown command; it has already printed the usage text.
+    [[ $rc -eq 0 || $rc -eq 2 ]] || print_help_hint
+}
+trap on_exit_hint EXIT
+
 # Best-effort install of the optional RDP dependency (aardwolf, pinned to a wheel-having
 # version). --only-binary=:all: means: if there is no prebuilt wheel for this platform/Python,
 # fail FAST instead of pulling an sdist and triggering a Rust toolchain build. Failure is
@@ -38,6 +90,94 @@ install_rdp_optional() {
     else
         warn "Optional RDP dependency not installed (no prebuilt wheel for this platform/Python, or offline). RDP features disabled; core install unaffected."
     fi
+    # Python side of the FreeRDP engine (screen capture + input injection). These are small,
+    # pure-Python packages, so they go on every host -- the heavy part is the apt side
+    # (freerdp2-x11, xvfb), which is opt-in. Without these the FreeRDP engine reports
+    # itself unavailable in Admin -> System settings rather than failing at connect time.
+    if ( cd "$bd" && sudo -u "$u" "$bd/.venv/bin/pip" install --quiet -e ".[rdp-freerdp]" ); then
+        log "FreeRDP engine (Python side) installed."
+    else
+        warn "FreeRDP engine Python dependencies not installed; that engine stays unavailable."
+    fi
+}
+
+# apt packages the FreeRDP engine needs. ffmpeg is in the list for screen capture, not for video:
+# reading the framebuffer through python-xlib costs 334 ms per 1280x800 frame (it parses 4 MB of
+# pixels in pure Python), which caps the console at 2.8 fps. ffmpeg's x11grab uses MIT-SHM and
+# measured 47 fps on the same host. ~150 MB of X libraries in total, so this is NOT installed by
+# default: the default engine is aardwolf and most sites never switch. Two ways in:
+#   - install --with-freerdp
+#   - upgrade, when the site has already selected the FreeRDP engine (see ensure_freerdp_if_selected)
+FREERDP_APT_PACKAGES=(freerdp2-x11 xvfb xclip ffmpeg)
+
+# The backend's systemd unit carries a SystemCallFilter allowlist. Xvfb needs four calls the
+# backend itself never makes, and the filter's default action is to KILL -- so Xvfb dies with
+# SIGSYS, instantly and silently, and the console reports only "could not start a display".
+#
+# The relaxation is small in practice: the service runs as an unprivileged user with
+# NoNewPrivileges=yes, so setresuid/setuid can only move between identities it already has
+# (its own), and a non-root fchown cannot give a file away. It is still opt-in, installed only
+# with the engine that needs it, so sites on the default engine keep the tighter filter.
+FREERDP_DROPIN=/etc/systemd/system/jt-ipam-backend.service.d/freerdp.conf
+
+install_freerdp_dropin() {
+    mkdir -p "$(dirname "$FREERDP_DROPIN")"
+    cat > "$FREERDP_DROPIN" <<'DROPIN'
+# Installed by jt-ipam.sh for the FreeRDP console engine. Safe to delete if you switch back to
+# the built-in engine (Admin -> System settings -> RDP connection engine), then:
+#   sudo systemctl daemon-reload && sudo systemctl restart jt-ipam-backend
+#
+# Xvfb needs these four; the backend does not. SystemCallFilter= entries are merged across
+# drop-ins, so this adds to the unit's allowlist rather than replacing it.
+[Service]
+SystemCallFilter=mincore setresuid setuid fchown
+DROPIN
+    systemctl daemon-reload 2>/dev/null || true
+    log "Installed systemd drop-in for the FreeRDP engine ($FREERDP_DROPIN)."
+}
+
+install_freerdp_apt() {
+    log "Installing FreeRDP engine packages (${FREERDP_APT_PACKAGES[*]})…"
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${FREERDP_APT_PACKAGES[@]}"; then
+        warn "Could not install FreeRDP engine packages; that engine stays unavailable."
+        return 1
+    fi
+    install_freerdp_dropin
+    log "FreeRDP engine packages installed."
+    return 0
+}
+
+# Does this host already have every FreeRDP package?
+freerdp_apt_present() {
+    command -v xfreerdp >/dev/null 2>&1 && command -v Xvfb >/dev/null 2>&1 \
+        && command -v ffmpeg >/dev/null 2>&1
+}
+
+# Packages alone are not enough: without the drop-in, Xvfb is killed by the syscall filter.
+freerdp_ready() {
+    freerdp_apt_present && [ -f "$FREERDP_DROPIN" ]
+}
+
+# An upgrade must not silently take away an engine the site is actually using. If the admin has
+# selected the FreeRDP engine in Admin -> System settings, make sure its apt packages are present
+# -- otherwise the first RDP connection after the upgrade fails with "engine not installed", and
+# nothing in the upgrade output said why.
+ensure_freerdp_if_selected() {
+    command -v apt-get >/dev/null 2>&1 || return 0
+    freerdp_ready && return 0
+    local selected
+    selected="$(sudo -u postgres psql -tAd jt_ipam -c \
+        "SELECT value->>'rdp_engine' FROM system_settings WHERE key='console_security'" \
+        2>/dev/null | tr -d '[:space:]')"
+    [[ "$selected" == "freerdp" ]] || return 0
+    if freerdp_apt_present; then
+        # 套件都在，只缺 systemd 的放寬設定（升級到有這段程式碼的版本時會走這裡）
+        log "This site uses the FreeRDP console engine; installing its systemd drop-in…"
+        install_freerdp_dropin
+        return 0
+    fi
+    log "This site uses the FreeRDP console engine but its packages are missing — installing…"
+    install_freerdp_apt || warn "RDP consoles will fail until these are installed."
 }
 
 # Ensure a modern Node.js (>=18) is available to root. Three cases this handles:
@@ -303,6 +443,10 @@ Commands:
                  --tls-mode {nginx|direct|self-signed}   (default nginx)
                  --public-fqdn <fqdn>                     (default ipam.example.com)
                  --bind-port <port>                       (for direct/self-signed, default 8443)
+                 --with-freerdp                           also install the FreeRDP console engine
+                                                          (freerdp2-x11 xvfb xclip, ~150 MB of X libraries).
+                                                          Needed only for RDP targets that reject the default
+                                                          engine -- xrdp and GNOME Remote Login do.
   doctor       check a running install and print an exact fix for anything wrong
   upgrade      upgrade existing install (git pull -> backup -> pip -> alembic -> build -> restart)
                  --no-pull                                skip git pull
@@ -493,10 +637,12 @@ cmd_install() {
     local TLS_MODE="nginx"
     local PUBLIC_FQDN="ipam.example.com"
     local BIND_PORT_DIRECT=8443
+    local WITH_FREERDP=0
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --tls-mode) TLS_MODE="$2"; shift 2 ;;
+            --with-freerdp) WITH_FREERDP=1; shift ;;
             --public-fqdn) PUBLIC_FQDN="$2"; shift 2 ;;
             --bind-port) BIND_PORT_DIRECT="$2"; shift 2 ;;
             -h|--help) usage; exit 0 ;;
@@ -795,6 +941,12 @@ SQL
     # prod installs runtime deps only (matching upgrade); for dev/test tools run pip install -e ".[dev]" separately
     sudo -u "$JTIPAM_USER" .venv/bin/pip install -e .
     install_rdp_optional
+    if [[ "$WITH_FREERDP" == "1" ]]; then
+        install_freerdp_apt || true
+    else
+        log "FreeRDP console engine not installed (use --with-freerdp, or install later:"
+        log "  sudo apt-get install -y ${FREERDP_APT_PACKAGES[*]} )"
+    fi
 
     # -- 6. backend.env --
     log "Generating /etc/jt-ipam/backend.env…"
@@ -1014,10 +1166,13 @@ EOF
         || { warn "NOT RUNNING: jt-ipam-backend.service — journalctl -u jt-ipam-backend -n 50"; _fail=1; }
     local _expect_port
     if [[ "$TLS_MODE" == "nginx" ]]; then _expect_port=8000; else _expect_port="$BIND_PORT_DIRECT"; fi
-    if command -v ss >/dev/null 2>&1; then
-        ss -ltn 2>/dev/null | grep -q ":${_expect_port}\b" \
-            || { warn "NOTHING LISTENING on port ${_expect_port} (expected for --tls-mode ${TLS_MODE})"; _fail=1; }
-    fi
+    # 用連的，不要只看有沒有人 bind：精簡映像常常沒有 iproute2，`ss` 不在的時候
+    # 這段以前是整個跳過 —— 等於在最需要驗證的那種機器上什麼都沒驗。
+    local _probe_url
+    if [[ "$TLS_MODE" == "nginx" ]]; then _probe_url="http://127.0.0.1:${_expect_port}/healthz"
+    else _probe_url="https://127.0.0.1:${_expect_port}/healthz"; fi
+    wait_until_serving "$_probe_url" 60 \
+        || { warn "NOT ANSWERING on port ${_expect_port} (expected for --tls-mode ${TLS_MODE}) — journalctl -u jt-ipam-backend -n 50"; _fail=1; }
     if [[ "$TLS_MODE" == "nginx" ]]; then
         systemctl is-active --quiet nginx \
             || { warn "NOT RUNNING: nginx (needed in --tls-mode nginx to serve the UI on 443)"; _fail=1; }
@@ -1317,6 +1472,31 @@ cmd_doctor() {
               "sudo $0 upgrade   (installs one), or add an agent under Admin → Scan agents"
     fi
 
+    # ── remote console ──
+    # Only report the engine the site actually selected. Saying "FreeRDP not installed" on a
+    # site that uses the default engine is noise, and noise is what makes people stop reading
+    # the output.
+    local rdp_engine
+    rdp_engine="$(sudo -u postgres psql -tAd jt_ipam -c \
+        "SELECT COALESCE(value->>'rdp_engine','aardwolf') FROM system_settings WHERE key='console_security'" \
+        2>/dev/null | tr -d '[:space:]')"
+    [[ -n "$rdp_engine" ]] || rdp_engine="aardwolf"
+    echo
+    echo "Remote console"
+    if [[ "$rdp_engine" == "freerdp" ]]; then
+        if freerdp_ready; then
+            _ok "RDP engine: FreeRDP (packages and syscall drop-in present)"
+        elif ! freerdp_apt_present; then
+            _bad "RDP engine is set to FreeRDP but its packages are missing — RDP consoles will not connect" \
+                 "sudo apt-get install -y ${FREERDP_APT_PACKAGES[*]}"
+        else
+            _bad "RDP engine is set to FreeRDP but the syscall drop-in is missing — the virtual display is killed on start (SIGSYS)" \
+                 "sudo $0 upgrade   (installs it), or see docs/INSTALL.md"
+        fi
+    else
+        _ok "RDP engine: aardwolf (built in)"
+    fi
+
     echo
     if (( problems )); then
         echo -e "\033[1;31m$problems problem(s), $warns warning(s) — follow the → lines above\033[0m"
@@ -1333,6 +1513,50 @@ cmd_doctor() {
 # =============================================================================
 # cmd_upgrade — upgrade existing install (original scripts/jt-ipam-upgrade.sh logic, preserved verbatim)
 # =============================================================================
+# Recover a repository whose history no longer fast-forwards onto the remote.
+#
+# Why this exists: the upgrade pulls with --ff-only, and the script runs under
+# `set -e`. When the pull fails the whole upgrade stops right there -- no backup,
+# no migration, no build, no restart -- and all the operator sees is git's own
+# message. Worse, it is not a one-off: every subsequent upgrade fails the same
+# way, because nothing about the repository has changed. The fix is
+# `git reset --hard origin/<branch>`, which nobody would guess.
+#
+# Causes seen in practice: someone committed a local edit on the box, a partial
+# clone, or upstream history that was rewritten. In all of them the checked-out
+# source is meant to be a copy of upstream -- customer configuration lives in
+# /etc/jt-ipam, not in the repo -- so resetting to the remote is the right move.
+#
+# Nothing is thrown away silently: any commits that exist only here are kept on a
+# timestamped branch, and the message says where they went.
+recover_diverged_repo() {
+    local root="$1" branch upstream local_only backup
+    branch="$(as_user git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+    upstream="origin/${branch}"
+
+    as_user git -C "$root" fetch origin --prune >/dev/null 2>&1 || true
+    if ! as_user git -C "$root" rev-parse --verify --quiet "$upstream" >/dev/null; then
+        die "Cannot reach ${upstream}. Check network access to the git remote, then re-run upgrade."
+    fi
+
+    # A dirty tree was already handled (discarded or aborted) before the pull, so
+    # anything left here is committed history -- safe to move aside, not to lose.
+    local_only="$(as_user git -C "$root" log --oneline "${upstream}..HEAD" 2>/dev/null || true)"
+
+    warn "The local repository no longer fast-forwards onto ${upstream}."
+    if [[ -n "$local_only" ]]; then
+        warn "These commits exist only in ${root}:"
+        printf '%s\n' "$local_only" | sed 's/^/      /' >&2
+        backup="upgrade-recovery/$(date +%Y%m%d-%H%M%S)"
+        as_user git -C "$root" branch "$backup" HEAD >/dev/null 2>&1 || true
+        warn "Kept on branch '${backup}' -- nothing is lost."
+    fi
+
+    log "Resetting the source tree to ${upstream} so the upgrade can continue…"
+    as_user git -C "$root" reset --hard "$upstream"
+    log "Recovered: $(as_user git -C "$root" rev-parse --short HEAD)"
+}
+
 cmd_upgrade() {
     local UPGRADE_ARGS=("$@")
     local ROOT="$REPO_ROOT"
@@ -1414,7 +1638,9 @@ cmd_upgrade() {
         fi
       fi
       log "git pull --ff-only"
-      as_user git -C "$ROOT" pull --ff-only
+      if ! as_user git -C "$ROOT" pull --ff-only; then
+          recover_diverged_repo "$ROOT"
+      fi
     else
       log "Skipping git pull (--no-pull)"
     fi
@@ -1460,6 +1686,7 @@ cmd_upgrade() {
     log "Updating backend dependencies (pip install -e .)…"
     ( cd "$ROOT/backend"; as_user .venv/bin/pip install --quiet -e . )
     install_rdp_optional
+    ensure_freerdp_if_selected
     # IPMI tools for the BMC console (install on upgrade of existing setups; best-effort)
     if command -v apt-get >/dev/null 2>&1 && ! command -v ipmitool >/dev/null 2>&1; then
         log "Installing IPMI tools (ipmitool freeipmi-tools) for the BMC console…"
@@ -1489,8 +1716,22 @@ cmd_upgrade() {
     # -- 7. restart backend --
     log "Restarting $SVC…"
     systemctl restart "$SVC"
-    sleep 4
     systemctl is-active --quiet "$SVC" || die "$SVC did not come up after restart; check journalctl -u $SVC"
+    local _rdy_tls _rdy_port _rdy_url
+    _rdy_tls="$(grep -oP 'BACKEND_TLS_MODE=\K\S+' "$ENV_FILE" 2>/dev/null || echo nginx)"
+    if [[ "$_rdy_tls" == "nginx" ]]; then
+        # 走使用者實際走的路徑（443 → nginx → 後端）。**刻意不用 /healthz**：
+        # nginx 自己就靜態回它 200，後端停著也一樣綠。
+        _rdy_url="https://127.0.0.1/api/v1/system/version"
+    else
+        _rdy_port="$(grep -oP 'BACKEND_BIND_PORT=\K\S+' "$ENV_FILE" 2>/dev/null || echo 8443)"
+        _rdy_url="https://127.0.0.1:${_rdy_port}/api/v1/system/version"
+    fi
+    if wait_until_serving "$_rdy_url" 90; then
+        log "Backend is answering on ${_rdy_url}"
+    else
+        die "$SVC restarted but nothing answers on ${_rdy_url} after 90s; check: journalctl -u $SVC -n 50"
+    fi
     # Existing installs upgraded from a version without the capability drop-in get it here,
     # and either way we read back what the running service actually holds.
     verify_icmp_ready
@@ -1616,7 +1857,7 @@ cmd_uninstall() {
         local ans=""
         read -r -p "Are you sure you want to permanently delete the above? Type yes to confirm: " ans
         if [[ "$ans" != "yes" ]]; then
-            die "Did not type yes, purge aborted (nothing was deleted)."
+            HELP_HINT=0; die "Did not type yes, purge aborted (nothing was deleted)."
         fi
     else
         warn "--yes given, skipping interactive confirmation, purging directly."
@@ -1685,4 +1926,8 @@ main() {
     esac
 }
 
-main "$@"
+# Only run when executed, not when sourced. The recovery logic below is worth a
+# test, and a test cannot reach it if sourcing the file starts an upgrade.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

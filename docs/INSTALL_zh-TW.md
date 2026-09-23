@@ -1,6 +1,6 @@
 # jt-ipam 安裝與運維 SOP
 
-> English: [INSTALL.md](INSTALL.md)
+> English: [INSTALL.md](INSTALL.md) · 日本語：[INSTALL_ja.md](INSTALL_ja.md)
 
 針對 **Proxmox LXC、裸機、虛擬機**（Ubuntu 22.04+/Debian 12+）。**主力且建議**的安裝方式是
 **systemd + apt** 直裝（不使用 Docker）。另有 Docker Compose 路徑，但**屬選用 / 次要、並非優先模式**——見下方 §2.8。
@@ -340,6 +340,9 @@ cd jt-ipam/deploy/docker
 | `API_PUBLIC_URL` |  | OIDC/SAML callback 用 |
 | `CORS_ORIGINS` |  | 多個用逗號分隔 |
 | `OUTBOUND_ALLOW_CIDRS` | — | safe_http SSRF allowlist；空白 = 只允公網 |
+| `FDB_CURRENT_MAX_AGE_HOURS` | 24 | FDB 條目多久沒被看到就只算歷史（不再參與「目前接在哪個埠」的判斷）|
+| `FDB_RETENTION_DAYS` | 365 | FDB 歷史保留天數；0＝永久。這張表的價值是「以前接在哪個埠」，所以預設比 ARP 長很多 |
+| `ARP_RETENTION_DAYS` | 30 | ARP 條目保留天數；0＝停用回收 |
 | `OIDC_*` | — | 啟用 OIDC SSO |
 | `SAML_*` | — | 啟用 SAML SSO |
 | `LDAP_*` | — | LDAP/AD 認證 |
@@ -708,3 +711,26 @@ curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
 sudo apt install -y nodejs
 ```
 然後在 `/opt/jt-ipam/frontend` 重 `pnpm install && pnpm build`。
+
+## RDP 主控台的連線引擎
+
+瀏覽器 RDP 主控台可以在「管理 → 系統設定」選用兩個引擎之一：
+
+- **aardwolf**（預設）—— 純 Python 用戶端。不需要額外行程，對 Windows 目標運作正常。
+- **FreeRDP** —— 相容性較好。Linux 上的 RDP 伺服器（xrdp，以及 Ubuntu 24 內建的
+  GNOME「遠端登入」）會拒絕 aardwolf 的 NTLM 認證，因為那個函式庫沒有送出這些伺服器
+  要求的訊息完整性碼；FreeRDP 則通得過。
+
+FreeRDP 需要的套件**預設不安裝** —— 多數站台不會切換：
+
+```
+sudo apt-get install -y freerdp2-x11 xvfb xclip ffmpeg
+```
+
+或在安裝時加上 `jt-ipam.sh install --with-freerdp`。站台若已經選用 FreeRDP 引擎，
+升級時會自動補上這些套件。`jt-ipam.sh doctor` 會報出目前用的是哪個引擎、套件在不在，
+設定頁也會顯示同樣的資訊與該執行的指令。
+
+ffmpeg 是用來抓畫面的，不是拿來做影片：我們量過其他抓法每張要 334 毫秒，
+會把主控台壓在每秒 3 張以下。
+

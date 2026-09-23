@@ -67,6 +67,20 @@ COLUMN_SECRETS: dict[str, list[tuple[str, str, str, Callable[[dict[str, Any]], b
         ("api_key", "api_key_enc", "api_key_nonce",
          _aad_id("paloalto_firewall:{id}:api_key")),
     ],
+    "jump_hosts": [
+        ("private_key", "private_key_enc", "private_key_nonce",
+         _aad_id("jump_host:{id}:private_key")),
+        ("password", "password_enc", "password_nonce",
+         _aad_id("jump_host:{id}:password")),
+    ],
+    "mikrotik_routers": [
+        ("api_password", "api_password_enc", "api_password_nonce",
+         _aad_id("mikrotik_router:{id}:api_password")),
+    ],
+    "ocs_servers": [
+        ("api_password", "api_password_enc", "api_password_nonce",
+         _aad_id("ocs_server:{id}:api_password")),
+    ],
     "zabbix_instances": [
         ("api_token", "api_token_enc", "api_token_nonce",
          _aad_id("zabbix_instance:{id}:api_token")),

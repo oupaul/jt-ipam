@@ -105,8 +105,12 @@ CATEGORY: dict[str, str] = {
     "windows_dhcp_servers": "integrations",
     "fortigate_firewalls": "integrations",
     "paloalto_firewalls": "integrations",
+    "mikrotik_routers": "integrations",
+    "ocs_servers": "integrations",
     "opnsense_alias_mappings": "integrations",
     "ssh_credentials": "integrations",
+    # 跳板主機（issue #24）：算基礎設施設定，跟著整合一起搬
+    "jump_hosts": "integrations",
     # synced（可重新拉取的鏡像）
     "librenms_devices": "synced",
     "librenms_links": "synced",
@@ -122,6 +126,8 @@ CATEGORY: dict[str, str] = {
     "fortigate_address_objects": "synced",
     "paloalto_policies": "synced",
     "paloalto_address_objects": "synced",
+    "mikrotik_rules": "synced",
+    "mikrotik_address_lists": "synced",
     "wazuh_agents": "synced",
     "ip_hostname_observations": "synced",
     "virtual_machines": "synced",

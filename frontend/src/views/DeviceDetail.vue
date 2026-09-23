@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref, watch } from "vue";
+import { computed, h, nextTick, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
+import { usesLevels } from "@/utils/rackSlots";
 import {
   NCard, NSpace, NIcon, NButton, NDescriptions, NDescriptionsItem,
   NTag, NDataTable, NSpin, NTooltip, NModal, NSelect, NPopconfirm,
   useMessage, type DataTableColumns,
 } from "naive-ui";
 import { ArrowLeft as ArrowLeftIcon } from "@iconoir/vue";
-import { DevicesIcon, RefreshIcon, EditIcon, DeleteIcon, TopologyIcon, AddressesIcon, LibreNMSIcon, WazuhIcon, VirtualizationIcon, SubnetsIcon, LinkIcon , DhcpServerIcon } from "@/icons";
+import { DevicesIcon, RefreshIcon, EditIcon, DeleteIcon, TopologyIcon, AddressesIcon, LibreNMSIcon, WazuhIcon, VirtualizationIcon, SubnetsIcon, LinkIcon , DhcpServerIcon, OpenNewWindowIcon } from "@/icons";
 import { apiClient, apiErrMsg } from "@/api/client";
 import { listAddresses, updateAddress } from "@/api/addresses";
 import { listLocations, listRacks, getDeviceVlans, getDeviceLibrenms, deleteDevice, type Device, type Location, type Rack, type DeviceVLAN, type DeviceLibreNMS } from "@/api/basic";
@@ -51,6 +52,25 @@ function cardHead(icon: any, text: string) {
   return h("span", { style: "display:inline-flex;align-items:center;gap:8px" },
     [h(NIcon, { size: 18 }, () => h(icon)), text]);
 }
+
+// 外部整合卡片右上角的「在該系統檢視」按鈕會呼叫這個，另開分頁連到該裝置在來源系統的頁面
+function openExternal(url: string | null | undefined) {
+  if (url) window.open(url, "_blank", "noopener");
+}
+
+// 從別頁帶 ?card=<id> 進來時，捲到該卡片並短暫highlight，讓使用者知道落在哪
+const focusedCard = ref<string>("");
+function focusRequestedCard() {
+  const card = String(route.query.card || "");
+  if (!card) return;
+  void nextTick(() => {
+    const el = document.getElementById(`card-${card}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    focusedCard.value = card;
+    setTimeout(() => { focusedCard.value = ""; }, 2400);
+  });
+}
 const { labelFor: customerLabelFor, ensureLoaded: ensureCustomersLoaded } = useCustomers();
 const { visibleKeys: ipVisibleKeys, setVisible: setIpVisible, reset: resetIpVisible } = useColumnPrefs(
   "device_detail_ips",
@@ -78,7 +98,29 @@ const editShow = ref(false);
 const relations = ref<RelationNode[]>([]);
 const location = ref<Location | null>(null);
 const rack = ref<Rack | null>(null);
+/** 機櫃還是層架 —— 標籤與括號裡的單位都跟著換。 */
+const rackUsesLevels = computed(() => usesLevels((rack.value as any)?.kind));
+
+/**
+ * 哪裡來、哪裡回。從機櫃圖點進來的會帶 `?from=rack&rack=<id>`；
+ * 那台機櫃已經不存在（或根本不是從機櫃來的）就退回裝置清單。
+ */
+function goBack() {
+  const from = String(route.query.from ?? "");
+  const rackId = String(route.query.rack ?? "");
+  if (from === "rack" && rackId && rack.value?.id === rackId) {
+    void router.push({ name: "racks", query: { rack: rackId } });
+    return;
+  }
+  void router.push({ name: "devices" });
+}
 const rackDiagram = ref<RackDiagramData | null>(null);
+/** 帶著機櫃 id 去機櫃頁 —— 少了 query 只會停在「上次看的那一櫃」，看起來像點錯了。 */
+function openRackPage() {
+  const id = device.value?.rack_id;
+  if (!id) return;
+  void router.push({ name: "racks", query: { rack: id } });
+}
 const addresses = ref<IPAddress[]>([]);
 // 手動標記（is_dhcp_server）與整合推導（dhcp_server_auto）都算 —— 與 IpRoleTags 判斷一致
 const dhcpServerIps = computed(() =>
@@ -89,16 +131,32 @@ const showLinkIp = ref(false);
 const linkIpId = ref<string | null>(null);
 const linkCandidates = ref<IPAddress[]>([]);
 const linking = ref(false);
+const linkLoading = ref(false);
 const linkOptions = computed(() => linkCandidates.value.map((a) => ({
   label: `${a.ip}${a.hostname ? " — " + a.hostname : ""}`, value: a.id,
 })));
+/** 候選位址向後端要，關鍵字也送過去。
+ *  原本一次載 2000 筆再由前端過濾，站台超過那個數量時，要連結的那筆就不在清單裡，
+ *  而且打關鍵字也找不到（同 GitHub issue #27 的裝置表單）。 */
+async function loadLinkCandidates(q?: string) {
+  if (!device.value) return;
+  linkLoading.value = true;
+  try {
+    const r = await listAddresses({ page: 1, pageSize: 200, q: q || undefined });
+    // 已經掛在這台裝置上的不必再連一次
+    linkCandidates.value = r.items.filter((a) => (a as any).device_id !== device.value!.id);
+  } catch { msg.error(t("errors.network")); }
+  finally { linkLoading.value = false; }
+}
+let linkSearchTimer: ReturnType<typeof setTimeout> | undefined;
+function onLinkSearch(q: string) {
+  clearTimeout(linkSearchTimer);
+  linkSearchTimer = setTimeout(() => void loadLinkCandidates(q), 250);
+}
 async function openLinkIp() {
   if (!device.value) return;
   linkIpId.value = null;
-  try {
-    const r = await listAddresses({ page: 1, pageSize: 2000 });
-    linkCandidates.value = r.items.filter((a) => (a as any).device_id !== device.value!.id);
-  } catch { msg.error(t("errors.network")); return; }
+  await loadLinkCandidates();
   showLinkIp.value = true;
 }
 async function doLinkIp() {
@@ -114,7 +172,7 @@ async function doLinkIp() {
 }
 const vlans = ref<DeviceVLAN[]>([]);
 const lnms = ref<DeviceLibreNMS | null>(null);
-const integrations = ref<{ wazuh: any; vm: any } | null>(null);
+const integrations = ref<{ wazuh: any; vm: any; ocs: any } | null>(null);
 /** SCA 分數的顏色：低分＝很多項目不符基準。門檻取整數十位，避免給人「剛好及格」的錯覺。 */
 function scaType(score: number): "error" | "warning" | "success" {
   if (score < 50) return "error";
@@ -129,8 +187,8 @@ async function removeDevice() {
   try {
     await deleteDevice(device.value.id);
     msg.success(t("common.deleted"));
-    // 刪掉之後留在這一頁只會看到一個已經不存在的物件 → 回清單
-    router.push({ name: "devices" });
+    // 刪掉之後留在這一頁只會看到一個已經不存在的物件 → 回「點進來的地方」
+    goBack();
   } catch (e) {
     // 裝置被別的東西參照時後端會擋（例如還有 IP 掛在上面）→ 把原因照實顯示
     msg.error(apiErrMsg(e));
@@ -154,7 +212,10 @@ async function load(id: string) {
     getDeviceRelations(id).then((c) => { relations.value = c; }).catch(() => { relations.value = []; });
     getDeviceVlans(id).then((v) => { vlans.value = v; }).catch(() => { vlans.value = []; });
     getDeviceLibrenms(id).then((l) => { lnms.value = l; }).catch(() => { lnms.value = null; });
-    apiClient.get(`/api/v1/devices/${id}/integrations`).then((r) => { integrations.value = r.data; }).catch(() => { integrations.value = null; });
+    apiClient.get(`/api/v1/devices/${id}/integrations`).then((r) => {
+      integrations.value = r.data;
+      focusRequestedCard();   // 從 IP 頁「最後出現（OCS 盤點）」點進來時捲到該卡片
+    }).catch(() => { integrations.value = null; });
 
     const tasks: Promise<unknown>[] = [];
     if (dev.location_id) {
@@ -328,7 +389,7 @@ onMounted(() => {
             </template>
             {{ t("common.confirm_delete") }}
           </n-popconfirm>
-          <n-button @click="router.push({ name: 'devices' })" size="small">
+          <n-button @click="goBack()" size="small">
             <template #icon><n-icon><ArrowLeftIcon /></n-icon></template>
             {{ t("common.back") }}
           </n-button>
@@ -348,11 +409,12 @@ onMounted(() => {
           </n-descriptions-item>
           <n-descriptions-item :label="t('nav.racks')">
             <a v-if="rack" href="#" class="entity-link"
-               @click.prevent="router.push({ name: 'racks' })">{{ rack.name }} ({{ rack.u_height }}U)</a>
+               @click.prevent="openRackPage()">{{ rack.name }} ({{ rackUsesLevels
+                 ? t("racks.rows_levels", { n: rack.u_height }) : rack.u_height + "U" }})</a>
             <span v-else>—</span>
           </n-descriptions-item>
-          <n-descriptions-item :label="t('devices.u_position')">{{ device.u_position ?? "—" }}</n-descriptions-item>
-          <n-descriptions-item :label="t('devices.u_size')">{{ device.u_size ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="rackUsesLevels ? t('devices.level_position') : t('devices.u_position')">{{ device.u_position ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="rackUsesLevels ? t('devices.level_size') : t('devices.u_size')">{{ device.u_size ?? "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('devices.rack_face')">
             {{ (device as any).rack_face === "rear" ? t("devices.rack_face_rear")
                : (device as any).rack_face === "front" ? t("devices.rack_face_front") : "—" }}
@@ -371,8 +433,11 @@ onMounted(() => {
           <n-descriptions-item :label="t('common.updated_at')" :span="2">{{ fmtDateTime(device.updated_at) }}</n-descriptions-item>
         </n-descriptions>
           </div>
-          <div v-if="rackDiagram" class="dev-head-rack">
-            <RackDiagram :diagram="rackDiagram" :show-legend="false" :highlight-id="device.id" :compact="true" :bare="true" />
+          <!-- 縮圖就只是縮圖：正面／背面、縮放、匯出都留在機櫃頁。點它就過去看完整的。 -->
+          <div v-if="rackDiagram" class="dev-head-rack" :title="t('racks.open_in_racks')"
+               @click="openRackPage">
+            <RackDiagram :diagram="rackDiagram" :show-legend="false" :highlight-id="device.id"
+                         :compact="true" :bare="true" :controls="false" />
           </div>
         </div>
       </n-card>
@@ -426,6 +491,7 @@ onMounted(() => {
         <n-space vertical :size="12">
           <span style="font-size: 13px; opacity: .75">{{ t("devices.link_ip_hint") }}</span>
           <n-select v-model:value="linkIpId" :options="linkOptions" filterable clearable
+                    remote :loading="linkLoading" @search="onLinkSearch"
                     :placeholder="t('devices.link_ip_ph')" />
           <n-space justify="end">
             <n-button @click="showLinkIp = false">{{ t("common.cancel") }}</n-button>
@@ -437,6 +503,12 @@ onMounted(() => {
       </n-modal>
 
       <n-card v-if="device && lnms" :title="() => cardHead(LibreNMSIcon, 'LibreNMS')">
+        <template v-if="lnms.url" #header-extra>
+          <n-button size="small" quaternary type="primary" @click="openExternal(lnms.url)">
+            <template #icon><n-icon><OpenNewWindowIcon /></n-icon></template>
+            {{ t("device_detail.open_in", { sys: "LibreNMS" }) }}
+          </n-button>
+        </template>
         <n-descriptions bordered :column="2" size="small" label-placement="left"
                         :label-style="{ whiteSpace: 'nowrap' }">
           <n-descriptions-item :label="t('cols.hostname')">{{ lnms.hostname ?? "—" }}</n-descriptions-item>
@@ -452,6 +524,12 @@ onMounted(() => {
 
       <!-- Wazuh agent（依裝置 IP 比對）-->
       <n-card v-if="integrations && integrations.wazuh" :title="() => cardHead(WazuhIcon, 'Wazuh')" style="margin-top: 16px">
+        <template v-if="integrations.wazuh.url" #header-extra>
+          <n-button size="small" quaternary type="primary" @click="openExternal(integrations.wazuh.url)">
+            <template #icon><n-icon><OpenNewWindowIcon /></n-icon></template>
+            {{ t("device_detail.open_in", { sys: "Wazuh" }) }}
+          </n-button>
+        </template>
         <n-descriptions bordered :column="2" size="small" label-placement="left"
                         :label-style="{ whiteSpace: 'nowrap' }">
           <n-descriptions-item :label="t('device_detail.wz_agent')">{{ integrations.wazuh.name ?? "—" }} ({{ integrations.wazuh.agent_id }})</n-descriptions-item>
@@ -495,6 +573,12 @@ onMounted(() => {
 
       <!-- Proxmox VM（依裝置 IP 比對）-->
       <n-card v-if="integrations && integrations.vm" :title="() => cardHead(VirtualizationIcon, t('nav.virtualization'))" style="margin-top: 16px">
+        <template v-if="integrations.vm.url" #header-extra>
+          <n-button size="small" quaternary type="primary" @click="openExternal(integrations.vm.url)">
+            <template #icon><n-icon><OpenNewWindowIcon /></n-icon></template>
+            {{ t("device_detail.open_in", { sys: "Proxmox" }) }}
+          </n-button>
+        </template>
         <n-descriptions bordered :column="2" size="small" label-placement="left"
                         :label-style="{ whiteSpace: 'nowrap' }">
           <n-descriptions-item :label="t('device_detail.vm_name')">
@@ -516,6 +600,37 @@ onMounted(() => {
             {{ integrations.vm.memory_mb ?? "—" }}
           </n-descriptions-item>
         </n-descriptions>
+      </n-card>
+
+      <!-- OCS Inventory（透過網卡 MAC 比對到既有 IP；OCS 補作業系統／序號／型號／廠牌／標籤／備註）-->
+      <n-card v-if="integrations && integrations.ocs" id="card-ocs"
+              :class="{ 'card-focus': focusedCard === 'ocs' }"
+              :title="() => cardHead(DevicesIcon, 'OCS Inventory')" style="margin-top: 16px">
+        <template v-if="integrations.ocs.url" #header-extra>
+          <n-button size="small" quaternary type="primary" @click="openExternal(integrations.ocs.url)">
+            <template #icon><n-icon><OpenNewWindowIcon /></n-icon></template>
+            {{ t("device_detail.open_in", { sys: "OCS" }) }}
+          </n-button>
+        </template>
+        <div class="int-hint">{{ t("device_detail.ocs_match_hint") }}</div>
+        <n-descriptions bordered :column="2" size="small" label-placement="left"
+                        :label-style="{ whiteSpace: 'nowrap' }">
+          <n-descriptions-item label="OS">{{ integrations.ocs.os ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('device_detail.ocs_last_inventory')">{{ fmtDateTime(integrations.ocs.last_inventory) }}</n-descriptions-item>
+          <n-descriptions-item :label="t('device_detail.ocs_tag')">{{ integrations.ocs.tag ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('device_detail.ocs_agent')">{{ integrations.ocs.agent ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('device_detail.ocs_vendor')">{{ integrations.ocs.vendor ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('device_detail.ocs_model')">{{ integrations.ocs.model ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('device_detail.ocs_serial')">{{ integrations.ocs.serial ?? "—" }}</n-descriptions-item>
+        </n-descriptions>
+        <div v-if="integrations.ocs.notes && integrations.ocs.notes.length" class="ocs-notes">
+          <div class="ocs-notes-h">{{ t("device_detail.ocs_notes") }}</div>
+          <div v-for="(n, i) in integrations.ocs.notes" :key="i" class="ocs-note">
+            <span class="ocs-note-date">{{ n.date }}</span>
+            <span class="ocs-note-user">{{ n.user }}</span>
+            <span class="ocs-note-text">{{ n.comment }}</span>
+          </div>
+        </div>
       </n-card>
 
       <n-card v-if="device && vlans.length" :title="() => cardHead(SubnetsIcon, `VLAN (${vlans.length})`)">
@@ -540,6 +655,34 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* 從別頁帶 ?card= 進來時短暫highlight，讓使用者知道落點在哪 */
+.card-focus {
+  box-shadow: 0 0 0 2px var(--n-primary-color, #18a058);
+  transition: box-shadow .35s ease;
+}
+.int-hint {
+  font-size: 12px;
+  opacity: .7;
+  margin-bottom: 10px;
+}
+.ocs-notes {
+  margin-top: 12px;
+}
+.ocs-notes-h {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.ocs-note {
+  display: flex;
+  gap: 10px;
+  font-size: 13px;
+  padding: 3px 0;
+  border-top: 1px solid var(--n-border-color, rgba(128, 128, 128, .15));
+}
+.ocs-note-date { opacity: .6; white-space: nowrap; }
+.ocs-note-user { opacity: .8; white-space: nowrap; font-weight: 500; }
+.ocs-note-text { flex: 1; }
 .entity-link {
   color: var(--primary-color, #18a058);
   text-decoration: none;
@@ -552,6 +695,6 @@ onMounted(() => {
 :deep(.n-card) { min-width: 0; }
 :deep(.n-data-table) { max-width: 100%; }
 .dev-head-info { flex: 1 1 420px; min-width: 0; }
-.dev-head-rack { flex: 0 0 auto; max-width: 320px; }
+.dev-head-rack { flex: 0 0 auto; max-width: 320px; cursor: pointer; }
 @media (max-width: 900px) { .dev-head-rack { max-width: 100%; flex: 1 1 100%; } }
 </style>

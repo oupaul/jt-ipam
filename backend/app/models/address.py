@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import (
     ARRAY,
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -57,10 +58,31 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # OS 偵測結果：原始字串 + 正規化家族 key（前端依 family 配 icon）。see core/os_fingerprint.py
     os_guess: Mapped[str | None] = mapped_column(String(160))
     os_family: Mapped[str | None] = mapped_column(String(24))
+    #: OCS Inventory 代理回報的 OS 原始字串。獨立欄位（不污染掃描代理的 os_guess）——
+    #: 經 os_precedence 排在 scanner 之上，讓 agent 回報的 OS 蓋過 nmap 的指紋猜測。
+    os_ocs: Mapped[str | None] = mapped_column(String(160))
+    #: 對到的 OCS Inventory 電腦 systemid，供裝置明細「在 OCS 檢視」深連結。
+    ocs_id: Mapped[int | None] = mapped_column(BigInteger)
+    #: OCS 資產標籤（accountinfo.TAG）。
+    ocs_tag: Mapped[str | None] = mapped_column(String(128))
+    #: OCS 代理版本（hardware.USERAGENT）。
+    ocs_agent: Mapped[str | None] = mapped_column(String(128))
+    #: OCS 最新幾筆備註（itmgmt_comments）：[{date,user,comment,action}]。
+    ocs_notes: Mapped[list[Any] | None] = mapped_column(JSONB)
     # 各 probe 上次被執行的時間（由 report 回填），給「下次到期」顯示用。{"icmp": "...", "os": "..."}
     probe_last_run: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     ptr_ignore: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 這個 IP 要忽略哪幾類異常（0137）。逐類別而不是一個總開關：標了「這台會自己
+    # 換 MAC」（隱私隨機化）不代表它失聯也不用報。
+    anomaly_ignore: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"),
+    )
     note: Mapped[str | None] = mapped_column(Text)
+
+    # 主控台的連線出口（issue #24）：空＝沿用所屬子網路的設定；有值就覆寫它
+    jump_host_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jump_hosts.id", ondelete="SET NULL"), index=True,
+    )
 
     custom_fields: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
@@ -100,6 +122,9 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     last_seen_wazuh: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: Zabbix 最後一次回報這台主機可用（server 端輪詢維護，會過期）
     last_seen_zabbix: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: OCS Inventory 最後一次盤點到這個 IP。**顯示用、不進上線判定** ——
+    #: 盤點時間不是活性訊號（機器關機後 agent 不會回報，但上次盤點時間還在）。
+    last_seen_ocs: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen_dns: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     effective_status: Mapped[str | None] = mapped_column(String(32))
 

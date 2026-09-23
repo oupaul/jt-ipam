@@ -63,7 +63,12 @@
 ## 5b. 部署腳本流程（拋棄式環境，**勿在 dev/prod 跑 install**）
 
 - [ ] **全新安裝**：乾淨 LXC/VM 跑 `scripts/install-debian.sh`，裝完服務起得來、能登入
-- [ ] **舊版升級**：對上一版的環境跑 `scripts/jt-ipam-upgrade.sh`，升完正常、必要時可回滾
+- [ ] **舊版升級 —— 必跑，而且與上面那項是兩回事**：`scripts/test-upgrade.sh` 退出 0。
+  全新安裝與升級幾乎不共用程式碼，通過全新安裝那道關卡對既有站台什麼都沒證明。要把它指向
+  **即將發出去的那份**（`JT_IPAM_REPO=/path/to/candidate`），不要指向上一個已發布版本 ——
+  否則測到的是你已經發出去的東西。它會在升級**前**寫一列資料並檢查它還在：升級把資料弄丟是
+  最糟的失敗，而且不會讓任何指令回非零
+- [ ] 對上一版的環境跑 `scripts/jt-ipam.sh upgrade`，必要時可回滾
 - [ ] 這次若新增了目錄 / 套件 / 服務 / DB extension / env，確認**兩支腳本都已同步**
 - [ ] **(A) 預設管理員帳密**：全新安裝結尾有印出 `admin` 帳號＋隨機密碼，且密碼存到 `/etc/jt-ipam/.admin-initial-password`（root 0600）；用該密碼能登入
 - [ ] **(A) 重置密碼 CLI**：`python -m app.cli.bootstrap create-admin --username admin --password-stdin --force-update` 能重置既有 admin；README 中英都有此段
@@ -74,6 +79,23 @@
 
 - [ ] `cd frontend && pnpm exec playwright test smoke`（免後端，自起 vite preview）全綠
 - [ ] 對已部署實例（給 `E2E_BASE_URL` + `E2E_ADMIN_PASS`）跑 `pnpm test:e2e` 主路徑（登入/sections/audit）
+
+## 5g. 伺服器寫在畫面上的訊息 —— **只要新增或改動錯誤訊息就要跑**
+
+後端不可以送現成的句子。給人看的東西一律是 `{code, params, message}`
+（`app/core/ui_error.py`），句子由前端用 `errors.<code>` 組。寫死在後端的中文句子，
+在英文與日文介面上**照樣是中文**，而且什麼錯都不會報 —— 英文版上線以來一直是這樣，
+沒有人發現。
+
+- [ ] `pytest tests/test_ui_error_codes.py` —— 原始碼裡每個代碼在三個語系都有翻譯
+  （測試掃原始碼；漏補是安靜的）
+- [ ] 新代碼：逐一讀三個語系的句子，確認參數真的有插進去。翻譯漏了 `{reason}`
+  等於**把診斷資訊拿掉** ——「pfSense 回報錯誤」而看不出是 DNS、被拒還是憑證
+- [ ] 把介面切成英文與日文，實際觸發一次新的錯誤。用來**決定流程**（不只是顯示）的代碼
+  要特別小心：攔截器會把 `detail` 攤平成字串，要從 `detail_code` 讀 —— Proxmox 的
+  兩階段驗證就是這樣壞掉而沒有人發現
+- [ ] 不要把中文詞當參數傳（`what="下載"`）：差異寫進代碼裡
+  （`sftp_download_too_large`），否則英文句子中間會夾一個中文詞
 
 ## 5d. 系統匯出／匯入（跨機搬移）—— **只要動到它，每次發版都要整段跑**
 

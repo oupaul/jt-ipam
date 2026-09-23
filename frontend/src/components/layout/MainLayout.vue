@@ -8,6 +8,8 @@ import {
   NLayout,
   NLayoutHeader,
   NLayoutSider,
+  NAlert,
+  NButton,
   NLayoutContent,
   NMenu,
   NSpace,
@@ -38,7 +40,7 @@ import {
   AdminIcon, AuditIcon, UsersIcon, GroupsIcon, CustomFieldsIcon, CustomersIcon, AnomalyIcon,
   AiAuditIcon, ChatHistoryIcon,
   DnsIcon, LibreNMSIcon, FirewallIcon, WindowsDhcpIcon, WazuhIcon, ScanAgentsIcon, WebhooksIcon, LockIcon, KeyIcon,
-  MigrationIcon, ImportIcon, PluginsIcon, ExportIcon, TerminalIcon,
+  MigrationIcon, ImportIcon, PluginsIcon, ExportIcon, TerminalIcon, TestIcon,
   // topbar / user menu
   LogoutIcon, AccountIcon, LanguageIcon, ThemeDarkIcon, ThemeLightIcon,
   renderIcon,
@@ -178,7 +180,7 @@ watch([inSubnetContext, currentSubnetId, navSubnets], () => {
 // 「進階」裡的整合唯讀檢視頁，若該整合完全沒設定，頁面只會顯示「尚未設定 X」，
 // 等於空選項 → 依後端回報的設定狀態隱藏。初值全 true：載入完成前不要讓選單閃一下才消失。
 const intgPresence = ref<Record<string, boolean>>({
-  opnsense: true, pfsense: true, fortigate: true, zyxel: true, paloalto: true,
+  opnsense: true, pfsense: true, fortigate: true, zyxel: true, paloalto: true, mikrotik: true,
   dns: true, cert_agents: true, proxmox: true, esxi: true,
 });
 async function loadIntegrationPresence() {
@@ -236,10 +238,16 @@ const menuOptions = computed<MenuOption[]>(() => {
           ? [{ label: () => t("nav.zyxel_fw"), key: "zyxel_fw", icon: renderIcon(FirewallIcon) }] : []),
         ...(intgPresence.value.paloalto
           ? [{ label: () => t("nav.paloalto_fw"), key: "paloalto_fw", icon: renderIcon(FirewallIcon) }] : []),
+        ...(intgPresence.value.mikrotik
+          ? [{ label: () => t("nav.mikrotik_fw"), key: "mikrotik_fw", icon: renderIcon(FirewallIcon) }] : []),
         { label: () => t("nav.nat"),            key: "nat",         icon: renderIcon(NatIcon) },
         { label: () => t("nav.cabling"),        key: "cabling",     icon: renderIcon(PhysicalIcon) },
         { label: () => t("nav.power"),          key: "power",       icon: renderIcon(PowerIcon) },
         { label: () => t("nav.vpn_tunnels"),    key: "vpn-tunnels", icon: renderIcon(VpnIcon) },
+        // 匯入會寫入子網路、後端六支端點都是 admin → 非 admin 不顯示，
+        // 否則點進去只會拿到 403
+        ...(me.value?.is_admin
+          ? [{ label: () => t("nav.import"), key: "import", icon: renderIcon(ImportIcon) }] : []),
       ],
     },
     { label: () => t("nav.tools"),       key: "tools",      icon: renderIcon(ToolsIcon) },
@@ -249,7 +257,7 @@ const menuOptions = computed<MenuOption[]>(() => {
     // superAdmin-only 項目：僅 is_admin 可見（使用者/群組/權限指派/系統設定/通知發送設定/版本/系統紀錄）
     // fortigate/windows_dhcp/zyxel/paloalto 已比照 pfSense/OPNsense 開放給 ops_admin（require_ops_admin）；
     // system_transfer 仍是 require_admin，選單能見度要跟後端一致，否則 ops_admin 點了就 403。
-    const superAdminKeys = new Set(["users", "groups", "permissions", "system_settings", "notification_channels", "version", "system_logs", "system_transfer"]);
+    const superAdminKeys = new Set(["users", "groups", "permissions", "system_settings", "notification_channels", "version", "doctor", "ocs", "jump_hosts", "system_logs", "system_transfer"]);
     const allAdminItems = [
       { label: () => t("nav.audit"),         key: "audit",          icon: renderIcon(AuditIcon) },
       { label: () => t("nav.users"),         key: "users",          icon: renderIcon(UsersIcon) },
@@ -275,25 +283,28 @@ const menuOptions = computed<MenuOption[]>(() => {
       { label: () => t("nav.fortigate"),      key: "fortigate",      icon: renderIcon(FirewallIcon) },
       { label: () => t("nav.zyxel"),          key: "zyxel",          icon: renderIcon(FirewallIcon) },
       { label: () => t("nav.paloalto"),       key: "paloalto",       icon: renderIcon(FirewallIcon) },
+      { label: () => t("nav.mikrotik"),       key: "mikrotik",       icon: renderIcon(FirewallIcon) },
       { label: () => t("nav.windows_dhcp"),  key: "windows_dhcp",   icon: renderIcon(WindowsDhcpIcon) },
       { label: () => t("nav.virt_admin"),    key: "virt_admin",     icon: renderIcon(VirtualizationIcon) },
       { label: () => t("nav.esxi_admin"),    key: "esxi_admin",     icon: renderIcon(VirtualizationIcon) },
       { label: () => t("nav.wazuh"),         key: "wazuh",          icon: renderIcon(WazuhIcon) },
       { label: () => t("nav.zabbix"),        key: "zabbix",         icon: renderIcon(LibreNMSIcon) },
+      { label: () => t("nav.ocs"),            key: "ocs",            icon: renderIcon(DevicesIcon) },
       { label: () => t("nav.event_rules"),  key: "event_rules",    icon: renderIcon(WebhooksIcon) },
       { label: () => t("nav.graylog_dsv"),   key: "graylog_dsv",    icon: renderIcon(ExportIcon) },
+      { label: () => t("nav.jump_hosts"),    key: "jump_hosts",     icon: renderIcon(TerminalIcon) },
       { label: () => t("nav.scan_agents"),   key: "scan_agents",    icon: renderIcon(ScanAgentsIcon) },
       { label: () => t("nav.certificates"),  key: "certificates",   icon: renderIcon(LockIcon) },
       { label: () => t("nav.webhooks"),      key: "webhooks",       icon: renderIcon(WebhooksIcon) },
       { label: () => t("nav.migration"),     key: "migration",      icon: renderIcon(MigrationIcon) },
       { label: () => t("nav.system_transfer"), key: "system_transfer", icon: renderIcon(ExportIcon) },
-      { label: () => t("nav.import"),        key: "import",         icon: renderIcon(ImportIcon) },
       { label: () => t("nav.plugins"),       key: "plugins",        icon: renderIcon(PluginsIcon) },
       { label: () => "LLM / AI",             key: "llm_settings",   icon: renderIcon(SettingsIcon) },
       { label: () => t("nav.system_settings"), key: "system_settings", icon: renderIcon(SettingsIcon) },
       { label: () => t("nav.notification_channels"), key: "notification_channels", icon: renderIcon(SettingsIcon) },
       { label: () => t("nav.ip_request_policy"), key: "ip_request_policy", icon: renderIcon(RequestsIcon) },
       { label: () => t("nav.version"),       key: "version",        icon: renderIcon(AdminIcon) },
+      { label: () => t("nav.doctor"),        key: "doctor",         icon: renderIcon(TestIcon) },
       { label: () => t("nav.system_logs"),   key: "system_logs",    icon: renderIcon(AuditIcon) },
       { label: () => t("nav.chat_history"),  key: "chat_history",   icon: renderIcon(ChatHistoryIcon) },
     ];
@@ -328,6 +339,7 @@ const menuOptions = computed<MenuOption[]>(() => {
 const localeOptions = [
   { label: "繁體中文", value: "zh-TW" },
   { label: "English",  value: "en-US" },
+  { label: "日本語",   value: "ja-JP" },
 ];
 
 // 進入（或從別處點進）某頁時，自動展開其所屬的左側群組（管理 / 進階 / 子網路群組），
@@ -365,7 +377,7 @@ const currentLocaleLabel = computed(() => localeOptions.find((o) => o.value === 
 const currentThemeLabel = computed(() => themeOptions.value.find((o) => o.value === theme.value)?.label ?? "");
 const currentThemeIcon = computed(() => (theme.value === "light" ? ThemeLightIcon : ThemeDarkIcon));
 // n-dropdown @select 會帶 (key, option)，需包一層只取 key（避免把 option 當成 setLocale 的第二參數）
-function pickLocale(k: string | number) { ui.setLocale(String(k) as "zh-TW" | "en-US"); }
+function pickLocale(k: string | number) { ui.setLocale(String(k) as "zh-TW" | "en-US" | "ja-JP"); }
 function pickTheme(k: string | number) { ui.setTheme(String(k) as "light" | "dark" | "auto"); }
 
 const userMenuOptions = computed(() => [
@@ -594,6 +606,14 @@ function startDrag(e: MouseEvent) {
         </n-space>
       </n-layout-header>
       <n-layout-content content-style="padding: 16px;">
+        <!-- 資料庫結構落後於程式時，讀完整欄位的頁面會 500（清單空白、儀表板卻正常）。
+             系統啟動時就知道了，所以要在使用者踩到之前講，而不是讓人一頁一頁試。 -->
+        <n-alert v-if="me?.schema_behind" type="error" :bordered="false"
+                 style="margin-bottom: 12px" :title="t('doctor.schema_behind_title')">
+          {{ t("doctor.schema_behind_body") }}
+          <n-button size="tiny" type="error" ghost style="margin-left: 8px"
+                    @click="handleMenu('doctor')">{{ t("nav.doctor") }}</n-button>
+        </n-alert>
         <router-view />
       </n-layout-content>
     </n-layout>
@@ -718,6 +738,18 @@ function startDrag(e: MouseEvent) {
   margin-left: 16px;
 }
 .app-sider :deep(.n-submenu-children > .n-menu-item),
+/* 收起時把側邊欄的捲軸藏起來。
+   macOS 若設成「總是顯示捲軸」，那種捲軸會**佔掉版面寬度**，64px 的窄欄被吃掉十幾 px，
+   icon 就會看起來偏左（覆蓋式捲軸的機器上看不出來，所以很容易漏掉）。
+   收起時只剩一排 icon，沒有捲軸也能用滾輪捲動。 */
+.app-sider.n-layout-sider--collapsed :deep(.n-layout-sider-scroll-container) {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.app-sider.n-layout-sider--collapsed :deep(.n-layout-sider-scroll-container)::-webkit-scrollbar {
+  display: none;
+}
+
 .app-sider :deep(.n-submenu-children > .n-submenu),
 .app-sider :deep(.n-submenu-children > .n-submenu > .n-menu-item) { position: relative; }
 /* 垂直主幹：

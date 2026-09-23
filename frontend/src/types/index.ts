@@ -19,6 +19,8 @@ export interface UserMe {
   has_global_read?: boolean;
   can_edit?: boolean;
   ai_enabled?: boolean;
+  /** 資料庫結構落後於程式（只給 admin）—— 落後時畫面會到處 500 */
+  schema_behind?: boolean;
   can_ssh?: boolean;
   last_login_at: string | null;
   created_at: string;
@@ -42,6 +44,8 @@ export interface Section {
   display_order: number;
   subnet_count: number;
   customer_id: string | null;
+  /** 主控台的連線出口（issue #24）：空＝繼承上層或直連 */
+  jump_host_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -64,6 +68,8 @@ export interface Subnet {
   threshold_pct: number | null;
   auto_dns: boolean;
   customer_id: string | null;
+  /** 主控台的連線出口（issue #24）：空＝繼承上層或直連 */
+  jump_host_id?: string | null;
   customer_name: string | null;
   gateway: string | null;
   dns_servers: string | null;
@@ -104,6 +110,8 @@ export interface IPAddress {
   ptr_ignore: boolean;
   note: string | null;
   customer_id: string | null;
+  /** 主控台的連線出口（issue #24）：空＝繼承上層或直連 */
+  jump_host_id?: string | null;
   custom_fields: Record<string, unknown> | null;
   hostname_source_pin: string | null;
   switch_port_confident: boolean | null;
@@ -124,6 +132,7 @@ export interface IPAddress {
   last_seen_arp: string | null;
   /** Wazuh 代理的 keep-alive（manager 端維護，會過期 → 算得上上線證據） */
   last_seen_wazuh?: string | null;
+  last_seen_ocs?: string | null;
   /** Zabbix 最後一次回報這台主機可用 */
   last_seen_zabbix?: string | null;
   /** 防火牆給的逐來源觀測時間：`{"arp:opnsense": "…", "lease:pfsense": "…"}` */

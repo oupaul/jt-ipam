@@ -1020,20 +1020,10 @@ onUnmounted(() => {
         <span>{{ t("nav.topology") }}</span>
       </n-space>
     </template>
-    <!-- 控制列：自標題列搬到內文最上方 -->
-    <n-space align="center" justify="end" style="margin-bottom: 10px">
-      <n-dropdown trigger="click" :options="exportOptions" @select="onExport">
-        <n-button size="small">
-          <template #icon><n-icon><ExportIcon /></n-icon></template>
-          {{ t("common.export") }}
-        </n-button>
-      </n-dropdown>
-      <n-button @click="refresh" size="small">
-        <template #icon><n-icon><RefreshIcon /></n-icon></template>
-        {{ t("common.refresh") }}
-      </n-button>
-    </n-space>
-    <n-space class="topo-toolbar" align="center" :wrap="true" style="margin-bottom: 12px; row-gap: 8px">
+    <!-- 動作靠右、與篩選同一列。原本它們自己獨占一列靠右對齊，畫面上多一條空帶，
+         視窗一窄又會跟篩選擠在一起；卡片標題列則只放標題（使用者回報兩次）。 -->
+    <n-space class="topo-toolbar" align="center" :wrap="true"
+             style="margin-bottom: 12px; row-gap: 8px">
       <n-select
         v-model:value="subnetIds"
         :options="subnetOptions"
@@ -1066,6 +1056,19 @@ onUnmounted(() => {
             {{ t("topology.fit") }}
           </n-button>
         </n-button-group>
+        <!-- 兩顆動作綁成同一個 flex 子項：換行時一起換 -->
+        <n-space align="center" :size="8" :wrap-item="false">
+          <n-dropdown trigger="click" :options="exportOptions" @select="onExport">
+            <n-button>
+              <template #icon><n-icon><ExportIcon /></n-icon></template>
+              {{ t("common.export") }}
+            </n-button>
+          </n-dropdown>
+          <n-button @click="refresh">
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>
+            {{ t("common.refresh") }}
+          </n-button>
+        </n-space>
       </n-space>
     <n-spin :show="loading">
       <div class="topology-shell">

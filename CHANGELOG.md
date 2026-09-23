@@ -4,6 +4,1277 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.6.44] - 2026-09-23
+
+### Fixed
+- **AI audit run by hand failed on OpenAI-compatible services** (GitHub issue #36): "6/6
+  batches failed: (empty reply)", while scheduled runs worked. A manual run streams, and the
+  stream parser handed every line to the JSON decoder. Server-sent events arrive as
+  `data: {...}`, so every line failed to parse and was silently skipped — the model had
+  answered; we threw it away. Thanks to the reporter for the precise analysis.
+- **The AI chat never used its tools on OpenAI-compatible services.** Same parser: no
+  content and no tool calls came through, so the chat fell back to "answer without tools" —
+  it replied, but without looking anything up. Tool calls split across stream chunks are now
+  joined, tool results carry the `tool_call_id` strict services require, and the
+  Ollama-only `options` field is no longer sent to OpenAI endpoints.
+- **The chat bubble always said "Local Ollama"** (GitHub issue #37). It now shows the
+  configured service, and the model-info lookup no longer calls Ollama's `/api/show` on an
+  OpenAI-compatible service.
+
+### Changed
+- **The rack type comes first in the rack dialog** (GitHub issue #35): level count, numbering
+  direction, board thickness and per-level heights all depend on it.
+- **The IP lists show the MAC vendor** (GitHub issue #38) under the MAC address, as the IP
+  detail page already did.
+
+## [0.6.43] - 2026-09-23
+
+### Security
+- **Deleting a user broke the audit hash chain.** `audit_logs.actor_user_id` had a foreign
+  key to `users` with `ON DELETE SET NULL`, so deleting an account made the database rewrite
+  that person's audit records (actor set to NULL); the stored hashes no longer recomputed and
+  verification reported a break — a routine admin action looked exactly like tampering. The
+  foreign key is gone, and a database trigger now rejects any UPDATE or DELETE on
+  `audit_logs`, so no application path, cascade or mistake can change an audit record. The
+  system import never imports audit logs either (the export file keeps the source copy):
+  merge used to overwrite rows with the same id and replace used to wipe them.
+  The 1,955 long-unverifiable records behind the verification baseline turned out to be the
+  same thing — every one has a NULL actor, left behind by test accounts deleted without an
+  audit trail — so they are not tampering, but the original ids cannot be recovered.
+
+### Added
+- **The docs site has a section for shelving.** Chrome wire shelving and IKEA IVAR-style
+  wooden shelving are how a lot of small offices, labs and branch sites actually hold their
+  gear, so they get their own section: what the shelf types do, screenshots of two real
+  shelves and the shelf settings dialog, in all three languages. The feature card, the rack
+  screen and the feature map mention shelving too.
+- The demo dataset gains a lab with the same two shelves (fictional names), and the docs
+  screenshot script can crop to an element and set a viewport per shot — and refuses a row
+  wider than the screen instead of silently cutting its right side off.
+
+### Fixed
+- **Switching back to the IP page after opening a console in a new tab left the page black**
+  (reported on macOS Chrome). Console tabs kept `window.opener`, so Chrome ran both tabs in
+  one renderer process. Every console tab (SSH, SFTP, RDP, VNC, noVNC, BMC) now opens with
+  `noopener`, and a check fails on any new-tab `window.open` without it. Pop-out windows keep
+  the opener so a named window can still be reused.
+- **Racks not yet placed on the floor plan were easy to miss.** The tray of unplaced racks
+  sat under the plan as grey dashed buttons, out of view once the plan was tall. It now sits
+  above the plan in amber with a count, with a darker label in the light theme so the text
+  stays readable.
+- A shelf's card title said "Rack:" and used ASCII punctuation in every language. Shelves
+  now say "Shelf", and punctuation follows the language.
+
+## [0.6.42] - 2026-09-22
+
+### Added
+- **Insert or delete a level, and everything above it moves with it.** Getting a shelf's
+  level count wrong used to mean moving every device by hand, one at a time. The operation
+  now previews exactly what it will do, refuses to run if anything sits on (or spans) the
+  level being removed, and hands back an undo you can send straight back.
+- **The level picker shows what is already on each level and where.** A small map per row
+  draws the occupied part in its real place, with a dashed outline for where the device you
+  are placing would land. A list of names cannot show that half a level is still free — which
+  is the whole difference between a shelf and a rack.
+- **An optional separate base URL for the embedding model** (GitHub issue #33). Chat and
+  embedding models are often deployed separately; leave it empty and it falls back to the
+  main URL.
+
+### Fixed
+- **Exports were still drawing the old rack model.** The picture came out tens of thousands
+  of pixels tall and almost entirely blank, because the bottom-alignment baseline had moved
+  from "number of U" to pixels and the exporter was still multiplying it by a fixed row
+  height. The exporter also carried its own copy of the geometry, so nothing from the shelving
+  work had reached it: no boards, every level the same height, side-by-side devices drawn on
+  top of each other (it still read a field replaced months ago), stacking ignored, and a
+  device standing on the top board missing entirely. There is now one geometry, shared by the
+  single-rack and whole-room exports, and it reads the same pixel values the screen does.
+  Side frames stop at the topmost board, as they do on screen and in real life.
+- **The rack thumbnail on a device page had the wrong proportions.** Compact mode squeezed
+  only the row heights and left the width, board thickness and hole pitch at full size. It is
+  now scaled as a whole: measured aspect ratio went from 1.45 to 3.94, the same as the full
+  view.
+- **The AI could answer with addresses that were never in the data** (GitHub issue #34). When
+  a tool had nothing to return, a small model filled the gap with plausible-looking examples;
+  when it did return data, a model could mistype an address while repeating it. Three
+  deterministic guards: `list_anomalies` now says "nothing found" explicitly instead of a wall
+  of zeros, tool errors carry the underlying message (a detector that throws used to look
+  identical to "no data"), and every address in an answer is checked against that turn's tool
+  results — anything that appears in neither is flagged in a line appended to the answer.
+- **AI and MCP now see the shelving model.** `list_racks` reports the rack kind, whether rows
+  are levels or U, per-level heights, the extra place on top, and which rows still have space
+  — it used to call a half-occupied level full. `list_devices` and `get_device` expose where a
+  device sits within its row, so two devices sharing a level are no longer the same position.
+- The per-level height editor listed levels bottom-first while the diagram drew them
+  top-first, so changing "the top one" meant looking at the bottom of the list. The numbering
+  direction now sits above the level settings, and its two options say where level 1 is
+  instead of describing a reading direction.
+- Shelving no longer talks about "U positions": the empty-slot tooltip, the position picker
+  and the place-device dialog all say levels, and the picker no longer omits the place on top
+  of the highest board — it was visible in the diagram but impossible to select.
+- Racks standing side by side now share one floor line. The baseline was computed from the
+  data rather than measured, and the difference is exactly the frame's border and padding,
+  which varies by kind.
+- The cross brace on a wooden shelf was hidden behind the right side frame but drawn over the
+  left one.
+- The embed URL could be copied before the setting was saved, so it returned 404 and looked
+  broken.
+
+## [0.6.41] - 2026-09-21
+
+### Added
+- **Shelving now behaves like real shelving, not a rack with the labels changed.**
+  - **Anything can sit on top of the topmost board.** A shelf unit has no lid, so the top
+    surface is a real place to put a device; it shows as a "Top" row above the numbered levels.
+  - **Devices can be stacked inside one level, and a level need not be full.** A device now
+    records how much of a level's height it uses and where it sits in it — the same
+    start-plus-span model already used across the width — so two boxes can share a level and
+    still leave headroom above them.
+  - **Board thickness and floor clearance are settable.** Level height is the clear space
+    between boards, so the boards themselves and the gap under the bottom board are counted
+    separately when the elevation is drawn.
+  - **An IKEA IVAR preset** fills in the 179 cm side frame, 18 mm boards and level heights in
+    one click, and the pine side frames are drawn with their real 32 mm hole pitch and 7 mm
+    holes.
+
+### Fixed
+- **Side frames no longer continue above the top board.** The top of a shelf unit is open —
+  that is the whole point of being able to put something on it.
+- A device placed on the top surface was reported as "out of the rack's range" and **was not
+  drawn at all**.
+- Two devices stacked in one level were reported as overlapping. Overlap now requires the
+  vertical ranges to intersect as well.
+- **With bottom-up numbering, the open top row was drawn at the very bottom** — that is the
+  floor, not the top.
+- The "different height per level" toggle rendered as a line of plain text: the component it
+  used was never imported, which Vue does not treat as an error. A check now scans every
+  template for this.
+
+## [0.6.40] - 2026-09-21
+
+### Added
+- **Shelf levels can each have their own height.** Shelf boards are adjustable one level at a
+  time on real shelving (IKEA IVAR, chrome wire shelving), and the usual build puts the tall
+  bay at the bottom. A rack can now carry a height per level; leave it off and the whole unit
+  keeps one height, exactly as before. The drawing, the device blocks that span several
+  levels, and the cross-brace span are all computed from the actual heights.
+
+### Fixed
+- **Clicking a rack in the dashboard's usage chart now opens that rack**, instead of just
+  landing on the rack page showing whichever rack was the default.
+- **The face switch and the export button in the rack toolbar are aligned.** They sat about
+  2px apart because the two controls had different line heights and were positioned on the
+  text baseline.
+- The rack elevation's **top board** is drawn on the web diagram too, not only in the SVG
+  export — without it a shelf unit looked like it was missing its top level.
+
+## [0.6.39] - 2026-09-20
+
+### Added
+- **Wooden shelving is now a rack type** (pine side frames, e.g. IKEA IVAR). The drawing shows
+  what makes one recognisable: solid pine side frames with their full column of adjustment
+  holes, pine shelf boards, and the steel cross-brace at the back — braced every other bay from
+  the bottom, the way the instructions call for, and drawn behind the shelves so you see it
+  through the empty ones. Width and depth shortcuts offer the real IVAR board sizes
+  (42/83 cm wide, 30/50 cm deep).
+
+## [0.6.38] - 2026-09-20
+
+### Added
+- **Racks now have a type** (Racks → Add/Edit → Type): standard server rack, industrial
+  enclosure, plain shelving, or chrome wire shelving. The type sets sensible defaults for width
+  and level height, decides whether rows are counted in U or in levels, and changes how the
+  diagram is drawn — the wire-shelf drawing has round chrome posts with collars at each shelf,
+  which is how you recognise one at a glance.
+
+## [0.6.37] - 2026-09-20
+
+### Added
+- **Non-standard racks and shelving are supported** ([#30](https://github.com/jasoncheng7115/jt-ipam/issues/30)).
+  A rack can carry its real width and its real level height in millimetres; the elevation is
+  drawn to those proportions instead of assuming 19" and 1U. Empty values keep the standard
+  numbers, so existing racks are unchanged.
+
+## [0.6.36] - 2026-09-20
+
+### Added
+- **A row can hold up to six devices side by side**
+  ([#31](https://github.com/jasoncheng7115/jt-ipam/issues/31)). Width was previously full /
+  left / right only; a device now records a starting cell and how many cells it spans, so
+  halves, thirds, quarters, fifths and sixths are all expressible. Existing left/right
+  placements are converted automatically and keep their position.
+
+## [0.6.35] - 2026-09-19
+
+### Added
+- **OCS inventory data is now available to AI chat and MCP.** A new `list_ocs_computers` tool
+  returns OS, asset tag, agent version, last-inventory time and the latest notes, and
+  `get_ip_detail` now carries the OCS fields too. Pass `subnet_cidr` to scope a question to one
+  subnet (the reply states the scope and total), or `stale_days=N` to find assets that have not
+  been inventoried for N days. Read-only, and subject to the same visibility rules as the other
+  infrastructure tools. Previously every other integration was queryable this way except OCS.
+
+### Changed
+- **The OCS inventory timestamp on an IP is now a link** that opens the device page and scrolls
+  straight to its OCS card, briefly highlighting it.
+
+## [0.6.34] - 2026-09-19
+
+### Added
+- **Every external-integration card on the device page has a "View in ..." button** that opens
+  that device's own page in the source system (LibreNMS, Wazuh, Proxmox VE, OCS). The links are
+  built on the server from each integration's configured URL and the device's id there.
+- **The OCS card now shows the asset tag, the agent version and the most recent notes**, plus a
+  line explaining that OCS matches machines to existing IPs by network-card MAC.
+
+### Fixed
+- **Placeholder DMI strings no longer masquerade as hardware data.** Boards that ship without
+  DMI values report things like "To Be Filled By O.E.M." — sometimes glued to the real value
+  ("To Be Filled By O.E.M. X570D4I-2T"). The prefix is now stripped, and a placeholder already
+  stored on a device is replaced with the real value, or cleared when the source has none.
+  Values entered by hand are never touched.
+
+## [0.6.33] - 2026-09-19
+
+### Added
+- **The device-port import filter is now configurable** (System settings → Device ports): a
+  master switch plus an editable list of name patterns, pre-filled with the defaults.
+
+### Fixed
+- **Text from OCS is now recovered whatever language it is in.** Agents always report UTF-8, so
+  when an OCS database is not UTF-8 the text arrives double-encoded and unreadable. That is a
+  single, unambiguous corruption, and it is now reversed for Traditional and Simplified Chinese,
+  Japanese and Korean alike. The JSON decoder also no longer trusts the declared charset, so a
+  response that is not valid UTF-8 is preserved instead of losing characters.
+
+## [0.6.32] - 2026-09-19
+
+### Added
+- **The device page shows an OCS Inventory card** (OS, last inventory, serial/model/vendor).
+
+### Fixed
+- **Windows pseudo network interfaces no longer clutter the device port list.** Importing ports
+  from the monitoring integration pulled in the NDIS filter, WAN Miniport and tunnel interfaces
+  that Windows exposes over SNMP (`ethernet_3`, `wireless_0`, `ppp_32769` ...), most of them
+  copying the real adapter's MAC. They are now skipped, and ones imported by an earlier poll are
+  removed — but only if they are not cabled and carry no pass-through mapping, so manually
+  created ports are never touched. Physical switch and Linux port names do not match these
+  patterns and are unaffected.
+
+## [0.6.31] - 2026-09-18
+
+### Changed
+- **The OCS integration page now matches the other integration pages**: the sidebar entry reads
+  "OCS integration" (like the DNS/Wazuh/... entries), and the list action column uses icon
+  buttons with tooltips, consistent with the Proxmox VE and firewall pages.
+
+## [0.6.30] - 2026-09-18
+
+### Fixed
+- **OS reported by the OCS agent now outranks the scanner's nmap fingerprint guess.** The first
+  release wrote OCS's OS into the scanner's `os_guess` field and only when empty — so a Win11
+  machine that nmap had mis-fingerprinted as "Windows XP" kept the wrong value. OCS's OS now
+  lives in its own `os_ocs` field and is placed above the scanner in the OS-source precedence
+  (an agent's read of the real OS is far more reliable than a fingerprint guess), no longer
+  polluting the scanner field.
+
+## [0.6.29] - 2026-09-18
+
+### Added
+- **OCS Inventory NG integration (phase 1: asset identity).** Pulls endpoint and server
+  inventory from OCS — hostname, OS, NIC MACs, serial/model/vendor, last-inventory time —
+  filling the one gap this project had no automatic source for (PC and physical-server assets).
+  **Read-only; never changes OCS. Matches existing IPs by MAC only, never creates IPs, and
+  treats a MAC seen on several machines as ambiguous rather than guessing.** Admin → OCS
+  inventory manages several servers (per customer/site), tests the connection, and syncs
+  on demand or on a schedule.
+  - Credentials are **optional** (OCS REST has no auth by default); the connection test
+    actively checks whether it answers with no credentials and warns when it does.
+  - Incremental vs full is chosen by version capability: 2.11 uses `lastupdate`, 2.10 pages
+    the full set.
+  - The software-list toggle is **off by default** (it inflates each host from ~2 KB to ~80 KB).
+  - OCS inventory time is display-only and never feeds the online/offline decision; stale
+    inventory never overwrites a fresher source or a device serial.
+
+### Fixed
+- **Rack diagram: a device spanning the full width had its label ellipsized at the half-U
+  point** (GitHub #32). The label now uses the device's actual width instead of a fixed
+  half-U cap.
+
+### Notes
+- Database changes: new `ocs_servers` table and `ip_addresses.last_seen_ocs` column (applied
+  automatically on upgrade). **No other install/upgrade changes** — no new packages, services
+  or outbound settings (OCS calls use the existing safe-outbound mechanism).
+
+## [0.6.28] - 2026-09-18
+
+### Fixed
+- **Two people connecting at the same moment could see each other's console.** The FreeRDP engine
+  gives every connection its own virtual screen, but decided "is this screen mine?" by checking
+  whether a socket file existed. When three connections start at the same instant, all three see
+  no lock file, all three try the same number, and only one wins — the other two saw the winner's
+  socket and carried on using **someone else's screen**. Ownership is now proved against the PID
+  in X's own lock file, and the scan starts at a different number per connection.
+- **A correct password could be reported as "username or password incorrect".** When two
+  handshakes begin at the same instant the target fails one of them, sometimes as a security
+  negotiation failure and sometimes as a logon failure. Handshakes are now queued (across
+  processes, so multiple workers are covered too). Retrying was deliberately **not** used:
+  a retry re-sends the credentials, which on a target with a lockout policy spends one of the
+  account's attempts.
+- **Three entirely different connection failures gave the same wrong explanation.** Nothing
+  listening on the port, a port that is not RDP, and an unreachable address were all reported as
+  "the target rejected these display settings (resolution or colour depth)", sending the reader
+  to check a resolution that was never the problem. The test used a line that *every* failure
+  prints. The four failures now each say their own thing, and the underlying text is no longer
+  cut from the middle of a timestamp.
+- **Non-ASCII characters vanished silently on the FreeRDP engine.** FreeRDP translates key events
+  through a fixed key table and has no Unicode keyboard channel, so Chinese and Japanese could
+  not be sent — without a word, so it reads as a broken keyboard. The console now says so and
+  points at Paste, which handles any text. This also fixes a worse case: characters on the AltGr
+  level were typed as Shift, producing a character the user never asked for.
+
+### Changed
+- Two more entries in the troubleshooting page's Remote console section: what to do when the
+  FreeRDP engine cannot type your language, and why GNOME Remote Login degrades to a black screen
+  after dozens of connections (the target accumulates login-screen sessions it never reaps),
+  with the commands to check and clear it.
+
+- **The "last seen" labels on the IP detail page now read alike.** The Wazuh row said
+  "Wazuh agent keep-alive" next to "Last seen (scanner)" and "Last seen (LibreNMS)", which
+  made one row of the same group look like a different kind of value. All three languages
+  adjusted, with a test to keep them in step.
+
+### Notes
+- No database changes. **Install and upgrade need no adjustment** — no new packages, units or settings.
+
+## [0.6.27] - 2026-09-17
+
+### Fixed
+- **Two cursors on the RDP console.** The FreeRDP engine baked a cursor into every captured
+  frame while the browser drew its own on top of the canvas — two cursors at the same point,
+  which reads as one cursor being offset. The baked one was not even the remote's pointer: it
+  was whatever cursor the *local* X server had, which on a target that never sends a pointer
+  update is X11's default shape and has nothing to do with the remote. It is no longer drawn:
+  the two engines now behave the same, and moving the pointer over empty space no longer
+  produces any frame updates at all.
+- **The rightmost column was always black, and aiming drifted towards the right edge.** An RDP
+  desktop must have an even width, so an odd request is rounded down — but the canvas was still
+  sized to what was asked for, leaving a column that never gets painted and a scale factor off
+  by that column. The engine now reports the size it actually got, and the canvas follows it.
+- **The FreeRDP engine was killed outright by the syscall filter in production.** Xvfb needs
+  four calls the backend itself never makes, and the filter's default action is to *kill* rather
+  than return an error, so it vanished without a word and the console said only that no virtual
+  display could be started. The install and upgrade scripts now add the matching systemd
+  drop-in whenever the FreeRDP engine is selected; sites on the default engine keep the tighter
+  filter.
+
+### Changed
+- **A "Remote console" section in the troubleshooting page** (all three languages): which engine
+  to choose for xrdp or GNOME Remote Login, and what GNOME's "Session Already Running" dialog
+  means — Force Stop doing nothing is not a lost click, it is GDM being unable to end a session
+  the user already holds on the local console. To reach a desktop that is already logged in,
+  use Desktop Sharing rather than Remote Login.
+- **Four documentation screenshots re-shot from the demo dataset.** The originals came from a
+  real network and showed internal ranges, real hostnames and MACs, and a customer's name.
+  Secret scanning cannot read image content and sanitisation cannot change pixels.
+  ⚠️ The old images remain in the published git history.
+
+### Notes
+- No database changes. **Install and upgrade**: sites using the FreeRDP engine gain one systemd
+  drop-in (`/etc/systemd/system/jt-ipam-backend.service.d/freerdp.conf`), installed by the
+  scripts; sites on the default engine are unaffected.
+
+## [0.6.26] - 2026-09-17
+
+### Fixed
+- **The FreeRDP engine could not start its virtual display on a real install.** The systemd unit
+  runs with `PrivateTmp=yes`, so the service gets a fresh, empty `/tmp` — and Xvfb, running as a
+  non-root user, will not create `/tmp/.X11-unix` itself. It says so and then fails. The engine
+  now creates that directory before starting Xvfb. This could not reproduce in development,
+  where the directory already exists and nothing is sandboxed.
+- **That failure was reported as a credentials problem.** The message read "connection or
+  authentication failed (username, password, domain or NLA)", because FreeRDP's error was being
+  run through a classifier written for the other engine's failure modes. It sent the reader to
+  check a password that was never wrong. FreeRDP errors now keep their own explanation, and
+  Xvfb's own words are included instead of being discarded.
+- **FreeRDP needs a writable home directory** and, when it does not have one, reports a security
+  negotiation failure — again pointing somewhere unrelated. Each connection now gets its own
+  temporary home, so the engine no longer depends on how the service's HOME is configured.
+  Verified against a sandbox with no writable paths at all.
+
+### Changed
+- **The version page lists what the FreeRDP engine needs** (`xfreerdp`, `Xvfb`, `ffmpeg`,
+  `xclip`) alongside the existing optional tools, each with its package name and what it is for.
+  That page is where an administrator checks what a host has; an engine that cannot connect for
+  want of a package should be visible there rather than in the logs. A test keeps that list and
+  the engine's own requirements from drifting apart.
+
+### Notes
+- No database changes; installation and upgrade are unaffected.
+
+## [0.6.25] - 2026-09-17
+
+### Added
+- **The RDP console can use FreeRDP instead of the built-in client**, selected under
+  Admin -> System settings. The default stays aardwolf.
+
+  A customer could not reach an Ubuntu 24 host running GNOME Remote Login. The decisive test:
+  same host, same credentials, same moment -- FreeRDP authenticates, our client is rejected with
+  STATUS_LOGON_FAILURE. The cause is in the NTLM library we depend on, which does not send the
+  message integrity code; MS-NLMP requires one when the server's challenge carries a timestamp,
+  and FreeRDP's server side enforces it. GNOME Remote Login and xrdp both use that server side.
+  Windows targets were never affected, which is why the default does not move.
+
+### Notes
+- FreeRDP needs `freerdp2-x11 xvfb xclip ffmpeg`, about 150 MB of X libraries. They are **not**
+  installed by default: `install --with-freerdp` adds them, an upgrade adds them automatically if
+  the site has already selected that engine, `doctor` reports whether they are present, and the
+  settings page names what is missing and the command to install it.
+- ffmpeg is there for screen capture, not video. Reading the framebuffer through the X protocol
+  in Python costs 334 ms per 1280x800 frame, capping the console at 2.8 fps; ffmpeg's x11grab
+  uses shared memory and measured 47 fps. The console now streams at its 15 fps ceiling, sends
+  nothing at all while the screen is idle, and uses about 17 KB/s when the cursor is moving.
+  It also draws the remote cursor, which the previous capture path could not see.
+- Clipboard redirection is **off** unless the administrator enabled paste. FreeRDP enables it by
+  default, so switching engines would otherwise quietly reopen a channel that had been closed.
+- The password reaches FreeRDP on stdin, never as a command-line argument, where any local user
+  could read it out of the process list. A test pins this.
+- Input errors are no longer swallowed. The console used to suppress every exception in its input
+  loop, so a failure left the picture running while the mouse and keyboard did nothing, with no
+  server-side trace. The same session now logs each step it waits on.
+
+## [0.6.24] - 2026-09-16
+
+### Changed
+- **A hostname that contains what you typed now ranks above a match found only in the
+  description or owner.** The hostname is the object's identity: someone typing a name wants
+  the machine with that name. Trigram similarity alone reversed that, because a short owner
+  string ("kappa5 team") scores higher than a longer hostname ("kappa5-web") — so "the machine
+  that team owns" came out above the machine itself. The hostname hit is given a floor rather
+  than a ceiling, so a better match (an exact IP, a MAC) still wins.
+
+### Notes
+- No database changes; installation and upgrade are unaffected.
+
+## [0.6.23] - 2026-09-16
+
+### Added
+- **Global search covers the description, owner and note fields.** Searching for a machine by
+  what someone wrote about it — a ticket number, a rack position, the team that owns it — found
+  nothing, so those fields could only be read, never looked up.
+
+### Fixed
+- **A description-only match was silently discarded.** `description` was already in the query,
+  so the field looked searchable; but the matching text never reached the result's label or
+  sublabel, and the "substring hits win" filter downstream drops every row whose visible text
+  does not contain the query. As soon as anything else matched, the description hit vanished.
+  A row found by description, owner or note now shows the matching text, which both explains
+  why it is in the list and lets it survive that filter.
+
+### Notes
+- Notes rank last, deliberately: it is free text, and "spare for 203.0.113.9" written on one
+  machine does not mean the user is looking for that machine. Note matches are substring-only
+  (no fuzzy matching, which would push noise to the top) and scored in a band below everything
+  else. Hostname, description and owner keep competing on similarity as before.
+- The row ordering also puts stronger matches first inside the SQL, so note matches can never
+  push a hostname match out of the result limit.
+- The per-address list search already covered all of these; only the global box was missing them.
+- No database changes; installation and upgrade are unaffected.
+
+## [0.6.22] - 2026-09-16
+
+### Fixed
+- **A manual anomaly scan no longer reports old findings as new.** The scheduled run and the
+  "Run scan" button shared one sentence — `IP conflicts: {count} new` — so pressing the button
+  announced findings that had been sitting there for months as if they had just appeared. The
+  recipient decides whether to act tonight on that word. The two are now separate sentences,
+  and the total, which was never passed, no longer leaves "(of N)" blank.
+- **One anomaly notification printed its own translation key.** `notif.anom_mac_flapping` was
+  referenced by the code but existed in none of the three language files, so "IPs changing MAC
+  frequently" arrived in the bell as the literal text `notif.anom_mac_flapping`. Nothing errors
+  when a key is missing; it is simply ugly in front of the user.
+
+### Changed
+- **The anomaly tables are translated.** Forty-six column headings lived in a dictionary in the
+  page and never went through i18n. The tables are only drawn after a scan has run, so switching
+  the interface to Japanese left the headings in Chinese and no existing check ever looked.
+- **The firewall rule-rot findings are translated**, including the one that names the alias
+  members it found. The Chinese original is still sent alongside: exports and the AI reading
+  have no browser to ask for a language.
+- **Server-produced display text now translates nested keys.** A notification can name another
+  key as a parameter (`label_key`), letting eleven categories share two sentences instead of
+  carrying eleven near-identical ones.
+- **Seventy-seven hardcoded strings across thirteen screens** now go through i18n: certificate
+  deployment previews, export formats, the login realm, event-rule conditions, and the AI tool
+  names. Translating the tool names is not word substitution — Chinese joins with nothing,
+  English needs spaces, Japanese puts the verb last — so the assembly itself is now translated.
+
+### Notes
+- No database changes; installation and upgrade are unaffected.
+- The scan-agent install hint existed in two copies that had already drifted apart: only one
+  of them mentioned that installing avahi-utils also starts a daemon listening on UDP 5353.
+  They are now one shared module.
+- The legacy `notif.anom_*` keys are kept and pinned by a test. Notifications already sent live
+  in the database and still point at them; deleting them would turn old entries into raw keys.
+- Verified in a real browser in all three languages, with a new end-to-end test for the table.
+
+## [0.6.21] - 2026-09-16
+
+### Changed
+- **The system-check page speaks the reader's language.** It was the largest screen still
+  written entirely in Chinese: 33 checks, each with a title, a finding and a "how to fix",
+  all assembled on the server where there is no such thing as a current language. Every check
+  now carries a code and its parameters, and the sentence is built in the browser — the same
+  contract the error messages and notifications already use. The stored Chinese remains as the
+  fallback, so a check without a code degrades to what it printed before.
+
+- **The downloadable report is built in the browser too.** It used to come from
+  `/doctor/report`, which assembles the text server-side and therefore always in Chinese — a
+  report you paste into a ticket should be in the language of whoever reads the ticket. The
+  server endpoint stays for `curl` and scripts.
+
+### Notes
+- No database changes.
+- `scripts/jt-ipam.sh doctor` is unaffected: it is the other half of this diagnosis, it runs on
+  the server for an operator, and it has always been in English.
+- Verified in a real browser in all three languages. Two things only the browser showed: the
+  backend process still running the previous build (the page said so itself, in its own
+  frontend/backend version check), and a leak detector of mine that flagged correct Japanese
+  because it listed kanji Japanese shares with Chinese.
+
+## [0.6.20] - 2026-09-16
+
+### Fixed
+- **The last two notifications that were Chinese for everyone.** The audit-chain failure and
+  the fallback text of a user-defined event rule were the only `push_notification()` calls
+  still without translation keys; all ten call sites now carry them. The event rule keeps the
+  admin's own wording when they wrote one — only *our* fallback sentence follows the reader's
+  language.
+
+- **The audit-chain alert de-duplicated on its own display text.** It suppressed repeats by
+  matching `Notification.title == "稽核鏈驗證失敗"`, so rewording that sentence — a translation,
+  a copy edit — would have silently stopped the suppression and started alerting on every run.
+  It matches the stable key now, and accepts the old title too so upgrading does not produce a
+  duplicate.
+
+- **The dashboard's object-hierarchy row broke when it wrapped.** The arrow and the box after
+  it were siblings, so on wrap the arrow stayed at the end of the previous row pointing at
+  nothing, and `flex: 1 1 0` stretched the leftover box across the whole row (974px at 1280px
+  wide). Each arrow now belongs to its box and wraps with it, and a box cannot grow past 260px.
+  Measured in three languages at five widths.
+
+### Fixed (tests)
+- **`seed_e2e` now resets each account's stored language.** Nearly every spec finds elements by
+  their Chinese text, and the language is a preference stored on the account — so any tool that
+  looked at the Japanese or English UI without restoring it (a spec, a one-off measuring script)
+  left the next full run with a batch of "element not found". That reads as a product
+  regression; it is last run's leftover state. Same reasoning as the ignore-list reset that was
+  already there.
+
+### Notes
+- No database changes.
+
+## [0.6.19] - 2026-09-14
+
+### Fixed
+- **Japanese labels painted outside their boxes in the object-hierarchy diagram** on the site's
+  front page. That diagram is hand-written inline SVG with fixed 146px boxes, and an SVG
+  `<text>` neither wraps nor clips — a label that does not fit simply paints over the border.
+  The Japanese for "Room / Site" needed about 166px; "Virtualization" was grazing the edge too.
+  The Chinese label fits, which is why this survived until someone looked at the Japanese page.
+
+  The label now uses the same short form the other two languages already use in that diagram,
+  matching the app's own Japanese for rooms, so every label fits at full size. A measuring pass
+  also runs on load and on every language change and shrinks anything that still does not fit:
+  hand-tuning one font size would break again the next time a string is edited or a language
+  is added.
+
+- **Notifications were written in Chinese for everyone.** The notification model has carried
+  `title_key` / `body_key` / `params` for a while — the browser renders those in the reader's
+  language and falls back to the stored text when they are absent. Certificate and IP-request
+  notifications used it; the twelve in the capacity and health checks (DHCP pool, jump-host key,
+  certificate source, integration sync, agent silence, system check) never did. The root cause
+  was one level down: the shared `_notify()` helper did not forward the keys at all, so a
+  producer could not have supplied them even if it tried. Reported from a Japanese session
+  showing a Chinese notification panel.
+
+  Existing rows keep the Chinese they were written with — a notification is a record of
+  something that happened, not a template to rewrite after the fact.
+
+- **"3 分鐘前" in every language.** `fmtRelative` built the string by hand, so the relative
+  timestamps in the notification panel, API tokens, chat history and backup list were Chinese
+  regardless of the interface language. It uses `Intl.RelativeTimeFormat` now: plurals
+  (1 minute / 2 minutes) and word order are each language's own rules, and hand-built strings
+  can only ever be right for one of them.
+
+- **A DHCP pool notification ran the subnet and the range together**
+  (`192.0.2.0/24192.0.2.150–192.0.2.200`) — the two values were concatenated with no separator,
+  leaving the reader to find the boundary.
+
+### Notes
+- No database changes.
+
+## [0.6.18] - 2026-09-14
+
+### Fixed
+- **The documentation site's page title stayed Chinese in every language.** 0.6.16 made the
+  body text and the screenshots follow the reader's language and left the document's own
+  metadata behind: no script touched `<title>`, `<meta name="description">` or `<html lang>`,
+  so the browser tab, the search result and the link preview were Chinese whichever language
+  you picked — and the served HTML said `lang="zh-Hant"` even though the site's default is
+  English. Reported from `view-source:` on `?lang=ja`.
+
+  All six multilingual pages now carry the title and description in three languages and update
+  them together with everything else. The static values are the **default** language (English),
+  so a crawler or a reader without JavaScript gets a consistent page rather than a Chinese
+  title above English content. `troubleshooting.html` had its own switcher and did not emit the
+  shared `jtipam:langchange` event; it does now, so one contract covers the whole site.
+
+### Notes
+- No database changes.
+
+## [0.6.17] - 2026-09-14
+
+### Fixed
+- **`upgrade` said "complete" while the site was still returning 502.** After restarting the
+  backend the script slept four seconds and asked systemd whether the unit was active — and
+  systemd calls a unit active the moment the process is exec'd, which is well before uvicorn
+  has imported the application and started listening. Four seconds is enough on an idle box
+  and not enough right after a frontend build, which is exactly when `upgrade` runs it. The
+  admin saw "Upgrade complete" and a broken site.
+
+  It now polls a route that **has to be proxied to the backend** until it answers (up to 90s)
+  and fails loudly with the journal command if it never does. `/healthz` is deliberately not
+  used: nginx answers that one itself with a static 200, so it stays green with the backend
+  stopped.
+
+- **`install`'s own self-check silently skipped the listening-port test on minimal systems.**
+  It used `ss`, guarded by `command -v ss` — and container and minimal-cloud images routinely
+  ship without iproute2, so the check vanished precisely on the machines where install
+  problems actually happen. It now connects instead of looking for a bound port.
+
+### Added
+- **`scripts/test-upgrade.sh` — the upgrade path is now a release gate of its own.** Fresh
+  install and upgrade share almost no code: `install` starts from nothing, while `upgrade`
+  starts from a machine already running an older version and has to pull, run migrations
+  against real data, rebuild and restart without losing the instance. A release could pass
+  the fresh-install gate and still break every existing site — and this release did: the 502
+  above was found by the first run of this script.
+
+  It installs the previous tag in a throwaway systemd container, **writes a row before
+  upgrading**, upgrades, then checks that the version moved in both the frontend and
+  `version.py`, that the service answers over HTTPS, that the row survived, and that `doctor`
+  is happy. It can be pointed at a local repository so it tests the release you are about to
+  publish rather than the one already published.
+
+### Notes
+- No database changes.
+- TEST_CHECKLIST 5b now lists the upgrade gate.
+
+## [0.6.16] - 2026-09-14
+
+### Fixed
+- **Server-generated messages now follow the reader's language.** Error text produced by the
+  backend — "跳板「X」尚未信任主機金鑰", "403 拒絕存取：帳號群組權限或 address 限制不足",
+  the SFTP "找不到「/etc/nope」" line, the firewall match reason on an IP — was written as
+  finished Chinese sentences, so the English and Japanese interfaces showed Chinese. This is
+  not a Japanese problem: **English users have been seeing Chinese error messages since the
+  English translation shipped**, and nothing errors, so nobody reported it as a bug.
+
+  The backend now sends `{code, params, message}` and the sentence is assembled in the browser
+  from `errors.<code>`. 287 codes across ~60 files: every service exception that reaches a
+  screen (`RouterOSError`, `CertError`, `ESXiError`, `SftpError`, `SSHTunnelError`,
+  `RackPlacementError`, `PveConsoleError`, `TransferCryptoError`, the DNS adapters, FortiGate,
+  Palo Alto, Zabbix…), the console WebSocket error frames for SSH / SFTP / RDP / VNC / BMC / PVE,
+  and the HTTP `detail` of every endpoint that forwards one. `message` stays as the fallback,
+  so an untranslated code degrades to exactly what it printed before.
+
+  Two things this sweep uncovered on the way:
+
+  - **The Proxmox two-factor prompt was already broken.** The browser decided whether to show
+    the 6-digit code field by reading `detail.code`, but the response interceptor flattens
+    `detail` to a string before any caller sees it — so that branch could never be true and
+    the code field never appeared. The code now travels alongside, in `detail_code`.
+  - **A translated frame must not swallow the evidence.** `detail_of()` always attaches the
+    original text as `reason`, and every fallback sentence interpolates it ("pfSense returned
+    an error: {reason}"). Without that, translating would have *removed* the one part that
+    says whether it was DNS, a refused connection, or a bad certificate.
+
+  A test walks the source for every `code=` / `ui_detail()` / `detail_of()` and fails if any of
+  the three locales is missing that key — the failure mode is silent, so it needs a gate.
+
+### Changed
+- **Documentation screenshots are per-language, and taken from a fictional dataset.** The
+  English and Japanese pages of the site showed Chinese screenshots, which reads as "this
+  product is really only Chinese". There are now `docs/shots/{zh,en,ja}/` and the page swaps
+  them when the language changes.
+
+  The shots come from `scripts/demo_dataset.py` + `scripts/docs-shots.mjs`, so they can be
+  retaken: the data is invented (4 sites, 6 racks, 5 subnets, 39 addresses, 23 devices, a
+  patch-panel cable path), addresses are all in the RFC 5737 / RFC 3849 documentation ranges,
+  and nothing in the picture belongs to a real network. The previous screenshots were taken
+  against a live system.
+
+### Fixed (tests)
+- **A browser test that had quietly rotted.** The "an IP that keeps changing MAC" spec seeds
+  six ARP rows and the rule looks at *the last 7 days*, but the seeder only created rows that
+  did not already exist — so once seeded, the timestamps never moved and the fixture fell out
+  of the window a week later. The failure read "no table row appeared", which looks exactly
+  like the feature being broken. The seeder now re-anchors the timestamps every run, and the
+  spec asks the backend whether the sample exists *before* waiting, so an environment without
+  it skips instead of spending 60 seconds timing out.
+- The scan-agent probe spec read the dropdown with a single `allInnerTexts()` call, which races
+  the panel mounting; with enough accumulated agents it started losing. It now uses retrying
+  expectations.
+
+### Notes
+- No database changes.
+- TEST_CHECKLIST gained section 5g (messages the server writes on the screen).
+- The AI-chat screenshots and the browser-console screenshot are still the old Chinese ones:
+  the first four need a reachable language model and the last needs a live SSH/RDP target.
+- Not converted, deliberately: the startup secret check in `config.py` (it only ever reaches
+  the system journal), and `BackgroundTask.error` (a diagnostic field carrying arbitrary
+  exception text, never translated). The system-check page and the anomaly finding descriptions
+  are a separate Chinese surface, not error messages — they remain as they were.
+
+## [0.6.15] - 2026-09-14
+
+### Fixed
+- **The AI now answers in the language the person is actually using.** Only two of the five
+  places that send text to a language model were following the UI language. The investigation
+  window decided with `lang.startswith("zh")`, so a Japanese user got English; the AI triage
+  card for unauthorised IPs and the firewall rule-change reading had the instruction written
+  into a Chinese prompt, so **English users got Chinese too** — that one predates Japanese
+  entirely and nobody noticed, because nothing errors: the answer simply comes back in the
+  wrong language.
+
+  There is now a single `answer_language()` that every entry point uses, so a new feature
+  cannot quietly pick its own rule and a new language only has to be added once. A test
+  asserts all five call it, because the failure mode is silent.
+
+### Changed
+- **The documentation site switches language with a dropdown instead of three buttons in a
+  row.** Side-by-side buttons crowd the header on a narrow window, and every additional
+  language makes it worse; a dropdown keeps the same width no matter how many there are.
+
+### Added
+- Japanese for the data model and the phpIPAM API mapping references.
+
+### Notes
+- No database changes.
+- Two facts in `DATA_MODEL` were out of date after 0.6.14 and are corrected: `user_preferences.locale`
+  now lists `ja-JP` (with the reminder that adding a language means widening a CHECK constraint
+  in a migration, or saving fails with nothing on screen but "save failed"), and the two Wazuh
+  CVE count columns are recorded as removed.
+
+## [0.6.14] - 2026-09-14
+
+### Added
+- **Japanese, as a first-class third language.** The app UI (all 3,491 strings), the whole
+  documentation site, and the main Markdown guides (README, INSTALL, SECURITY, PLUGINS,
+  UPGRADE_FROM_0.4) are now available in Japanese alongside Traditional Chinese and English.
+  Picking it is a normal preference, saved per account and carried across devices; naive-ui's
+  own strings (date picker, pagination, upload) switch with it, so the page is not half-and-half.
+
+  Adding a language is more than a file of strings, and each of the pieces below fails
+  *silently* if forgotten: a key missing from one locale makes vue-i18n fall back to English,
+  so the screen renders half-translated with no error; and `user_preferences.locale` carries a
+  CHECK constraint, so without migration `0139` choosing Japanese would fail on save with
+  nothing on screen but "save failed". Both are now held down by tests — `check-i18n` requires
+  the three locales to have exactly the same key set, a vitest asserts the Japanese file
+  contains no untranslated Chinese and keeps every interpolation placeholder, and an e2e spec
+  switches the language in a browser and walks the main pages looking for raw i18n keys.
+
+- **An install / upgrade troubleshooting page** at
+  [troubleshooting.html](https://jasoncheng7115.github.io/jt-ipam/troubleshooting.html) —
+  searchable Q&A with a clickable table of contents, in all three languages. When `install.sh`
+  or `jt-ipam.sh` fails it now prints that URL, **in the language of the operator's terminal**
+  (`LANG=ja_JP` gets the Japanese page, `zh_*` the Chinese one, anything else English). A
+  failed install previously ended at a `FATAL:` line with nowhere to go next.
+
+### Security
+- **vitest and @vitest/coverage-v8 upgraded to 4.1.11** (GHSA-82fw-gwwq-j7x9, path traversal,
+  moderate). Dependabot found these, not us: our own audit gate was set to `high`, so the CI was
+  green the whole time. The gate is now `moderate` — a threshold set above the problems you
+  actually have is the same as not scanning.
+- Sample addresses in the Tools page now use RFC 5737 documentation ranges instead of RFC 1918
+  private ones, so a ZAP scan no longer reports private-IP disclosure on them. A report
+  with unavoidable findings in it is a report where the real one gets missed.
+
+### Removed
+- **The two Wazuh CVE count columns**, which nothing has ever written (migration `0138`). Since
+  Wazuh 4.8 the manager API has no vulnerability endpoint; the only source is the Wazuh Indexer,
+  which needs a credential that can read the whole SIEM. So the API and the MCP tool were
+  returning a `cve_critical` that is always null — which reads as "checked, nothing found"
+  rather than "never checked". That is worse than not answering at all. Old export files still
+  import: unknown columns are ignored.
+
+### Fixed
+- A rack diagram and a long API path no longer push the documentation pages sideways on a phone
+  (a grid column defaults to a minimum width of `auto`, so one long line stretches the page).
+
+### Notes
+- Migrations `0138` and `0139`. `0139` drops and recreates a CHECK constraint by looking its name
+  up in the catalogue rather than hard-coding it — the name differs between installs, so a literal
+  would break one of them.
+
+## [0.6.13] - 2026-09-13
+
+### Fixed
+- **An upgrade that can no longer fast-forward now recovers by itself.** The upgrade pulls with
+  `--ff-only` and the script runs under `set -e`, so a failed pull stopped everything right
+  there: no backup, no migration, no build, no restart -- and all the operator saw was git's own
+  message. It was not a one-off either; every later upgrade failed the same way, because nothing
+  about the repository had changed. The fix is `git reset --hard origin/<branch>`, which nobody
+  would guess.
+
+  The ways to get here are mundane: somebody committed an edit on the box, a shallow or partial
+  clone, or rewritten upstream history. In all of them the checked-out source is meant to be a
+  copy of upstream -- customer configuration lives in `/etc/jt-ipam`, not in the repository -- so
+  resetting to the remote is the correct move. Nothing is discarded silently: commits that exist
+  only on that machine are kept on a timestamped branch and the message says where they went.
+
+### Changed
+- **The installer's own tests now run in CI.** The guards under `scripts/tests/` were not run by
+  any CI -- a guard nobody runs is not a guard. Both `scripts/ci.sh` and GitHub Actions run them
+  now, and a new one covers the recovery above by simulating rewritten upstream history with two
+  throwaway repositories.
+
+### Notes
+- No database changes; this release touches only the installer/upgrade script and tests.
+
+## [0.6.12] - 2026-09-08
+
+### Added
+- **Anomaly detection can run on a schedule** (Admin -> Anomaly detection -> Schedule). The
+  detection has always been there, but it only ever ran when somebody pressed the button --
+  and IP conflicts, rogue DHCP servers and externally exposed services do not wait for office
+  hours.
+
+  Four frequencies: **every N minutes** (minimum 5), daily, on chosen weekdays, or on a chosen
+  day of the month. Minute-level intervals matter for operational checks like these, which is
+  why the interval mode exists here and not for the AI audit -- that one costs an LLM call and
+  keeps fixed wall-clock times, because interval scheduling drifts with each run. The 5-minute
+  floor is not arbitrary: the scheduler is driven by `jt-ipam-sync.timer`, which wakes about
+  every 5 minutes, so anything shorter is not more responsive -- it just looks like the setting
+  did not take.
+
+- **A scheduled run only notifies about findings that are new since the last run.** This is what
+  makes the schedule usable at all: detection reports the *current state*, not a stream of
+  events, so an unresolved IP conflict reappears every single run. Notifying every time would
+  mute the whole category within days -- and genuinely new events with it. The comparison uses a
+  fingerprint built from stable fields (IP, MAC, CIDR, device name...), not a hash of the whole
+  record: include something like "last seen" and every run looks new, which is the same as not
+  deduplicating. Pressing the button by hand behaves as before.
+
+### Changed
+- The schedule arithmetic (daily / chosen weekdays / day of month, including clamping the 31st
+  to the last day of a shorter month) moved out of `services/ai_audit.py` into a shared
+  `services/schedule.py`. Two copies of this logic would mean only one of them gets fixed, and
+  the difference is invisible on screen.
+
+### Added (continued)
+- **Anomaly notifications are now per category** (Admin -> Notification settings). There used to be
+  a single `anomaly.detected` row: all ten kinds of finding, or none. They differ enormously in
+  weight -- a rogue DHCP server needs attention now, unreachable IPs are more of a weekly tidy-up --
+  and lumping them together means people mute the lot to stop the noise, losing the urgent ones too.
+  Upgrading changes nothing: a site that had turned email on for anomalies keeps it on for all
+  eleven (the old row remains the default source until the settings are saved once).
+
+- **New rule: an IP that keeps changing MAC.** The existing "MAC drift" asks whether one MAC appears
+  on two switch ports (miswiring, spoofing); this asks the opposite -- one IP cycling through MACs,
+  which means a recycled DHCP pool, somebody taking a static address by hand, or a device using MAC
+  randomisation. Each MAC is listed with its times, and the locally administered ones (the signature
+  of privacy randomisation) are marked.
+
+- **Per-IP anomaly exemptions** (migration `0137`). Windows 11 / macOS / iOS / Android pick a new MAC
+  on every connection with privacy features on -- without an exemption the only option is turning the
+  whole rule off, which also hides genuine address takeovers. Exemptions are per category, and not
+  every category can be exempted: a rogue DHCP server or an IP conflict should never be silenced with
+  "that one is always like that". Randomised addresses are deliberately not skipped automatically --
+  that can also be someone spoofing a MAC, so the finding states the facts and leaves the judgement.
+
+- **MAC changes now appear in an IP's change log.** Hostname changes have always been recorded; MAC
+  changes were not, so the timeline on the IP page showed "hostname changed" but never "this machine
+  changed NIC", even though the ARP table knew.
+
+### Fixed (continued)
+- **FDB history and "currently valid" were being used interchangeably** (raised in an external
+  review; confirmed). Deriving an IP's switch port read the *entire* FDB history, filtered only on
+  "has a port name" -- a port seen once six months ago carried the same weight as today's, so
+  `switch_port` could point at a location the machine had long since left, with nothing on screen to
+  suggest it. Only entries seen recently now take part (`FDB_CURRENT_MAX_AGE_HOURS`, default 24);
+  the history is still kept.
+- **LibreNMS's own timestamps are no longer discarded.** The sync stamped `first_seen_at` and
+  `last_seen_at` with jt-ipam's sync time, while LibreNMS records `created_at` / `updated_at` itself
+  (one row on a real installation was first seen in 2021 and updated that morning). Overwriting them
+  turns "this MAC has been on this port for years" into "first seen today".
+- **FDB entries are now pruned** (`FDB_RETENTION_DAYS`, default 365, 0 = keep forever). ARP has had
+  pruning for a while; FDB only ever grew. The long default is deliberate: the value of this table is
+  knowing which port a machine used to be on.
+
+### Added (notifications)
+- **Eight new alert sources**, each switchable in Admin -> Notification settings:
+  `integration.sync_failed` (an expired token stops a sync for days while the UI looks fine),
+  `agent.offline` (scan and certificate agents), `system.health` (the **bad** items from the
+  system check), `dhcp.pool_exhausted` (a full pool means new machines silently get no address,
+  and the symptom on site is "the network is broken"), `jump_host.key_changed` (a changed
+  fingerprint is what interception looks like, and previously only a live console attempt would
+  catch it), `cert.fetch_failed` (failing to fetch a renewed certificate has no symptom until
+  expiry day), plus `audit.chain_broken` and `ip.stale`, which were already being sent but had no
+  row in the settings page -- received but impossible to turn off.
+
+  **State-based alerts fire only on the transition into and out of trouble**
+  (`services/state_alert`). That is what keeps them from becoming noise: integrations sync every
+  five minutes, so an expired token fails every round -- notifying each time is 288 messages a
+  day, the category gets muted by day two, and the genuinely new problems go with it.
+  Integrations additionally need two consecutive failures before counting as broken.
+
+  Agent staleness thresholds differ **per kind**: a scan agent long-polls (300 s by default), so
+  half an hour of silence is already wrong; a certificate agent runs from a systemd timer whose
+  installer default is **daily**, so it gets two days -- one missed run can be a reboot, two in a
+  row cannot. The numbers came from a real installation: with a single 30-minute threshold, all
+  seventeen certificate agents were reported offline in one round.
+
+  Deliberate judgements: an agent that has **never** reported is not offline (it was just
+  created); a jump host that is **unreachable** is not a changed key (crying interception at a
+  reboot teaches people to ignore the alert); system-check **warnings** are not notified (half
+  the page is legitimately warnings); and a check that **disappears** is never announced as
+  recovered -- we simply stopped knowing.
+
+  Subnet utilisation is deliberately **not** a notification: it is a planning number that creeps
+  towards its threshold by design, and would produce a daily "still fairly full".
+
+### Notes
+- Off by default: the schedule notifies every administrator, and an upgrade should not start
+  sending mail on its own.
+- No new migration; the settings live in the existing `system_settings`.
+- Upgrading must also refresh `scripts/jt-ipam-sync.py`, which is where the schedule is
+  triggered. Sites using `jt-ipam.sh upgrade` get this automatically.
+
+## [0.6.11] - 2026-09-07
+
+### Fixed
+- **The sections list dropped half the sections** (GitHub issue #27). The reporter has 95
+  sections and saw 50; raising the page size to 500 changed nothing, and the footer said
+  "50 total" -- the count was wrong too.
+
+  The page asked the backend for the first page of 50 and then paginated and searched in the
+  browser. With the data incomplete, the frontend cannot tell "this is everything" from "this
+  is page one", and the footer counts loaded rows, so it states 50 with complete confidence.
+  It now pages through to the end before handing the rows to the table. **The subnets list had
+  the same shape** (a single page of 500) and is fixed with it: a site with more than 500
+  subnets was quietly losing everything past that.
+
+- **A device's primary IP could not be selected, and typing a keyword did not help** (same
+  issue). The dropdown loaded 500 addresses and then filtered *within those 500* in the
+  browser. Past 500 addresses the one you just created is simply not there, and the keyword
+  searches memory rather than the database.
+
+  Search now goes to the backend. The logic moved into a shared `useIpOptions` used by all
+  three places that pick an address -- the form on the device list, the edit dialog on the
+  device page, and the "link an IP" dialog -- which previously each had their own copy, so
+  fixing one left the other two broken. Editing an existing device also fetches the currently
+  selected address, which would otherwise show blank when it falls outside the first batch.
+
+### Notes
+- No database or API change; `/addresses` already accepted `q`, the frontend just never used it.
+- The test checklist gains two entries: seed the fixtures before running the browser suite, and
+  a list page is not proved by opening it -- reconcile the footer count against the server, on
+  more records than fit one page.
+
+## [0.6.10] - 2026-09-05
+
+### Added
+- **The version page now states the licence.** This is an AGPL project - the obligations
+  that come with distributing or modifying it follow the licence, and nobody should have
+  to read the source to find out which one applies. The string comes from the backend
+  (package metadata, generated from `pyproject.toml`), with a link to the full text.
+
+  The licence changed once already (Apache-2.0 to AGPL-3.0-or-later on 2026-08-15), and it
+  is declared in four places: `backend/pyproject.toml`, `frontend/package.json`, the root
+  `LICENSE`, and now this line on screen. Miss one and the page states the wrong licence
+  with complete confidence - worse than not stating it at all. `tests/test_license_declaration.py`
+  ties the four together.
+
+### Fixed
+- **The LLM settings page opened with four 500s.** `GET /system/llm/models` handled
+  "cannot connect" (`httpx.HTTPError`) but not "blocked by our own outbound guard" - and the
+  default Ollama address is `http://127.0.0.1:11434`, while loopback is unconditionally
+  blocked in `safe_http` (allowing it takes an explicit `OUTBOUND_ALLOW_CIDRS`). All the
+  page said was "server error": not which address was blocked, and certainly not how to
+  allow it.
+
+  Being stopped by our own guard is an expected outcome, not a server fault: it now returns
+  200 with a message that names the address and the setting to change. The same error is
+  already handled on the AI chat path; this was a single missed spot.
+
+### Notes
+- No new migration; the schema is unchanged (still `0136`). Install and upgrade need no
+  changes: no new Python or apt packages, no new systemd unit, no new listening port.
+
+## [0.6.9] — 2026-09-05
+
+### Added
+- **System check page (Admin → System check).** Press a button, read the result on screen, download
+  a plain-text report to paste into a ticket. It reports the database schema version, PostgreSQL and
+  its extensions, whether the built frontend matches the backend, background work, integration
+  errors, disk space, ICMP capability, and a **data health check** — every check carries what to do
+  about it, not just that something is wrong.
+
+  This exists because of a customer report: the dashboard counted 55 devices while the device list
+  returned Internal Server Error and showed nothing. Every question we had to ask them ("run this on
+  the server", "paste this SQL") was work we should have been doing ourselves. System-level checks
+  (systemd, nginx, backups, scan agent) are still only visible to the CLI `jt-ipam.sh doctor`, and
+  the page says so rather than implying everything is fine.
+
+- **Schema drift is now detected at startup**, logged as an error, and shown to administrators as a
+  banner. A database left behind by an interrupted upgrade makes pages that read full records fail
+  with a 500 while pages that only show counts look normal — the system knew this at boot and said
+  nothing.
+
+### Fixed
+- **Dismissing an AI audit finding now sticks.** Findings recurred on every run and had to be
+  dismissed again and again. The fingerprint was "category + the set of cited addresses", but the
+  model cites a *different subset* each run — on live data one "IPMI on a service subnet" issue had
+  become five findings citing `{.60}`, `{.46}`, `{.60,.46}`, `{.74,.60,.54}` and one mistyped
+  address. Dismissal is now recorded against the **subjects**: a finding whose addresses have all
+  been dismissed in that category is not reopened, while a finding involving a **new** address still
+  surfaces — that is new information, not a repeat.
+
+- **A single row no longer takes down a whole list page.** `DeviceRead` inherited the write-side
+  limits (vendor/model ≤ 64 chars, u_position 1–99), but those columns are `text` and an unconstrained
+  `integer` in the database, and integrations legitimately write longer values. One such row made the
+  entire device list return 500 with no indication of which record was at fault. Read schemas now
+  accept what the database can hold; the write-side limits stay where they belong, on input.
+
+## [0.6.8] — 2026-09-05
+
+### Added
+- **Consoles can route through a jump host (GitHub issue #24, phase 1, Beta).** For sites the
+  backend cannot reach directly, an SSH jump host can be put in front: backend → jump host → target.
+  The exit is configured on the subnet and can be overridden on an individual address, resolved in
+  the order **address > subnet > direct**.
+
+  The ambiguity this feature exists for is already solved by structure: a console always starts from
+  **one IP record**, and every IP record belongs to exactly one subnet. So several customers sharing
+  the same private range cannot be confused with each other — no extra disambiguation was needed.
+
+  **The failure mode being defended against is not "cannot connect", it is "connected to someone
+  else".** The sites that need a jump host are the sites with overlapping private ranges, so a
+  console that quietly falls back to a direct connection reaches a *different customer's* machine,
+  with nothing on screen to say so. Consequently:
+  - **The host key must be pinned before any connection is allowed.** Test connection fetches the
+    fingerprint *without sending credentials*; only after it is checked and trusted does the jump
+    host actually get used. A changed fingerprint aborts with a man-in-the-middle warning.
+  - **BMC refuses instead of falling back.** IPMI/SOL is UDP 623 and an SSH tunnel forwards TCP
+    only, so a BMC console on an address with a jump host returns an explicit error naming the
+    reason. noVNC is unaffected because it connects to the virtualization host configured in the
+    Proxmox integration, not to the address itself.
+  - Deleting a jump host reports how many subnets and addresses will fall back to direct.
+  - Every session records which jump host it went through, in the audit log and on screen.
+
+  Sessions to the same jump host **share one SSH connection**, with a configurable per-jump-host
+  session limit; the forward lives and dies with the WebSocket session.
+
+  SSH, SFTP, RDP and VNC are supported. Verified against a real SSH jump host, in a real browser:
+  an SSH shell and an SFTP directory listing both over the two-hop path, plus connection reuse,
+  the session limit, and reference release after a failed forward.
+
+  A detail worth recording: aardwolf's `create_connection_newtarget()` replaces the RDP/VNC target's
+  ip/hostname but **keeps the port from the parsed URL**. Without the port written into the URL, a
+  tunnelled RDP session would have connected to `127.0.0.1:3389` — the backend host itself.
+
+### Notes
+- Migration `0136` adds `jump_hosts` plus a nullable `jump_host_id` on `subnets` and `ip_addresses`.
+- Install/upgrade unchanged: no new Python or apt package, no new systemd unit, no new listening
+  port. The backend must be able to reach the jump host's SSH port.
+- Phase 2 (relay through the scan agent, for sites that can only dial outwards) is **not** included;
+  that is the scenario in the original issue and remains open.
+
+## [0.6.7] — 2026-09-04
+
+### Fixed
+- **Page actions are back in the toolbar, not the card header.** 0.6.5 moved Export / Refresh (and
+  the IP change log's description line) into the card header to stop them occupying a row of their
+  own; the header is the wrong home for them. They now flow at the end of the filter row, and the
+  two buttons are bound into a single flex item so they wrap together instead of leaving Refresh on
+  one line and Export stranded on the next. The description line sits on its own row above the
+  filters. Checked at 1440, 1100 and 900 px on both pages, with a horizontal-overflow assertion.
+
+## [0.6.6] — 2026-09-04
+
+### Fixed
+- **The backend package version no longer goes stale.** `backend/pyproject.toml` had
+  `version = "0.3.0"` hard-coded and had stayed there while the product moved to 0.6.x — the release
+  routine touches `app/version.py`, `package.json` and the two READMEs, and a fifth place that has
+  to be remembered separately is a place that eventually stops being true. It is now derived from
+  `app/version.py` (`[tool.hatch.version]`), verified by building a wheel and by running the exact
+  `pip install -e .` the installer uses.
+- Two places still described the product as "新世代 IPAM"; that wording was retired long ago
+  everywhere else. The FastAPI app description (visible in the API docs) now matches the rest.
+
+## [0.6.5] — 2026-09-04
+
+### Changed
+- **The IP change log can be narrowed to a section, a subnet or a unit.** The page holds every
+  address change on the site, but the question people actually arrive with is "what changed in
+  *this unit* this week" or "what changed in *this network*". The unit filter follows the same
+  inheritance rule as the rest of the app: a subnet with no unit of its own uses its section's.
+  Matching only `subnets.customer_id` would silently drop every site that sets the unit at the
+  section level — a few rows short, with nothing on screen to say so.
+- **RIPE / TWNIC import moved from Admin to Advanced.** It is a lookup-and-import tool, not a
+  system setting. The `/import` route still works so existing links do not break, and the two tabs
+  now live in one shared component so the page and the menu entry can never drift apart.
+- **Page actions no longer sit on a row of their own.** On the topology page Export and Refresh
+  occupied a dedicated right-aligned row, which wasted a band of space and collided with the filter
+  row on a narrow window; both now sit in the card header next to the title. The IP change log got
+  the same treatment — with three more filters added, its Export button would otherwise have been
+  pushed onto a second line by itself.
+
+## [0.6.4] — 2026-09-04
+
+### Fixed
+- **FortiGate: stopped guessing a VDOM name when the device does not have VDOMs** (GitHub issue #26,
+  "does the tool only support a FortiGate with VDOMs split?"). Reading the code, VDOMs were never
+  required — but when the VDOM list could not be read (permissions, or a firmware without that
+  endpoint) the integration fell back to the literal name `root` and put it on **every** request.
+  On a device without VDOMs `root` is usually correct, but that is a coincidence, not a guarantee:
+  if a firmware objects to a `vdom` parameter while VDOMs are disabled, *every* endpoint fails at
+  once and all the operator sees is a wall of identical errors with no hint that the shared cause is
+  a parameter we added ourselves.
+
+  The integration now asks the device directly (`system/global` → `vdom-mode`) and, for `no-vdom` or
+  when the answer cannot be read, sends **no VDOM parameter at all** — FortiOS then uses the
+  management VDOM, which is what we want. Names written into data (VPN tunnel names, NAT external
+  ids, the VDOM column in the read-only view) still show `root` so nothing renders blank.
+
+- **The connection diagnostic can now tell "wrong VDOM scope" apart from "endpoint not available".**
+  When an endpoint fails with a VDOM set, it is retried once without one; if that succeeds the row
+  says so explicitly. The two cases produce identical error text from FortiOS, so previously there
+  was no way to tell them apart from the screen. The diagnostic also reports the device's
+  `vdom-mode` and whether the queries were VDOM-scoped at all.
+
+### Security
+- `postcss-selector-parser` pinned to >= 6.1.3 (Dependabot alert, low / CVSS 2.1: uncontrolled AST
+  recursion). It is a transitive **development** dependency of `eslint-plugin-vue` and
+  `@vue/eslint-config-typescript` — it never reaches the built frontend — so this hardens the build
+  environment rather than the shipped product.
+
+## [0.6.3] — 2026-09-04
+
+### Added
+- **MikroTik RouterOS integration (Beta, phase 1).** Read-only pull over the RouterOS v7 REST API
+  (`www-ssl` must be enabled; the account needs `api` + `read` only). It syncs DHCP leases,
+  DHCP ranges, firewall filter/mangle/NAT rules, address lists, VPN (PPP sessions and WireGuard
+  peers) and — off by default — the ARP table. New admin page **Integrations → MikroTik** and a
+  read-only **Router (MikroTik)** view; the rules, address lists, NAT source filter, IP-detail
+  firewall lookup, rule-change detection, AI chat tools, audit target names, system export/import
+  and scheduled sync all cover it, enforced by `tests/test_integration_coverage.py`.
+
+  **This integration is designed around not slowing the router down**, because at the site that
+  asked for it the MikroTik boxes (CCR2004 / CCR1072) are the *main* routers:
+  - one TLS connection is reused for a whole round instead of one handshake per endpoint;
+  - sections run strictly **sequentially** with a configurable pause between them — endpoints are
+    never fetched in parallel;
+  - CPU load is re-read after every section and **the rest of the round is skipped** once it passes
+    a threshold, with the reason recorded and shown in the list;
+  - every request carries `.proplist` and, where possible, a server-side filter, so the router
+    serialises as little as possible;
+  - responses have a size cap (RouterOS REST has **no pagination**), and `/ip/route` and
+    connection tracking are refused in code, not merely in a comment;
+  - the expensive sections default to **off**, and "Test connection" reports **rows and seconds per
+    endpoint** so the administrator decides with numbers in front of them.
+
+  Two limits are stated rather than hidden: **RouterOS 6.x has no REST API** and is named as such
+  instead of failing with a vague connection error, and **no claim of zero impact is made** — any
+  query costs the router some CPU; what is guaranteed is low frequency, little data, and getting
+  out of the way when it is busy.
+
+- **`arp:mikrotik` counts as liveness evidence, on a different basis from the other vendors.**
+  RouterOS's `/ip/arp` has no age, TTL or expiry field, so the trick used for OPNsense (`expires`),
+  FortiOS (`age`) and PAN-OS (`ttl`) — deriving when the entry was really refreshed — does not
+  apply. Instead only `status=reachable` entries are recorded: that state *means* "confirmed within
+  the reachability timeout", so stamping the sync time is defensible. `stale`, `delay`, `probe`,
+  `permanent` and the rest are not recorded at all. DHCP leases remain `lease:mikrotik`
+  (non-ageing, not trusted for liveness by default).
+
+- **Outbound HTTP gained a shared-connection helper and a response size cap** (`safe_client()`,
+  `max_bytes=`). Both were prerequisites for the above and are available to every integration.
+
+### Fixed
+- **Firewall rule-change detection was reading a stale view of the database and, for three vendors,
+  was not working at all.** Production sessions use `autoflush=False`, and most integrations sync
+  rules by deleting the instance's rows and inserting the new set. The DELETE reaches the database
+  immediately; the INSERTs sit in the session. `run_sentinel()` then queried the rules table and got
+  back **nothing**. For the mirror-replace vendors (FortiGate, Palo Alto, and the new MikroTik) that
+  meant an empty snapshot every round — rule-change detection silently did nothing, with no error
+  anywhere. OPNsense mostly updates existing rows so it appeared to work, but a rule added during a
+  round was only noticed a round later. `run_sentinel()` now flushes before it reads.
+
+  This is the same trap as the audit-chain break in 0.5.204, and it hid for the same reason: the
+  test fixtures use `autoflush=True`, so the whole scenario is green in tests. The new regression
+  test sets `autoflush = False` explicitly and fails without the fix.
+
+### Notes
+- Migration `0135` adds `mikrotik_routers` / `mikrotik_rules` / `mikrotik_address_lists`.
+- Install/upgrade unchanged: no new Python or apt package, no new systemd unit (the existing
+  `jt-ipam-sync.timer` runs it). The backend must be able to reach the RouterOS management
+  interface — usually a private address, so `OUTBOUND_ALLOW_PRIVATE` applies.
+- FDB (`/interface/bridge/host`) and neighbour discovery (`/ip/neighbor`) are **deliberately not in
+  this phase**: `fdb_entries` is keyed on a LibreNMS device and `librenms_links` requires a
+  LibreNMS instance, so a MikroTik source needs schema work first. Half-wiring them would have
+  produced switches that show up in the topology as nothing at all.
+
+## [0.6.2] — 2026-09-03
+
+### Added
+- **Switch port descriptions now come across from LibreNMS.** A port's `ifAlias` — the description
+  configured on the switch, typically the most useful line on the whole page ("HR-J.Chen-10.0.0.5")
+  — was never fetched, so our port list showed an empty description column next to LibreNMS's
+  populated one. It is now synced into `device_ports.description`.
+  **Aliases that merely repeat the interface name are ignored**: on Linux hosts LibreNMS reports
+  `ifAlias` identical to `ifName`/`ifDescr`, and a dry run over the live instance found 88 such
+  ports and no real descriptions — copying them verbatim would have filled the column with
+  `eno1np0` and made it worse than empty. An existing description is never cleared when LibreNMS
+  has nothing to offer, the same rule the port MAC already follows.
+
+### Fixed (rack diagram and settings layout)
+- **Evidence-source options spilled outside their card on a narrow window.** The option grid is a
+  flex child, and a flex child cannot shrink below its content unless told to, so at 820px it ran
+  195px past the card. Fixed, and the gap in the tests it slipped through is fixed too: the
+  layout spec now walks five widths, and the route sweep runs at 900px asserting that no page
+  scrolls horizontally — a defect that only exists below some width proves nothing when every
+  test runs wide.
+- **The Proxmox VE integration page sometimes opened empty** and needed a click on its tab to
+  appear: the active tab was chosen in `onMounted`, so the first render pointed at a tab that does
+  not exist in admin mode. It is now decided during setup, and a watcher follows the route because
+  the two menu entries share one component and switching between them does not remount it.
+- **The PVE firewall tab had no cluster column** — and, worse, its rules were matched by VMID
+  alone. A VMID is unique only within a cluster, so with two clusters a guest picked up the other
+  cluster's rules: both the rule count and the expanded list were wrong. Rules are now matched by
+  (cluster, VMID) and the cluster is shown.
+- **Rack device names ignored the alignment setting.** With "centre" selected they still hugged the
+  left. The name box is absolutely positioned across the device's full height, and it carried the
+  `max-width: 110px` meant for the text: with `left` and `right` both pinned, the browser keeps
+  `left` and drops `right`, so a 126px box sat against the left edge and the text was centred
+  inside *that*. Measured, not eyeballed: box 126px against a 250px row.
+- **A name spanning several U was hidden by the units below it.** The label overflows its own cell
+  by design, but the cells beneath are painted afterwards — a 2U name was cut in half and a 4U name
+  vanished entirely. Both are now covered by a geometric test.
+- **Fields side by side were vertically offset.** A "space out adjacent fields" rule was pushing the
+  right-hand column down 14px wherever two fields shared a row (visible in Display & maps and in
+  GeoIP). Spacing now comes from the containers, not from sibling margins.
+- **Hovering a device made its name disappear.** The highlight used `filter: brightness()`, and a
+  filtered element becomes its own stacking context — so the name, which is positioned in the
+  device's top unit and stretches down over the others, could no longer paint above them. The
+  highlight (and the dim state, which used `opacity`) now overlay a translucent layer instead, and
+  the test asserts the highlighted units create no stacking context.
+- **A card holding a single field wasted half its width**, so its help text wrapped early with the
+  right half empty.
+- The "never expires" caution in the liveness picker is now its own highlighted line instead of a
+  sentence buried in grey help text.
+
 ## [0.6.1] — 2026-09-03
 
 Version numbering moves to 0.6.x from here; 0.5.247 was the last 0.5 release.
