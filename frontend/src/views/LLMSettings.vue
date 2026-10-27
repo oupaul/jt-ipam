@@ -13,17 +13,18 @@ import {
 } from "naive-ui";
 import {
   getLLMConfig, patchLLMConfig, listOllamaModels, revealMcpKey, rotateMcpKey, checkEmbedding,
-  reindexEmbeddings,
-  type LLMConfig, type LLMConfigPatch, type OllamaModel, type EmbeddingCheck,
-  type ReindexResult,
+  reindexEmbeddings, checkThinking, getIndexStatus,
+  type LLMConfig, type LLMConfigPatch, type OllamaModel, type EmbeddingCheck, type ThinkingCheck,
+  type ReindexResult, type IndexStatus,
 } from "@/api/system";
 import { listMcpTools, type McpTool } from "@/api/chat";
 import { listSubnets, setAIAuditScope } from "@/api/subnets";
 import type { Subnet } from "@/types";
-import { SettingsIcon, RefreshIcon, ToolsIcon, KeyIcon, CopyIcon, EyeIcon, EyeOffIcon, AnomalyIcon, PlusIcon, DeleteIcon } from "@/icons";
+import { SettingsIcon, RefreshIcon, ToolsIcon, KeyIcon, CopyIcon, EyeIcon, EyeOffIcon, AnomalyIcon, PlusIcon, DeleteIcon, TestIcon } from "@/icons";
 import { apiErrMsg } from "@/api/client";
+import { fmtDate, fmtDateTime } from "@/utils/datetime";
 
-const { t } = useI18n();
+const { t, te } = useI18n();
 const msg = useMessage();
 const llm = ref<LLMConfig | null>(null);
 const models = ref<OllamaModel[]>([]);
@@ -63,6 +64,13 @@ const auditModelOptions = computed(() =>
   modelOptions.value.map((o) => ({
     ...o,
     disabled: isEmbedModel(o.value) && o.value !== llm.value?.ai_audit_model,
+  })));
+
+// 判讀模型下拉：同上；清空＝沿用對話模型
+const interpretModelOptions = computed(() =>
+  modelOptions.value.map((o) => ({
+    ...o,
+    disabled: isEmbedModel(o.value) && o.value !== llm.value?.ai_interpret_model,
   })));
 
 // 巡檢範圍。存的是每個子網路的 ai_audit_enabled 欄位（跟子網路編輯頁同一個），
@@ -165,7 +173,50 @@ async function doReindex() {
   reindexResult.value = null;
   try { reindexResult.value = await reindexEmbeddings(); }
   catch (e) { msg.error(apiErrMsg(e)); }
-  finally { reindexBusy.value = false; }
+  finally { reindexBusy.value = false; void loadIndexStatus(); }
+}
+/** 重建失敗的原因：有代碼就翻譯（維度不合會說模型回幾維、需要幾維），沒有才用原文 */
+function reindexError(r: ReindexResult): string {
+  if (r.error_code && te(`errors.${r.error_code}`)) return t(`errors.${r.error_code}`, r.error_params ?? {});
+  return String(r.error ?? "").slice(0, 100);
+}
+
+// 索引狀態（使用者 2026-10-13：「要檢查是不是需要重建索引，因為看不出來要不要按」）：
+// 只看資料庫（不呼叫模型），換了嵌入模型、重建完都重新讀一次
+const indexStatus = ref<IndexStatus | null>(null);
+async function loadIndexStatus() {
+  try { indexStatus.value = await getIndexStatus(); } catch { indexStatus.value = null; }
+}
+const indexLine = computed(() => {
+  const s = indexStatus.value;
+  if (!s) return null;
+  if (!s.described) return { ok: true, text: t("llm_settings.index_nothing") };
+  if (s.reason === "never") return { ok: false, text: t("llm_settings.index_never", { n: s.described }) };
+  if (s.reason === "model_changed") {
+    return { ok: false, text: t("llm_settings.index_model_changed", { old: s.last?.model ?? "", now: s.model }) };
+  }
+  if (s.reason === "missing") return { ok: false, text: t("llm_settings.index_missing", { n: s.missing }) };
+  return { ok: true, text: t("llm_settings.index_ok", {
+    n: s.described - s.missing, total: s.described, model: s.model, at: s.last?.at ? fmtDateTime(s.last.at) : "" }) };
+});
+
+// 思考檢查：AI 巡檢與判讀一律送「關閉思考」的參數，伺服器或閘道沒照做時只會變慢、
+// 答案被思考吃掉額度，不會報錯 —— 所以要能當場問一次（不自動跑：每個模型要真的問一句）
+const thinkBusy = ref(false);
+const thinkResults = ref<ThinkingCheck[] | null>(null);
+async function doCheckThinking() {
+  thinkBusy.value = true;
+  try { thinkResults.value = await checkThinking(); }
+  catch (e) { msg.error(apiErrMsg(e)); }
+  finally { thinkBusy.value = false; }
+}
+function thinkLine(r: ThinkingCheck): string {
+  const who = `${t(`llm_settings.think_role_${r.role}`)} ${r.model}`;
+  if (!r.ok) return t("llm_settings.think_failed", { who, err: String(r.error ?? "").slice(0, 160) });
+  if (!r.thinking) return t("llm_settings.think_off", { who, sec: r.seconds });
+  const why = r.reasoning_chars ? t("llm_settings.think_why_chars", { n: r.reasoning_chars })
+    : r.think_tag ? t("llm_settings.think_why_tag") : t("llm_settings.think_why_empty");
+  return t("llm_settings.think_on", { who, sec: r.seconds, why });
 }
 
 async function doCheckEmbedding() {
@@ -179,7 +230,7 @@ async function load() {
   try { llm.value = await getLLMConfig(); }
   catch (e) { msg.error(apiErrMsg(e)); }
   // 未啟用連接時不要自動去抓清單（否則會冒出「無法連上 LLM 伺服器」錯誤）
-  if (llm.value?.enabled) { void loadModels(); void doCheckEmbedding(); }
+  if (llm.value?.enabled) { void loadModels(); void doCheckEmbedding(); void loadIndexStatus(); }
 }
 
 // URL 改了也重新拉 model 清單 (換 LLM 伺服器時可能不同)；僅在已啟用時
@@ -200,9 +251,11 @@ function patch(p: LLMConfigPatch) {
   debounce = setTimeout(async () => {
     try {
       llm.value = await patchLLMConfig(p);
+      // 換了嵌入模型：既有向量是舊模型的，索引狀態要跟著變成「建議重建」
+      if ("embedding_model" in p) void loadIndexStatus();
       msg.success(t("common.saved"));
-    } catch (e: any) {
-      msg.error(e?.response?.data?.detail ?? t("errors.server"));
+    } catch (e) {
+      msg.error(apiErrMsg(e));
     }
   }, 600);
 }
@@ -217,11 +270,27 @@ async function doRevealKey() {
   catch { msg.error(t("errors.server")); }
   finally { mcpKeyBusy.value = false; }
 }
+// 金鑰會過期：產生／更換時選有效天數，到期前 14／7／1 天會通知管理員
+const mcpKeyDays = ref(90);
+const mcpKeyDayOptions = computed(() => [30, 90, 180, 365].map((d) => ({ label: t("llm_settings.mcp_key_days_n", { n: d }), value: d })));
+/** 7 天內有 MCP 用戶端用過這把金鑰：重產會讓它立刻斷線，確認框要特別說 */
+const mcpKeyRecentlyUsed = computed(() => {
+  const at = llm.value?.mcp_api_key_last_used_at;
+  return !!at && Date.now() - new Date(at).getTime() < 7 * 86400 * 1000;
+});
+const mcpKeyExpired = computed(() => {
+  const s = llm.value?.mcp_api_key_expires_at;
+  return !!s && new Date(s).getTime() <= Date.now();
+});
 async function doRotateKey() {
   mcpKeyBusy.value = true;
   try {
-    mcpKey.value = await rotateMcpKey();
-    if (llm.value) llm.value.mcp_api_key_set = true;
+    const out = await rotateMcpKey(mcpKeyDays.value);
+    mcpKey.value = out.api_key;
+    if (llm.value) {
+      llm.value.mcp_api_key_set = true;
+      llm.value.mcp_api_key_expires_at = out.expires_at;
+    }
     msg.success(t("common.saved"));
   } catch { msg.error(t("errors.server")); }
   finally { mcpKeyBusy.value = false; }
@@ -341,6 +410,10 @@ onMounted(() => { void load(); void loadTools(); void loadSubnets(); });
           <span v-if="modelsError" style="color: var(--err-color, #e88080); font-size: 11px;">
             {{ t("llm_settings.ollama_unreachable", { err: modelsError.slice(0, 80) }) }}
           </span>
+          <n-button text size="tiny" :loading="thinkBusy" data-testid="think-check" @click="doCheckThinking">
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>
+            {{ t("llm_settings.think_check") }}
+          </n-button>
         </n-space>
         <n-select
           :value="llm.chat_model"
@@ -350,6 +423,16 @@ onMounted(() => { void load(); void loadTools(); void loadSubnets(); });
           filterable
           @update:value="(v: string) => patch({ chat_model: v })"
         />
+        <div v-if="thinkResults" data-testid="think-results" style="margin-top: 6px">
+          <p v-for="r in thinkResults" :key="r.role" class="hint"
+             :style="r.ok && !r.thinking ? 'color:#18a058' : 'color:#e88080'">
+            {{ thinkLine(r) }}
+            <template v-if="r.rejected_params.length">
+              {{ t("llm_settings.think_rejected", { params: r.rejected_params.join(", ") }) }}
+            </template>
+          </p>
+          <p v-if="thinkResults.some((r) => r.ok && r.thinking)" class="hint">{{ t("llm_settings.think_on_hint") }}</p>
+        </div>
       </div>
       <div>
         <n-space align="center" style="margin-bottom: 4px">
@@ -398,12 +481,15 @@ onMounted(() => { void load(); void loadTools(); void loadSubnets(); });
           <span v-if="reindexResult" class="hint" style="margin:0"
                 :style="reindexResult.failed ? 'color:#e88080' : 'color:#18a058'">
             {{ reindexResult.failed
-              ? t("llm_settings.reindex_failed", { n: reindexResult.failed,
-                    err: String(reindexResult.error).slice(0, 100) })
+              ? t("llm_settings.reindex_failed", { n: reindexResult.failed, err: reindexError(reindexResult) })
               : t("llm_settings.reindex_ok", { n: reindexResult.subnets
                     + reindexResult.ip_addresses + reindexResult.devices }) }}
           </span>
         </n-space>
+        <p v-if="indexLine" class="hint index-status" data-testid="llm-index-status"
+           :style="indexLine.ok ? 'color:#18a058' : 'color:#f0a020'">
+          {{ indexLine.text }}
+        </p>
         <p class="hint">{{ t("llm_settings.reindex_hint") }}</p>
       </div>
       <div>
@@ -429,8 +515,50 @@ onMounted(() => { void load(); void loadTools(); void loadSubnets(); });
         />
         <p class="hint">{{ t("llm_settings.num_ctx_hint") }}</p>
       </div>
+      <div data-testid="chat-thinking">
+        <n-switch :value="llm.chat_thinking"
+                  @update:value="(v: boolean) => patch({ chat_thinking: v })" />
+        <span style="margin-left:10px">{{ t("llm_settings.chat_thinking") }}</span>
+        <p class="hint">{{ t("llm_settings.chat_thinking_hint") }}</p>
+      </div>
     </n-space>
     <p v-else style="opacity: 0.7">{{ t("common.loading") }}</p>
+  </n-card>
+
+  <!-- AI 判讀：三個按需觸發的判讀功能共用一個模型設定（比照巡檢；留空＝沿用對話模型） -->
+  <n-card v-if="llm" style="margin-top:16px" data-testid="interpret-card">
+    <template #header>
+      <n-space align="center" :size="8">
+        <n-icon :size="18" :component="TestIcon" />
+        <span>{{ t("llm_settings.interpret_title") }}</span>
+      </n-space>
+    </template>
+    <p class="hint" style="margin: 0 0 14px">{{ t("llm_settings.interpret_scope") }}</p>
+    <n-space vertical :size="14">
+      <div>
+        <label>{{ t("llm_settings.interpret_model") }}</label>
+        <n-select
+          :value="llm.ai_interpret_model"
+          :options="interpretModelOptions"
+          :loading="modelsLoading"
+          :placeholder="t('llm_settings.audit_model_inherit', { model: llm.chat_model })"
+          clearable
+          filterable
+          style="width: 100%"
+          data-testid="interpret-model"
+          @update:value="(v: string | null) => patch({ ai_interpret_model: v ?? '' })"
+        />
+        <p class="hint">{{ t("llm_settings.interpret_model_hint") }}</p>
+      </div>
+      <div>
+        <label>{{ t("llm_settings.interpret_num_ctx") }}</label>
+        <n-input-number :value="llm.ai_interpret_num_ctx" :min="0" :max="131072" :step="2048"
+                        clearable style="width: 220px"
+                        :placeholder="String(llm.num_ctx ?? 4096)"
+                        @update:value="(v: number | null) => patch({ ai_interpret_num_ctx: v ?? 0 })" />
+        <p class="hint">{{ t("llm_settings.interpret_num_ctx_hint", { n: llm.num_ctx ?? 4096 }) }}</p>
+      </div>
+    </n-space>
   </n-card>
 
   <!-- AI 巡檢排程 -->
@@ -593,7 +721,19 @@ onMounted(() => { void load(); void loadTools(); void loadSubnets(); });
           <code v-if="mcpKey" class="mcp-keybox mcp-keybox--val">{{ mcpKey }}</code>
           <span v-else-if="llm.mcp_api_key_set" class="mcp-keybox">••••••••••••（{{ t("llm_settings.mcp_key_hidden") }}）</span>
           <span v-else class="mcp-keybox mcp-keybox--none">{{ t("llm_settings.mcp_key_none") }}</span>
+          <n-tag v-if="llm.mcp_api_key_set && llm.mcp_api_key_expires_at" size="small" :bordered="false"
+                 :type="mcpKeyExpired ? 'error' : 'default'" data-testid="mcp-key-expiry">
+            {{ mcpKeyExpired ? t("llm_settings.mcp_key_expired", { date: fmtDate(llm.mcp_api_key_expires_at) })
+                             : t("llm_settings.mcp_key_expires", { date: fmtDate(llm.mcp_api_key_expires_at) }) }}
+          </n-tag>
 
+          <!-- 最後使用：重產前看得出還有沒有用戶端在用（使用者 2026-10-21：重產後自己的 Claude 斷線一週才發現） -->
+          <n-tag v-if="llm.mcp_api_key_set" size="small" :bordered="false" :type="mcpKeyRecentlyUsed ? 'info' : 'default'"
+                 data-testid="mcp-key-last-used">
+            {{ llm.mcp_api_key_last_used_at
+              ? t("llm_settings.mcp_key_last_used", { time: fmtDateTime(llm.mcp_api_key_last_used_at), ip: llm.mcp_api_key_last_used_ip || "—" })
+              : t("llm_settings.mcp_key_never_used") }}
+          </n-tag>
           <n-button v-if="llm.mcp_api_key_set && !mcpKey" size="small" :loading="mcpKeyBusy" @click="doRevealKey">
             <template #icon><n-icon :component="EyeIcon" /></template>{{ t("llm_settings.mcp_key_reveal") }}
           </n-button>
@@ -604,13 +744,20 @@ onMounted(() => { void load(); void loadTools(); void loadSubnets(); });
             <template #icon><n-icon :component="EyeOffIcon" /></template>{{ t("llm_settings.mcp_key_hide") }}
           </n-button>
 
+          <n-select v-model:value="mcpKeyDays" :options="mcpKeyDayOptions" size="small" style="width: 130px"
+                    :aria-label="t('llm_settings.mcp_key_days')" data-testid="mcp-key-days" />
           <n-popconfirm v-if="llm.mcp_api_key_set" @positive-click="doRotateKey">
             <template #trigger>
               <n-button size="small" type="warning" ghost :loading="mcpKeyBusy">
                 <template #icon><n-icon :component="RefreshIcon" /></template>{{ t("llm_settings.mcp_key_rotate") }}
               </n-button>
             </template>
-            {{ t("llm_settings.mcp_key_rotate_confirm") }}
+            <div style="max-width: 360px">
+              <div v-if="mcpKeyRecentlyUsed" style="font-weight: 600; margin-bottom: 6px">
+                {{ t("llm_settings.mcp_key_rotate_in_use", { time: fmtDateTime(llm.mcp_api_key_last_used_at), ip: llm.mcp_api_key_last_used_ip || "—" }) }}
+              </div>
+              {{ t("llm_settings.mcp_key_rotate_confirm") }}
+            </div>
           </n-popconfirm>
           <n-button v-else size="small" type="primary" :loading="mcpKeyBusy" @click="doRotateKey">
             <template #icon><n-icon :component="KeyIcon" /></template>{{ t("llm_settings.mcp_key_generate") }}

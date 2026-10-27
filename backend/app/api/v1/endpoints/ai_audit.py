@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.sqlin import in_values
 from app.core.ui_error import ui_detail
 from app.models.ai_finding import AIFinding
 from app.schemas.base import StrictModel
@@ -101,7 +102,7 @@ async def run_now(
     # 判斷依據是「作業列有沒有還沒跑完的」，不是程序內的鎖 —— 作業是非同步啟動的，
     # 連按兩次時第一個還沒拿到鎖，用鎖判斷會漏掉，於是多出一筆立刻失敗的作業，
     # 而狀態查詢會看到那筆失敗的、把真正在跑的那個蓋掉。
-    if await _active_run(session) is not None:
+    if await _active_run(session) is not None or await _scheduled_run_active(session):
         raise HTTPException(status_code=409, detail=ui_detail("audit_already_running", "已經有一次巡檢正在執行"))
 
     user_id = user.id
@@ -152,6 +153,16 @@ async def run_now(
         actor_user_id=user.id, trigger="manual", runner=_runner,
     )
     return {"task_id": str(task.id), "status": task.status}
+
+
+async def _scheduled_run_active(session: AsyncSession) -> bool:
+    """排程巡檢（jt-ipam-ai-audit.service，另一個行程）正在跑：作業表看不到它，要看跨行程的標記。"""
+    from datetime import UTC, datetime
+
+    from app.services.ai_audit import RUN_STALE_AFTER
+    from app.services.system_config import get_ai_audit_running_since
+    since = await get_ai_audit_running_since(session)
+    return since is not None and datetime.now(UTC) - since < RUN_STALE_AFTER
 
 
 async def _active_run(session: AsyncSession) -> Any:
@@ -219,7 +230,7 @@ async def dismiss(
     """把發現標為已忽略（不刪除 —— 留著才看得出哪些被判斷為誤報）。"""
     from datetime import UTC, datetime
     rows = (await session.execute(
-        select(AIFinding).where(AIFinding.id.in_(payload.ids))
+        select(AIFinding).where(in_values(AIFinding.id, payload.ids))
     )).scalars().all()
     for f in rows:
         f.status = "dismissed"
@@ -278,7 +289,7 @@ async def restore(
     所以一定要能反悔 —— 沒有回復的路，誤按一下就永久看不到那類問題了。
     """
     rows = (await session.execute(
-        select(AIFinding).where(AIFinding.id.in_(payload.ids))
+        select(AIFinding).where(in_values(AIFinding.id, payload.ids))
     )).scalars().all()
     for f in rows:
         f.status = "open"

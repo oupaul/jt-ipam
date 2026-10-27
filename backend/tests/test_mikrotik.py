@@ -68,7 +68,7 @@ def test_unparsable_duration_is_none_not_zero() -> None:
 
 # ─────────────────── ARP：只收 reachable ───────────────────
 
-def test_arp_status_whitelist_is_reachable_only() -> None:
+def test_arp_status_allowlist_is_reachable_only() -> None:
     """RouterOS 的 `/ip/arp` 沒有 age／TTL —— 資格完全靠鄰居狀態。
 
     放寬到 `stale` 就等於宣稱「還在表裡＝還活著」，那正是 0.5.206 那次
@@ -479,3 +479,72 @@ async def test_only_reachable_arp_stamps_the_ip(db_session: Any, monkeypatch: An
     reachable, stale = ips
     assert "arp:mikrotik" in (reachable.arp_seen or {})
     assert (stale.arp_seen or {}) == {}, "stale 的條目留下了證據"
+
+
+# ─────────────────── 靜態租約＝固定分配（2026-10-12）───────────────────
+def test_static_leases_become_reservations() -> None:
+    """RouterOS 的固定分配就是靜態租約；以前沒讀。停用的、動態的、位址是集區名稱的都不算。"""
+    rows = [
+        {"address": "10.0.0.20", "mac-address": "AA:BB:CC:00:00:01", "host-name": "nas",
+         "comment": "rack 2", "dynamic": "false", "disabled": "false"},
+        {"address": "10.0.0.21", "mac-address": "AA:BB:CC:00:00:02", "dynamic": "false", "disabled": "true"},
+        {"address": "10.0.0.22", "mac-address": "AA:BB:CC:00:00:03", "dynamic": "true"},     # 舊韌體不理過濾
+        {"address": "pool-lan", "mac-address": "AA:BB:CC:00:00:04", "dynamic": "false"},     # 固定網卡、位址動態
+        {"address": "10.0.0.23", "mac-address": "AA:BB:CC:00:00:05"},                        # 不知道是不是靜態
+    ]
+    got = svc.build_static_reservations(rows)
+    assert [(r.ip, r.mac, r.hostname, r.description) for r in got] == [
+        ("10.0.0.20", "aa:bb:cc:00:00:01", "nas", "rack 2")]
+
+
+@pytest.mark.anyio
+async def test_dhcp_section_writes_static_leases_as_reservations(db_session: Any, monkeypatch: Any) -> None:
+    from app.models.dhcp import DHCPReservation
+    from app.models.mikrotik import MikroTikRouter
+    from sqlalchemy import select
+
+    router = MikroTikRouter(
+        name="ccr-static", api_url="https://192.0.2.9", api_username="ipam",
+        api_password_enc=b"x", api_password_nonce=b"y", section_delay_ms=0)
+    db_session.add(router)
+    await db_session.flush()
+    menus = {**MENUS, "/ip/dhcp-server/lease": [
+        {"address": "10.0.0.20", "mac-address": "AA:BB:CC:00:00:01", "dynamic": "false", "disabled": "false"},
+        {"address": "10.0.0.150", "mac-address": "AA:BB:CC:DD:EE:01", "dynamic": "true", "status": "bound"},
+    ]}
+    transport = _MenuTransport(menus, cpu_seq=[5])
+    monkeypatch.setattr(svc, "_decrypt_password", lambda r: "pw")
+    async with httpx.AsyncClient(transport=transport) as client:
+        out = await svc.sync_dhcp_ranges(db_session, router, client=client)
+    assert out["dhcp_reservations"] == 1
+    rows = (await db_session.execute(select(DHCPReservation).where(
+        DHCPReservation.source_id == router.id))).scalars().all()
+    assert [(r.source_type, r.ip, r.mac) for r in rows] == [("mikrotik", "10.0.0.20", "aa:bb:cc:00:00:01")]
+    assert transport.paths.count("/ip/dhcp-server/lease") == 1
+
+
+
+@pytest.mark.anyio
+async def test_disabled_address_list_entries_are_not_members(db_session: Any, monkeypatch: Any) -> None:
+    """停用的 address-list 項目不是清單成員（使用者 2026-10-13：「停用的不要抓」）：
+    以前沒抓 disabled 欄位，停用的項目照樣出現在 IP 的「所屬清單」與 IP 變更評估。"""
+    from app.models.mikrotik import MikroTikAddressList, MikroTikRouter
+    from sqlalchemy import select
+
+    router = MikroTikRouter(
+        name="ccr-al", api_url="https://192.0.2.10", api_username="ipam",
+        api_password_enc=b"x", api_password_nonce=b"y", section_delay_ms=0, cpu_load_limit=0,
+        sync_dhcp=False, sync_dhcp_ranges=False, sync_vpn=False, sync_arp=False)
+    db_session.add(router)
+    await db_session.flush()
+    menus = {**MENUS, "/ip/firewall/address-list": [
+        {"list": "allowed", "address": "198.51.100.4", "disabled": "false"},
+        {"list": "allowed", "address": "198.51.100.5", "disabled": "true"},
+    ]}
+    transport = _MenuTransport(menus, cpu_seq=[5])
+    _fake_client(monkeypatch, transport)
+    await svc.sync_instance(db_session, router)
+    await db_session.flush()
+    lists = (await db_session.execute(select(MikroTikAddressList).where(
+        MikroTikAddressList.router_id == router.id))).scalars().all()
+    assert [x.address for x in lists] == ["198.51.100.4"]

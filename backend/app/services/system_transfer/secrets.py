@@ -46,6 +46,12 @@ COLUMN_SECRETS: dict[str, list[tuple[str, str, str, Callable[[dict[str, Any]], b
     "esxi_instances": [
         ("password", "password_enc", "password_nonce", _aad_id("esxi_instance:{id}:password")),
     ],
+    "hyperv_instances": [
+        ("password", "password_enc", "password_nonce", _aad_id("hyperv_instance:{id}:password")),
+    ],
+    "openstack_instances": [
+        ("secret", "secret_enc", "secret_nonce", _aad_id("openstack_instance:{id}:secret")),
+    ],
     "librenms_instances": [
         ("api_token", "api_token_enc", "api_token_nonce", _aad_id("librenms_instance:{id}:api_token")),
     ],
@@ -67,6 +73,14 @@ COLUMN_SECRETS: dict[str, list[tuple[str, str, str, Callable[[dict[str, Any]], b
         ("api_key", "api_key_enc", "api_key_nonce",
          _aad_id("paloalto_firewall:{id}:api_key")),
     ],
+    "checkpoint_servers": [
+        ("secret", "secret_enc", "secret_nonce",
+         _aad_id("checkpoint_server:{id}:secret")),
+    ],
+    "checkpoint_gaia_targets": [
+        ("secret", "secret_enc", "secret_nonce",
+         _aad_id("checkpoint_gateway:{id}:gaia_secret")),
+    ],
     "jump_hosts": [
         ("private_key", "private_key_enc", "private_key_nonce",
          _aad_id("jump_host:{id}:private_key")),
@@ -76,6 +90,14 @@ COLUMN_SECRETS: dict[str, list[tuple[str, str, str, Callable[[dict[str, Any]], b
     "mikrotik_routers": [
         ("api_password", "api_password_enc", "api_password_nonce",
          _aad_id("mikrotik_router:{id}:api_password")),
+    ],
+    # SNMP 收集（0217）：三個機密都可能是空的（v2c 沒有 v3 密碼、authNoPriv 沒有加密密碼）
+    "snmp_credentials": [
+        ("community", "community_enc", "community_nonce", _aad_id("snmp_credential:{id}:community")),
+        ("auth_passphrase", "auth_passphrase_enc", "auth_passphrase_nonce",
+         _aad_id("snmp_credential:{id}:auth_passphrase")),
+        ("priv_passphrase", "priv_passphrase_enc", "priv_passphrase_nonce",
+         _aad_id("snmp_credential:{id}:priv_passphrase")),
     ],
     "ocs_servers": [
         ("api_password", "api_password_enc", "api_password_nonce",
@@ -90,6 +112,18 @@ COLUMN_SECRETS: dict[str, list[tuple[str, str, str, Callable[[dict[str, Any]], b
     "windows_dhcp_servers": [
         ("password", "password_enc", "password_nonce",
          _aad_id("windows_dhcp_server:{id}:password")),
+    ],
+    "kea_dhcp_servers": [
+        ("password", "password_enc", "password_nonce",
+         _aad_id("kea_dhcp_server:{id}:password")),
+    ],
+    "technitium_dhcp_servers": [
+        ("token", "token_enc", "token_nonce",
+         _aad_id("technitium_dhcp_server:{id}:token")),
+    ],
+    "isoinsight_sources": [
+        ("password", "password_enc", "password_nonce",
+         _aad_id("isoinsight_source:{id}:password")),
     ],
     "cert_versions": [
         (
@@ -125,9 +159,18 @@ _SETTINGS_V1: dict[str, dict[str, bytes]] = {
     "oidc": {"client_secret_enc": b"oidc:client_secret"},
     "saml": {"sp_private_key_enc": b"saml:sp_private_key"},
     "notification_channels": dict.fromkeys(("smtp_password_enc", "telegram_token_enc", "slack_webhook_enc", "teams_webhook_enc", "nextcloud_secret_enc", "zulip_api_key_enc", "webhook_url_enc", "webhook_token_enc"), b"notification:smtp_password"),
+    # 公開端點的權杖（0202 起加密存放；以前明文，匯出照原樣帶走）
+    "graylog_dsv": {"token_enc": b"setting:graylog_dsv:token"},
+    "rack_embed": {"token_enc": b"setting:rack_embed:token"},
+    # 備份加密密碼（搬到新主機後，新主機的備份照樣加密）
+    "backup_encryption": {"passphrase_enc": b"setting:backup_encryption:passphrase"},
 }
-# phpipam_migration 用 b64(ct)+b64(nonce) 且無 AAD
-_SETTINGS_B64PAIR = {"phpipam_migration": ("key_enc", "key_nonce")}
+# base64 一對（密文、nonce）存在設定 JSON 裡的機密：設定鍵 → (密文欄位, nonce 欄位, AAD)
+# geoip 以前不在這裡：匯出時原封不動帶走來源主機的密文，到了別台（不同金鑰）就解不開
+_SETTINGS_B64PAIR = {
+    "phpipam_migration": ("key_enc", "key_nonce", b"setting:phpipam_migration:ssh_private_key"),
+    "geoip": ("key_ct", "key_nonce", b"setting:geoip:license_key"),
+}
 
 _PLAIN = "__plain__"  # 匯出包內明文保留值：{"__plain__": "<明文>"} 或 None
 
@@ -224,10 +267,10 @@ def transform_settings_out(key: str, value: Any) -> Any:
         if isinstance(blob, str) and blob:
             v[enc_field] = {_PLAIN: _dec_v1(blob, aad)}
     if key in _SETTINGS_B64PAIR:
-        enc_f, nonce_f = _SETTINGS_B64PAIR[key]
+        enc_f, nonce_f, pair_aad = _SETTINGS_B64PAIR[key]
         ct, nonce = v.get(enc_f), v.get(nonce_f)
         if isinstance(ct, str) and isinstance(nonce, str) and ct and nonce:
-            v[enc_f] = {_PLAIN: _dec_b64pair(ct, nonce)}
+            v[enc_f] = {_PLAIN: _dec_b64pair(ct, nonce, pair_aad)}
             v.pop(nonce_f, None)
     return v
 
@@ -243,12 +286,12 @@ def transform_settings_in(key: str, value: Any) -> Any:
             plain = cell[_PLAIN]
             v[enc_field] = _enc_v1(str(plain), aad) if plain else None
     if key in _SETTINGS_B64PAIR:
-        enc_f, nonce_f = _SETTINGS_B64PAIR[key]
+        enc_f, nonce_f, pair_aad = _SETTINGS_B64PAIR[key]
         cell = v.get(enc_f)
         if isinstance(cell, dict) and _PLAIN in cell:
             plain = cell[_PLAIN]
             if plain:
-                enc, nonce = encrypt_secret(str(plain))
+                enc, nonce = encrypt_secret(str(plain), aad=pair_aad)
                 v[enc_f] = base64.b64encode(enc).decode()
                 v[nonce_f] = base64.b64encode(nonce).decode()
             else:
@@ -270,9 +313,9 @@ def _enc_v1(plain: str, aad: bytes) -> str:
     return "v1:" + base64.b64encode(nonce).decode() + ":" + base64.b64encode(ct).decode()
 
 
-def _dec_b64pair(ct_b64: str, nonce_b64: str) -> str | None:
+def _dec_b64pair(ct_b64: str, nonce_b64: str, aad: bytes) -> str | None:
     try:
-        return decrypt_secret(base64.b64decode(ct_b64), base64.b64decode(nonce_b64)).decode("utf-8")
+        return decrypt_secret(base64.b64decode(ct_b64), base64.b64decode(nonce_b64), aad=aad).decode("utf-8")
     except Exception:
         return None
 

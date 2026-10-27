@@ -9,8 +9,12 @@ import { Physical, type DevicePort, type PortTrace } from "@/api/phase3";
 import { listDevices } from "@/api/basic";
 import { PlusIcon, EditIcon, DeleteIcon, LinkIcon, RefreshIcon, PhysicalIcon, ExportIcon } from "@/icons";
 
+import { useExportBusy } from "@/composables/useExportBusy";
 import { useTablePagination } from "@/composables/useTablePagination";
 import { apiErrMsg } from "@/api/client";
+import { renderMacWithVendor } from "@/utils/macVendor";
+import { withExportValue } from "@/utils/tableExport";
+import { saveBlob } from "@/utils/saveFile";
 const props = defineProps<{ deviceId: string; deviceName: string; admin: boolean }>();
 const { t } = useI18n();
 const msg = useMessage();
@@ -91,8 +95,14 @@ async function importPorts() {
   try {
     const r = await Physical.importPorts(props.deviceId);
     if (!r.linked_librenms) msg.warning(t("ports.import_no_source"));
-    else if (r.imported) { msg.success(t("ports.import_done", { n: r.imported })); await refresh(); }
-    else msg.info(t("ports.import_none"));
+    else if (r.imported || r.removed || r.pruned) {
+      // 新增、以及 LibreNMS 已不再回報而清掉的（網卡拔掉等）一起講
+      const parts = [];
+      if (r.imported) parts.push(t("ports.import_done", { n: r.imported }));
+      if (r.removed || r.pruned) parts.push(t("ports.import_removed", { n: (r.removed ?? 0) + (r.pruned ?? 0) }));
+      msg.success(parts.join("；"));
+      await refresh();
+    } else msg.info(t("ports.import_none"));
   } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
   finally { importing.value = false; }
 }
@@ -152,11 +162,7 @@ function traceFilename(): string {
   return `cable-trace-${traceTitle.value.replace(/[^\w.-]+/g, "_")}`;
 }
 function dl(blob: Blob, name: string) {
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  saveBlob(name, blob, blob.type, { source: "cable-trace" });
 }
 // 共用幾何，SVG / PNG 都用
 const TRACE_GEO = { W: 420, boxH: 46, gap: 40, padY: 16 };
@@ -236,7 +242,9 @@ const traceExportOptions = [
   { label: "PNG", key: "png" },
   { label: "draw.io", key: "drawio" },
 ];
-function onTraceExport(key: string) {
+const { exporting: traceExporting, run: runTraceExport } = useExportBusy();
+function onTraceExport(key: string) { void runTraceExport(() => doTraceExport(key)); }
+function doTraceExport(key: string) {
   if (key === "svg") exportTraceSvg();
   else if (key === "png") exportTracePng();
   else if (key === "drawio") exportTraceDrawio();
@@ -258,9 +266,11 @@ const cols = computed<DataTableColumns<DevicePort>>(() => [
           default: () => "→ " + r.link,
         })
       : "—" },
-  { title: t("ports.col_mac"), key: "mac_address", minWidth: 140, ellipsis: { tooltip: true },
-    sorter: (a, b) => natCompare(a.mac_address ?? "", b.mac_address ?? ""),
-    render: (r) => r.mac_address || "—" },
+  // MAC 在上、OUI 廠商在下（與 IP 清單同一個呈現，utils/macVendor）
+  withExportValue({ title: t("ports.col_mac"), key: "mac_address", minWidth: 150,
+    sorter: (a: DevicePort, b: DevicePort) => natCompare(a.mac_address ?? "", b.mac_address ?? ""),
+    render: (r: DevicePort) => renderMacWithVendor(r.mac_address, r.mac_vendor) },
+    (r) => [r.mac_address, r.mac_vendor].filter(Boolean).join(" ")),
   { title: t("ports.col_peer"), key: "peer_port_id", width: 100,
     sorter: (a, b) => natCompare(peerName(a.peer_port_id), peerName(b.peer_port_id)),
     render: (r) => peerName(r.peer_port_id) },
@@ -356,8 +366,8 @@ onMounted(() => { void refresh(); });
     <n-modal v-model:show="showTrace" preset="card" style="width:520px" :title="t('ports.trace_title', { p: traceTitle })">
       <!-- 控制列：自標題列搬到內文最上方 -->
       <n-space align="center" justify="end" style="margin-bottom: 10px">
-        <n-dropdown v-if="traceConnected" trigger="click" :options="traceExportOptions" @select="onTraceExport">
-          <n-button size="tiny">
+        <n-dropdown v-if="traceConnected" trigger="click" :options="traceExportOptions" :disabled="traceExporting" @select="onTraceExport">
+          <n-button size="tiny" :loading="traceExporting" :disabled="traceExporting">
             <template #icon><n-icon><ExportIcon /></n-icon></template>
             {{ t("common.download") }}
           </n-button>

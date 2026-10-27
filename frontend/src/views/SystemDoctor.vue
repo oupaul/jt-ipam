@@ -18,6 +18,8 @@ import {
 import { apiClient, apiErrMsg } from "@/api/client";
 import { RefreshIcon, ExportIcon, TestIcon } from "@/icons";
 import { fmtDateTime } from "@/utils/datetime";
+import { saveBlob } from "@/utils/saveFile";
+import StorageUsagePanel, { type StorageUsage } from "@/components/StorageUsagePanel.vue";
 
 const { t } = useI18n();
 const msg = useMessage();
@@ -30,10 +32,17 @@ interface Check {
   params?: Record<string, unknown>;
 }
 
-/** 有代碼就翻譯，沒有就用後端寫好的字 —— 後端沒有「當前語言」可言。 */
+/** 有代碼就翻譯，沒有就用後端寫好的字 —— 後端沒有「當前語言」可言。
+ *  時間參數後端給 ISO（UTC），這裡換成觀看者的時區：以前直接印 UTC，「最後一筆 13:33」其實是本地 21:33。 */
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 function field(c: Check, which: "title" | "detail" | "fix"): string {
   const key = c[`${which}_key` as const];
-  return key ? t(key, (c.params || {}) as Record<string, unknown>) : (c[which] ?? "");
+  if (!key) return c[which] ?? "";
+  const params: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(c.params || {})) {
+    params[k] = typeof v === "string" && ISO_RE.test(v) ? fmtDateTime(v) : v;
+  }
+  return t(key, params);
 }
 interface Report {
   generated_at: string; ok: number; warn: number; bad: number; checks: Check[];
@@ -42,13 +51,46 @@ interface Report {
 const report = ref<Report | null>(null);
 const loading = ref(false);
 
-async function run() {
+// 資料統計：各類資料各有幾筆（只在本機算，不回傳）。逾時的大表是估計值，前面加「約」
+interface StatItem { key: string; count: number | null; approx: boolean }
+interface StatGroup { key: string; items: StatItem[] }
+const stats = ref<StatGroup[]>([]);
+const nf = new Intl.NumberFormat();
+function statText(i: StatItem): string {
+  if (i.count == null) return "—";
+  return (i.approx ? t("doctor.stats_approx") + " " : "") + nf.format(i.count);
+}
+
+// 容量用量（使用者 2026-10-14）：資料庫依功能、主機上的目錄、最大的資料表
+const storage = ref<StorageUsage | null>(null);
+// 統計卡片的標頭色條：與容量用量的分類色同一組
+const STAT_COLORS: Record<string, string> = {
+  ipam: "#18a058", physical: "#b45309", network: "#0ea5e9", sources: "#6366f1", system: "#94a3b8",
+};
+
+/** `refresh`：按「重新檢查」時連主機上的目錄也重新量（開頁時用後端幾分鐘內的結果） */
+async function run(refresh = false) {
   loading.value = true;
   try {
-    const { data } = await apiClient.get<Report>("/api/v1/system/doctor");
+    // 容量用量另外載入：量主機上的目錄要好幾秒（正式站台 7.6 秒），不能讓檢查項目跟著等
+    void loadStorage(refresh);
+    const [{ data }, st] = await Promise.all([
+      apiClient.get<Report>("/api/v1/system/doctor"),
+      apiClient.get<{ groups: StatGroup[] }>("/api/v1/system/doctor/stats").catch(() => null),
+    ]);
     report.value = data;
+    stats.value = st?.data.groups ?? [];
   } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
+}
+const storageLoading = ref(false);
+async function loadStorage(refresh: boolean) {
+  storageLoading.value = true;
+  try {
+    storage.value = (await apiClient.get<StorageUsage>("/api/v1/system/doctor/storage",
+      { params: refresh ? { refresh: true } : {} })).data;
+  } catch { /* 量不到不影響其他檢查；區塊不顯示 */ }
+  finally { storageLoading.value = false; }
 }
 
 /** 下載純文字報告 —— 直接貼進工單用（不是給機器讀的 JSON）。
@@ -74,12 +116,8 @@ function download() {
     lines.push("  sudo bash /opt/jt-ipam/scripts/jt-ipam.sh doctor");
     const data = lines.join("\n");
     const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
-    const url = URL.createObjectURL(new Blob([data], { type: "text/plain;charset=utf-8" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `jt-ipam-doctor-${stamp}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    saveBlob(`jt-ipam-doctor-${stamp}.txt`, new Blob([data], { type: "text/plain;charset=utf-8" }),
+             "text/plain;charset=utf-8", { source: "system-doctor" });
   } catch (e) { msg.error(apiErrMsg(e)); }
 }
 
@@ -103,7 +141,7 @@ onMounted(() => { void run(); });
     </template>
 
     <n-space align="center" class="doc-bar">
-      <n-button type="primary" @click="run" :loading="loading">
+      <n-button type="primary" @click="run(true)" :loading="loading">
         <template #icon><n-icon><RefreshIcon /></n-icon></template>
         {{ t("doctor.run") }}
       </n-button>
@@ -142,6 +180,32 @@ onMounted(() => { void run(); });
         {{ t("doctor.cli_note") }}
         <code>sudo bash /opt/jt-ipam/scripts/jt-ipam.sh doctor</code>
       </n-alert>
+
+      <!-- 資料統計（使用者 2026-10-06，比照 LibreNMS 的統計頁；但只在本機算，不回傳、不蒐集） -->
+      <StorageUsagePanel v-if="storage" :data="storage" :loading="storageLoading" />
+      <div v-else-if="storageLoading" class="doc-storage-wait" data-testid="doctor-storage-loading">
+        <n-spin size="small" /> {{ t("doctor.storage_measuring") }}
+      </div>
+
+      <section v-if="stats.length" class="doc-stats" data-testid="doctor-stats">
+        <div class="doc-stats-head">
+          <span class="doc-stats-title">{{ t("doctor.stats_title") }}</span>
+          <span class="doc-stats-hint">{{ t("doctor.stats_hint") }}</span>
+        </div>
+        <!-- 一組一張卡（使用者 2026-10-14：「排的有整齊但不夠好看」）：彩色標頭、數字靠右；0 筆的淡化，有資料的才跳出來 -->
+        <div class="ds-grid">
+          <div v-for="g in stats" :key="g.key" class="ds-card" :data-group="g.key">
+            <div class="ds-card-head">
+              <span class="ds-accent" :style="{ background: STAT_COLORS[g.key] ?? '#94a3b8' }" />
+              {{ t(`doctor.stats_group.${g.key}`) }}
+            </div>
+            <div v-for="i in g.items" :key="i.key" class="doc-stat" :data-key="i.key" :class="{ zero: i.count === 0 }">
+              <span class="doc-stat-k">{{ t(`doctor.stats.${i.key}`) }}</span>
+              <span class="doc-stat-v">{{ statText(i) }}</span>
+            </div>
+          </div>
+        </div>
+      </section>
     </n-spin>
   </n-card>
 </template>
@@ -170,4 +234,22 @@ onMounted(() => { void run(); });
 .doc-fix { font-size: 12px; margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
 .doc-fix-label { opacity: .7; flex: 0 0 auto; }
 .doc-fix code, .doc-row code { word-break: break-all; }
+
+.doc-stats { margin-top: 22px; }
+.doc-storage-wait { margin-top: 22px; display: flex; align-items: center; gap: 8px; font-size: 13px; opacity: .75; }
+.doc-stats-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.doc-stats-title { font-weight: 600; font-size: 15px; }
+.doc-stats-hint { font-size: 12px; opacity: .65; }
+.ds-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; align-items: start; }
+.ds-card { border: 1px solid var(--n-border-color, rgba(128, 128, 128, .2)); border-radius: 10px; padding: 10px 14px 6px;
+           background: rgba(128, 128, 128, .04); }
+.ds-card-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.ds-accent { width: 4px; height: 14px; border-radius: 2px; }
+.doc-stat { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0;
+            border-bottom: 1px dashed var(--n-border-color, rgba(128, 128, 128, .18)); font-size: 13px; }
+.doc-stat:last-child { border-bottom: 0; }
+.doc-stat-k { opacity: .8; }
+.doc-stat-v { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; font-size: 14px; }
+.doc-stat.zero { opacity: .45; }
+.doc-stat.zero .doc-stat-v { font-weight: 400; }
 </style>

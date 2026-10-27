@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 import shutil
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -227,8 +227,17 @@ async def run_checks(session: AsyncSession) -> Report:
         from sqlalchemy import func, select
 
         from app.models.background_task import BackgroundTask
+        from app.services.background_tasks import NOT_SYNC_TIMER_KINDS
+        # 只看 jt-ipam-sync 排程寫的列：代理回報、探測與資料庫更新各有自己的節奏，
+        # 拿它們當「排程還活著」會把停擺的排程遮掉
         last = (await session.execute(
-            select(func.max(BackgroundTask.queued_at)))).scalar_one_or_none()
+            select(func.max(BackgroundTask.queued_at)).where(
+                BackgroundTask.trigger == "scheduled",
+                BackgroundTask.kind.not_in(NOT_SYNC_TIMER_KINDS)))).scalar_one_or_none()
+        if last is None:
+            # 一個排程同步都沒有過（多半是還沒設定任何整合）：沒有東西可以判斷排程，維持舊的看法（任何作業都算），
+            # 不要讓沒設定整合的站台多一個警告
+            last = (await session.execute(select(func.max(BackgroundTask.queued_at)))).scalar_one_or_none()
         if last is None:
             rep.checks.append(Check("sync", "背景作業", "warn", "從來沒有背景作業記錄",
                                     "systemctl status jt-ipam-sync.timer",
@@ -238,13 +247,13 @@ async def run_checks(session: AsyncSession) -> Report:
             if age_h > 24:
                 rep.checks.append(Check(
                     "sync", "背景作業停擺", "warn",
-                    f"最後一筆是 {age_h:.0f} 小時前（{last:%Y-%m-%d %H:%M}）",
+                    f"最後一筆是 {age_h:.0f} 小時前（{last.astimezone():%Y-%m-%d %H:%M}）",
                     "systemctl status jt-ipam-sync.timer；journalctl -u jt-ipam-sync -n 60",
-        title_key="doctor.c_jobs_stalled", detail_key="doctor.c_jobs_stalled_d", fix_key="doctor.f_sync_timer_logs", params={"hours": f"{age_h:.0f}", "last": f"{last:%Y-%m-%d %H:%M}"}))
+        title_key="doctor.c_jobs_stalled", detail_key="doctor.c_jobs_stalled_d", fix_key="doctor.f_sync_timer_logs", params={"hours": f"{age_h:.0f}", "last": last.isoformat()}))
             else:
                 rep.checks.append(Check("sync", "背景作業", "ok",
-                                        f"最後一筆 {last:%Y-%m-%d %H:%M}",
-        title_key="doctor.c_jobs", detail_key="doctor.c_jobs_ok", params={"last": f"{last:%Y-%m-%d %H:%M}"}))
+                                        f"最後一筆 {last.astimezone():%Y-%m-%d %H:%M}",
+        title_key="doctor.c_jobs", detail_key="doctor.c_jobs_ok", params={"last": last.isoformat()}))
     except Exception as exc:
         rep.checks.append(Check("sync", "背景作業", "warn", str(exc)[:200],
         title_key="doctor.c_jobs", detail_key="doctor.d_raw", params={"detail": str(exc)[:200]}))
@@ -334,7 +343,282 @@ async def run_checks(session: AsyncSession) -> Report:
         rep.checks.append(Check("debug", "執行模式", "warn", f"檢查本身失敗：{exc}"[:200],
         title_key="doctor.c_env", detail_key="doctor.d_check_failed", params={"detail": str(exc)[:200]}))
 
+    # 10) guacd（必要元件，RDP／VNC 的預設引擎）：一定要連得到；選了它的協定外掛都要在
+    try:
+        rep_guacd = await _guacd_check(session)
+        if rep_guacd is not None:
+            rep.checks.append(rep_guacd)
+    except Exception as exc:
+        rep.checks.append(Check("guacd", "guacd 主控台引擎", "warn", f"檢查本身失敗：{exc}"[:200],
+                                title_key="doctor.c_guacd", detail_key="doctor.d_check_failed",
+                                params={"detail": str(exc)[:200]}))
+
+    # 11) Recog 指紋庫（選用，探測用）：沒裝、或每週的更新檢查一直失敗
+    try:
+        rep.checks.append(await _recog_check(session))
+    except Exception as exc:
+        rep.checks.append(Check("recog", "Recog 指紋庫（選用）", "warn", f"檢查本身失敗：{exc}"[:200],
+                                title_key="doctor.c_recog", detail_key="doctor.d_check_failed",
+                                params={"detail": str(exc)[:200]}))
+
+    # 12) 每日備份：pg_dump 被擋住時備份曾經靜靜失敗了六週（2026-10-08 發現）；bad 會經系統告警通知管理員
+    try:
+        chk = await _backup_check()
+        if chk is not None:
+            rep.checks.append(chk)
+    except Exception as exc:
+        rep.checks.append(Check("backup", "每日備份", "warn", f"檢查本身失敗：{exc}"[:200],
+                                title_key="doctor.c_backup", detail_key="doctor.d_check_failed",
+                                params={"detail": str(exc)[:200]}))
+
+    # 12b) 備份有沒有加密：沒加密的備份檔裡有資料庫，也有解密它的金鑰
+    try:
+        chk = await _backup_encryption_check(session)
+        if chk is not None:
+            rep.checks.append(chk)
+    except Exception as exc:
+        rep.checks.append(Check("backup_encryption", "備份加密", "warn", f"檢查本身失敗：{exc}"[:200],
+                                title_key="doctor.c_backup_enc", detail_key="doctor.d_check_failed",
+                                params={"detail": str(exc)[:200]}))
+
+    # 13) 稽核表的擁有者：應用程式帳號擁有的話可以停用「只能新增」的保護（2026-10-09 起由安裝／升級交出去）
+    try:
+        rep.checks.append(await _audit_owner_check(session))
+    except Exception as exc:
+        rep.checks.append(Check("audit_owner", "稽核表的保護", "warn", f"檢查本身失敗：{exc}"[:200],
+                                title_key="doctor.c_audit_owner", detail_key="doctor.d_check_failed",
+                                params={"detail": str(exc)[:200]}))
+
     return rep
+
+
+BACKUP_DIR = Path(os.environ.get("JTIPAM_BACKUP_DIR", "/var/backups/jt-ipam"))
+#: 每天 03:30 跑一次；超過這麼久沒有成功的備份就是停擺了（多留一天給排程漂移與手動停機）
+BACKUP_STALE_HOURS = 48
+_BACKUP_LOGS = "journalctl -u jt-ipam-backup -n 30"
+_BACKUP_TIMER_FIX = "sudo systemctl enable --now jt-ipam-backup.timer"
+
+
+def _parse_kv(text_: str | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in (text_ or "").splitlines():
+        k, sep, v = line.partition("=")
+        if sep:
+            out[k.strip()] = v.strip()
+    return out
+
+
+def _iso(v: str | None) -> datetime | None:
+    try:
+        d = datetime.fromisoformat(v) if v else None
+    except ValueError:
+        return None
+    return d if d is None or d.tzinfo else d.replace(tzinfo=UTC)
+
+
+def backup_check_from(status_text: str | None, unit: dict[str, str], timer: dict[str, str], *,
+                      now: datetime) -> Check | None:
+    """依備份腳本的狀態檔（`last-run`）與 systemd 的 unit／timer 狀態判斷。
+
+    沒有這個 timer（開發環境、不是用安裝腳本裝的）就不檢查。狀態檔是新版腳本才寫的：
+    沒有它（升級前的舊腳本）就退回看 systemd 的最後結果。
+    """
+    import re
+    if timer.get("LoadState", "not-found") == "not-found":
+        return None
+    title = "每日備份"
+    st = _parse_kv(status_text) if status_text else {}
+    if st.get("status") == "fail":
+        err = st.get("error", "")
+        m = re.search(r"permission denied for table ([A-Za-z0-9_.]+)", err)
+        cmd = (f"sudo -u postgres psql -d jt_ipam -c 'ALTER TABLE public.{m.group(1).split('.')[-1]} "
+               f"OWNER TO jt_ipam'") if m else _BACKUP_LOGS
+        last = st.get("last_success_at", "")
+        return Check("backup", "每日備份失敗", "bad",
+                     f"{st.get('finished_at', '')} 失敗：{err or '—'}；最後一次成功：{last or '從來沒有'}", cmd,
+                     title_key="doctor.c_backup_failed", detail_key="doctor.d_backup_failed",
+                     fix_key="doctor.f_backup_owner" if m else "doctor.f_backup_logs",
+                     params={"at": st.get("finished_at", ""), "error": err or "—", "last": last or "—",
+                             "cmd": cmd})
+    if timer.get("UnitFileState") not in ("enabled", "static", "linked") or timer.get("ActiveState") != "active":
+        state = f"{timer.get('UnitFileState', '?')}/{timer.get('ActiveState', '?')}"
+        return Check("backup", "每日備份沒有排程", "warn", f"jt-ipam-backup.timer：{state}", _BACKUP_TIMER_FIX,
+                     title_key="doctor.c_backup_no_timer", detail_key="doctor.d_backup_no_timer",
+                     fix_key="doctor.f_backup_timer", params={"state": state})
+    if st.get("status") == "ok":
+        last_s = st.get("last_success_at") or st.get("finished_at", "")
+        last = _iso(last_s)
+        if last is not None and now - last > timedelta(hours=BACKUP_STALE_HOURS):
+            hours = int((now - last).total_seconds() // 3600)
+            return Check("backup", "每日備份停擺", "bad", f"最後一次成功是 {hours} 小時前（{last_s}）",
+                         "systemctl list-timers jt-ipam-backup.timer；" + _BACKUP_LOGS,
+                         title_key="doctor.c_backup_stale", detail_key="doctor.d_backup_stale",
+                         fix_key="doctor.f_backup_logs", params={"hours": str(hours), "last": last_s})
+        return Check("backup", title, "ok", f"最後一次成功：{last_s}（{st.get('dump_size', '')}）",
+                     title_key="doctor.c_backup", detail_key="doctor.d_backup_ok",
+                     params={"at": last_s, "size": st.get("dump_size", "") or "—"})
+    # 沒有狀態檔：舊版腳本，看 systemd
+    result = unit.get("Result", "")
+    ended = unit.get("ExecMainExitTimestamp", "")
+    if result and result != "success":
+        return Check("backup", "每日備份失敗", "bad", f"備份服務最後一次執行失敗（systemd：{result}，{ended}）",
+                     _BACKUP_LOGS, title_key="doctor.c_backup_failed", detail_key="doctor.d_backup_unit_failed",
+                     fix_key="doctor.f_backup_logs", params={"result": result, "at": ended})
+    if not ended:
+        return Check("backup", title, "warn", "還沒有執行過備份", "sudo systemctl start jt-ipam-backup.service",
+                     title_key="doctor.c_backup", detail_key="doctor.d_backup_never", fix_key="doctor.f_backup_run")
+    return Check("backup", title, "ok", f"備份服務最後一次執行成功（{ended}）",
+                 title_key="doctor.c_backup", detail_key="doctor.d_backup_unit_ok", params={"at": ended})
+
+
+async def _systemctl_show(unit: str, props: tuple[str, ...]) -> dict[str, str]:
+    import asyncio
+    exe = shutil.which("systemctl")
+    if exe is None:
+        return {"LoadState": "not-found"}
+    proc = await asyncio.create_subprocess_exec(
+        exe, "show", unit, *[f"--property={p}" for p in props],
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+    except TimeoutError:
+        proc.kill()
+        return {"LoadState": "not-found"}
+    return _parse_kv(out.decode("utf-8", "replace"))
+
+
+def backup_encryption_check_from(configured: bool, status_text: str | None) -> Check:
+    """備份有沒有加密：沒設密碼 → warn；設了但最後一次備份沒加密（加密失敗或舊腳本）→ warn。"""
+    st = _parse_kv(status_text) if status_text else {}
+    if not configured:
+        return Check("backup_encryption", "備份加密", "warn",
+                     "沒有設定備份加密密碼：備份檔裡同時有資料庫與解密金鑰（backend.env），拿到備份檔就等於拿到所有機密",
+                     "管理 → 系統設定 → 每日備份加密", title_key="doctor.c_backup_enc",
+                     detail_key="doctor.d_backup_enc_off", fix_key="doctor.f_backup_enc_off")
+    if st.get("status") == "ok" and st.get("encrypted") != "1":
+        return Check("backup_encryption", "備份加密", "warn",
+                     "已設定備份加密，但最後一次備份沒有加密（升級前的備份腳本，或加密失敗）", _BACKUP_LOGS,
+                     title_key="doctor.c_backup_enc", detail_key="doctor.d_backup_enc_missed",
+                     fix_key="doctor.f_backup_logs")
+    return Check("backup_encryption", "備份加密", "ok", "每日備份以設定的密碼加密（.jtbak）",
+                 title_key="doctor.c_backup_enc", detail_key="doctor.d_backup_enc_ok")
+
+
+async def _backup_encryption_check(session: AsyncSession) -> Check | None:
+    timer = await _systemctl_show("jt-ipam-backup.timer", ("LoadState",))
+    if timer.get("LoadState", "not-found") == "not-found":
+        return None          # 沒有每日備份（開發環境）就不講加密
+    from app.services.system_config import get_backup_encryption
+    configured = (await get_backup_encryption(session))["enabled"]
+    try:
+        status_text: str | None = (BACKUP_DIR / "last-run").read_text(encoding="utf-8")
+    except OSError:
+        status_text = None
+    return backup_encryption_check_from(configured, status_text)
+
+
+_AUDIT_HARDEN_FIX = "sudo bash /opt/jt-ipam/scripts/jt-ipam.sh harden-audit"
+
+
+async def _audit_owner_check(session: AsyncSession) -> Check:
+    """稽核表是不是交給了不能登入的角色（jt_ipam_audit_owner）。
+
+    表的擁有者可以停用「只能新增」的觸發器；應用程式帳號擁有它的話，拿到 backend.env 的人就能
+    停用保護後改寫記錄。安裝與升級會自動處理，還原備份或外部資料庫時可能沒做到。"""
+    from sqlalchemy import text
+    row = (await session.execute(text(
+        "SELECT tableowner, current_user FROM pg_tables WHERE tablename = 'audit_logs'"))).first()
+    owner, me = (row[0], row[1]) if row else ("", "")
+    if owner and owner != me:
+        return Check("audit_owner", "稽核表的保護", "ok",
+                     f"稽核表由 {owner} 擁有，應用程式帳號只能讀取與新增",
+                     title_key="doctor.c_audit_owner", detail_key="doctor.d_audit_owner_ok",
+                     params={"owner": owner})
+    return Check("audit_owner", "稽核表的保護", "warn",
+                 f"稽核表由應用程式帳號（{me}）擁有：它可以停用只能新增的保護", _AUDIT_HARDEN_FIX,
+                 title_key="doctor.c_audit_owner", detail_key="doctor.d_audit_owner_app",
+                 fix_key="doctor.f_audit_owner", params={"owner": me, "cmd": _AUDIT_HARDEN_FIX})
+
+
+async def _backup_check() -> Check | None:
+    timer = await _systemctl_show("jt-ipam-backup.timer", ("LoadState", "UnitFileState", "ActiveState"))
+    unit = await _systemctl_show("jt-ipam-backup.service", ("Result", "ExecMainExitTimestamp"))
+    try:
+        status_text: str | None = (BACKUP_DIR / "last-run").read_text(encoding="utf-8")
+    except OSError:
+        status_text = None
+    return backup_check_from(status_text, unit, timer, now=datetime.now(UTC))
+
+
+# 每週檢查一次：連續三週都沒有成功，就不是「偶爾連不到 GitHub」了
+_RECOG_STALE_DAYS = 21
+_RECOG_FIX = "sudo -u jtipam bash -c 'cd /opt/jt-ipam/backend; set -a; source /etc/jt-ipam/backend.env; set +a; .venv/bin/python -m app.cli.recog update'"
+
+
+async def _recog_check(session: AsyncSession) -> Check:
+    from app.services import recog
+    st = await recog.status(session)
+    if not st["installed"]:
+        return Check("recog", "Recog 指紋庫（選用）", "warn",
+                     "尚未安裝：探測照常運作，但少了由 banner／網頁標題／憑證認出設備與 OS 的比對"
+                     + (f"（上次錯誤：{st['error']}）" if st.get("error") else ""),
+                     _RECOG_FIX, title_key="doctor.c_recog", detail_key="doctor.d_recog_missing",
+                     fix_key="doctor.f_recog", params={"error": st.get("error") or "", "cmd": _RECOG_FIX})
+    last_ok = st.get("last_ok_at") or st.get("updated_at")
+    try:
+        age = (datetime.now(UTC) - datetime.fromisoformat(last_ok)).days if last_ok else None
+    except ValueError:
+        age = None
+    if age is not None and age > _RECOG_STALE_DAYS:
+        return Check("recog", "Recog 指紋庫（選用）", "warn",
+                     f"版本 {st['release']}；已經 {age} 天沒有成功檢查更新：{st.get('error') or '排程沒有執行'}",
+                     "確認這台主機連得到 github.com，並檢查 sudo systemctl status jt-ipam-recog-refresh.timer",
+                     title_key="doctor.c_recog", detail_key="doctor.d_recog_stale", fix_key="doctor.f_recog_stale",
+                     params={"release": st["release"], "days": age, "error": st.get("error") or ""})
+    return Check("recog", "Recog 指紋庫（選用）", "ok", f"版本 {st['release']}，{st['fingerprints']} 條指紋",
+                 title_key="doctor.c_recog", detail_key="doctor.d_recog_ok",
+                 params={"release": st["release"], "count": st["fingerprints"]})
+
+
+async def _guacd_check(session: AsyncSession) -> Check | None:
+    """guacd 是**必要元件**（RDP／VNC 的預設引擎，2026-09-27 起必裝）：一定要在跑、選了它的協定外掛都要在。
+
+    連不到時設定為 guacd 的連線會暫時退回內建引擎（services/console_engine.py），但那是備援不是正常狀態，
+    所以列成失敗；aardwolf 改為選用，缺了不列（GitHub issue #42：Python 3.14 上 aardwolf 會當掉）。
+    """
+    from app.services import guacd as guac
+    from app.services.system_config import get_rdp_engine, get_ssh_engine, get_vnc_engine
+    used = [p for p, e in (("rdp", await get_rdp_engine(session)), ("vnc", await get_vnc_engine(session)),
+                           ("ssh", await get_ssh_engine(session))) if e == "guacd"]
+    st = await guac.probe(use_cache=False)
+    names = "、".join(p.upper() for p in used)
+    fix = "sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade"
+    if not st["ok"]:
+        reason = st.get("error") or ""
+        if used:
+            return Check("guacd", "guacd 主控台引擎", "bad",
+                         f"guacd 是必要元件，但連不到它（{st['address']}）：{reason}；{names} 目前暫時改用內建引擎",
+                         fix, title_key="doctor.c_guacd", detail_key="doctor.d_guacd_down",
+                         fix_key="doctor.f_guacd",
+                         params={"protocols": names, "address": st["address"], "reason": reason})
+        return Check("guacd", "guacd 主控台引擎", "bad",
+                     f"guacd 是必要元件，但連不到它（{st['address']}）：{reason}", fix,
+                     title_key="doctor.c_guacd", detail_key="doctor.d_guacd_down_idle", fix_key="doctor.f_guacd",
+                     params={"address": st["address"], "reason": reason})
+    missing = [p for p in used if not st["protocols"].get(p)]
+    if missing:
+        m = "、".join(p.upper() for p in missing)
+        return Check("guacd", "guacd 主控台引擎", "bad",
+                     f"{m} 設定為 guacd，但 guacd 沒有這些協定的支援；目前連線暫時改用內建引擎", fix,
+                     title_key="doctor.c_guacd", detail_key="doctor.d_guacd_missing", fix_key="doctor.f_guacd",
+                     params={"protocols": m})
+    if not used:
+        return Check("guacd", "guacd 主控台引擎", "ok", f"服務正常，目前沒有協定使用它（{st['address']}）",
+                     title_key="doctor.c_guacd", detail_key="doctor.d_guacd_idle",
+                     params={"address": st["address"]})
+    return Check("guacd", "guacd 主控台引擎", "ok", f"{names} 使用 guacd，服務正常（{st['address']}）",
+                 title_key="doctor.c_guacd", detail_key="doctor.d_guacd_ok",
+                 params={"protocols": names, "address": st["address"]})
 
 
 async def _integration_errors(session: AsyncSession) -> Check:
@@ -342,6 +626,8 @@ async def _integration_errors(session: AsyncSession) -> Check:
     from sqlalchemy import select
 
     from app.models.adguard import AdGuardInstance
+    from app.models.checkpoint import CheckPointServer
+    from app.models.checkpoint_gaia import CheckPointGaiaTarget
     from app.models.firewall import OPNsenseFirewall
     from app.models.fortigate import FortiGateFirewall
     from app.models.librenms import LibreNMSInstance
@@ -357,6 +643,7 @@ async def _integration_errors(session: AsyncSession) -> Check:
     for model, label in (
         (OPNsenseFirewall, "OPNsense"), (PfSenseFirewall, "pfSense"),
         (FortiGateFirewall, "FortiGate"), (PaloAltoFirewall, "Palo Alto"),
+        (CheckPointServer, "Check Point"), (CheckPointGaiaTarget, "Check Point Gaia"),
         (MikroTikRouter, "MikroTik"), (LibreNMSInstance, "LibreNMS"),
         (ZabbixInstance, "Zabbix"), (WazuhInstance, "Wazuh"),
         (AdGuardInstance, "AdGuard"), (ProxmoxInstance, "Proxmox"),
@@ -380,7 +667,7 @@ async def _integration_errors(session: AsyncSession) -> Check:
 # ─────────────────── 資料健檢 ───────────────────
 #: 「清單頁讀得出來嗎」要檢查的表。每一項是（畫面上的名稱, ORM, 讀取用 schema, 顯示欄位）。
 #:
-#: 為什麼需要這個：讀取用的 schema 繼承了**寫入用**的約束（型別白名單、長度上限、
+#: 為什麼需要這個：讀取用的 schema 繼承了**寫入用**的約束（型別允許清單、長度上限、
 #: 數值範圍），但整合同步進來的資料不走表單 —— LibreNMS／Proxmox 給的 vendor／model
 #: 可以很長，type 也可能不在我們的清單裡。一列不合規就會讓**整頁 500**，而儀表板的
 #: count(*) 不讀欄位所以照樣正常（2026-09-05 客戶回報的就是這個組合）。

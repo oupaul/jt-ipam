@@ -4,7 +4,7 @@
  *
  * phpIPAM 缺點：dashboard 只是堆數字。
  * jt-ipam：
- *   - 全系統使用率 donut(CSS conic-gradient，無圖表 lib 依賴)
+ *   - IP 使用率：最多 4 個子網路各自的小圓環（自選，或自動挑使用率最高的）
  *   - 上線 / 離線 / 未知 三色指示燈
  *   - Top-N 最滿 subnet(capacity planning)
  *   - section heat：每個 section 的使用熱度條
@@ -15,9 +15,13 @@ import { useI18n } from "vue-i18n";
 import { usesLevels } from "@/utils/rackSlots";
 import { apiClient } from "@/api/client";
 import DashboardUptime from "@/components/DashboardUptime.vue";
+import DashboardSubnetUsage from "@/components/DashboardSubnetUsage.vue";
 import DashboardAIAudit from "@/components/DashboardAIAudit.vue";
+import DashboardRacksCard from "@/components/DashboardRacksCard.vue";
+import DashboardTrendSettings from "@/components/DashboardTrendSettings.vue";
 import { useAuthStore } from "@/stores/auth";
 import { useRouter } from "vue-router";
+import { kpiTarget } from "@/utils/dashboardKpiTarget";
 import {
   NCard,
   NH2,
@@ -27,6 +31,7 @@ import {
   NAlert,
   NSpin,
   NTag,
+  NButton,
   useMessage,
 } from "naive-ui";
 import { getOverview, type DashboardOverview } from "@/api/dashboard";
@@ -35,7 +40,7 @@ import { usePinned } from "@/composables/usePinned";
 import CardTitle from "@/components/CardTitle.vue";
 import {
   DashboardIcon, SectionsIcon, SubnetsIcon, AddressesIcon, AuditIcon, LocationsIcon, RacksIcon, DevicesIcon, VirtualizationIcon,
-  TopologyIcon, UsageIcon, CustomersIcon, PinIcon,
+  TopologyIcon, CustomersIcon, PinIcon, SettingsIcon,
 } from "@/icons";
 // 即時狀態卡片：用「訊號/天線」語意，與側邊選單的掃描代理同一顆
 import { Antenna as LiveIcon } from "@iconoir/vue";
@@ -71,8 +76,6 @@ const usePctColor = (pct: number): string => {
   return "#22c55e";
 };
 
-const donutColor = computed(() => usePctColor(data.value?.ipv4_used_pct ?? 0));
-
 // 即時狀態來源文字：依實際 enabled 的來源產生（後端回 status_sources）
 const indicatorSourceText = computed(() => {
   const labels: Record<string, string> = {
@@ -106,14 +109,16 @@ const kpiTiles = computed(() => {
       sub: t("dashboard.kpi_ipv6_sub"),
     });
   }
-  return tiles;
+  // 點卡片到對應清單（使用者 2026-10-08）；稽核頁限管理員，非管理員不可點
+  const isAdmin = !!useAuthStore().me?.is_admin;
+  return tiles.map((x) => ({ ...x, to: kpiTarget(x.key, isAdmin) }));
 });
 
 // ── 統計圖表（純 SVG/CSS，無圖表 lib）──
 const DEVICE_TYPE_COLOR: Record<string, string> = {
   server: "#8b5cf6", switch: "#0ea5e9", router: "#6366f1", firewall: "#ef4444",
   ap: "#14b8a6", storage: "#f59e0b", ipmi: "#ec4899",
-  patch_panel: "#0d9488", pdu: "#d97706", ups: "#ca8a04", other: "#94a3b8",
+  patch_panel: "#0d9488", pdu: "#d97706", ups: "#ca8a04", workstation: "#0ea5e9", other: "#94a3b8",
 };
 const deviceTypes = computed(() => data.value?.device_types ?? []);
 const deviceTypeMax = computed(() => Math.max(1, ...deviceTypes.value.map((d) => d.count)));
@@ -126,6 +131,17 @@ const custResMax = computed(() => Math.max(1, ...custResources.value.map((c) => 
 
 // 趨勢折線：把 14 天的 audit / ip_changes 轉成 SVG polyline points
 const trend = computed(() => data.value?.activity_trend ?? []);
+const trendSettingsShow = ref(false);
+/** 有套用排除時在圖例旁講明，免得以為數字是全部 */
+const trendFilterText = computed(() => {
+  const f = data.value?.activity_trend_filter;
+  if (!f?.active) return "";
+  const parts: string[] = [];
+  if (f.excluded_subnets) parts.push(t("dashboard.trend_tag_subnets", { n: f.excluded_subnets }));
+  if (f.exclude_dhcp) parts.push(t("dashboard.trend_tag_dhcp"));
+  if (f.event_groups) parts.push(t("dashboard.trend_tag_groups", { n: f.event_groups.length }));
+  return t("dashboard.trend_tag", { what: parts.join(t("dashboard.trend_tag_sep")) });
+});
 const trendMax = computed(() => Math.max(1, ...trend.value.flatMap((p) => [p.audit, p.ip_changes])));
 const TREND_W = 320, TREND_H = 90, TREND_PAD = 4;
 function trendPoints(key: "audit" | "ip_changes"): string {
@@ -181,11 +197,10 @@ onMounted(async () => {
 // 兩個平台都在用時**不跳頁**：這個數字是兩邊的合計，送去任何一頁都只顯示一半，
 // 看起來像資料少了。只有一邊時才有唯一正確的目的地。
 const virtRoute = computed<string | null>(() => {
-  const pve = !!intg.value.proxmox;
-  const vmw = !!intg.value.esxi;
-  if (pve && vmw) return null;
-  if (vmw) return "virt_vmware";
-  return "virt";
+  const on = [["virt", !!intg.value.proxmox], ["virt_vmware", !!intg.value.esxi],
+              ["virt_hyperv", !!intg.value.hyperv], ["virt_openstack", !!intg.value.openstack]].filter(([, v]) => v).map(([k]) => k as string);
+  if (on.length > 1) return null;
+  return on[0] ?? "virt";
 });
 
 const hierLayers = computed(() => [
@@ -259,7 +274,13 @@ onMounted(() => { void load(); void loadPins(); });
           :key="k.key"
           size="small"
           class="kpi-card"
+          :class="{ 'kpi-card--link': !!k.to }"
           :style="{ '--accent': k.color }"
+          :role="k.to ? 'link' : undefined"
+          :tabindex="k.to ? 0 : undefined"
+          :data-testid="`kpi-${k.key}`"
+          @click="k.to && router.push(k.to).catch(() => {})"
+          @keydown.enter="k.to && router.push(k.to).catch(() => {})"
           :content-style="{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '12px' }"
         >
           <div class="kpi-icon">
@@ -300,38 +321,9 @@ onMounted(() => { void load(); void loadPins(); });
       <DashboardUptime />
 
       <div class="row-2col">
-        <!-- Donut 使用率 — SVG stroke-dasharray，currentColor 跟主題色 -->
-        <n-card class="row-card">
-          <template #header>
-            <CardTitle :icon="UsageIcon" :text="t('dashboard.card_ip_usage')" />
-          </template>
-          <n-space vertical align="center" justify="center" style="height: 100%">
-            <svg class="donut-svg" viewBox="0 0 100 100" width="180" height="180">
-              <!-- track -->
-              <circle cx="50" cy="50" r="42" fill="none"
-                      stroke="currentColor" stroke-width="9" stroke-opacity="0.12" />
-              <!-- value -->
-              <circle cx="50" cy="50" r="42" fill="none"
-                      :stroke="donutColor"
-                      stroke-width="9"
-                      pathLength="100"
-                      :stroke-dasharray="`${data.ipv4_used_pct} 100`"
-                      stroke-linecap="round"
-                      transform="rotate(-90 50 50)"
-                      style="transition: stroke-dasharray 0.5s ease, stroke 0.3s ease;" />
-              <text x="50" y="49" text-anchor="middle" dominant-baseline="middle"
-                    font-size="18" font-weight="700" fill="currentColor"
-                    font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
-                {{ data.ipv4_used_pct }}%
-              </text>
-              <text x="50" y="64" text-anchor="middle" dominant-baseline="middle"
-                    font-size="7" fill="currentColor" opacity="0.6"
-                    font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', monospace">
-                {{ data.ipv4_used.toLocaleString() }} / {{ data.ipv4_capacity.toLocaleString() }}
-              </text>
-            </svg>
-          </n-space>
-        </n-card>
+        <!-- IP 使用率：最多 4 個子網路各自的小圓環（使用者自選或自動挑最高的 4 個；客戶 2026-10-23）。
+             以前是全部加總的一個圓環，只要有一個 /8 就永遠接近 0%，網段一多就沒有用途 -->
+        <DashboardSubnetUsage class="row-card" />
 
         <!-- 狀態指示燈 -->
         <n-card class="row-card">
@@ -437,9 +429,19 @@ onMounted(() => { void load(); void loadPins(); });
           <template #header>
             <CardTitle :icon="AuditIcon" :text="t('dashboard.chart_activity_trend')" />
           </template>
-          <div class="chart-legend">
-            <span><i style="background:#f59e0b"></i>{{ t("dashboard.chart_audit_events") }} · {{ trendTotals.audit }}</span>
-            <span><i style="background:#0ea5e9"></i>{{ t("nav.ip_changes") }} · {{ trendTotals.ip }}</span>
+          <!-- 控制列放在內文最上方（卡片標題列只放標題）：設定可排除子網路／DHCP 範圍／異動類型 -->
+          <div class="trend-head">
+            <div class="chart-legend" style="margin-bottom: 0">
+              <span><i style="background:#f59e0b"></i>{{ t("dashboard.chart_audit_events") }} · {{ trendTotals.audit }}</span>
+              <span><i style="background:#0ea5e9"></i>{{ t("nav.ip_changes") }} · {{ trendTotals.ip }}</span>
+              <n-tag v-if="trendFilterText" size="tiny" type="info" :bordered="true" data-testid="trend-filter-tag">
+                {{ trendFilterText }}
+              </n-tag>
+            </div>
+            <n-button size="small" data-testid="trend-settings-open" @click="trendSettingsShow = true">
+              <template #icon><n-icon><SettingsIcon /></n-icon></template>
+              {{ t("dashboard.trend_settings") }}
+            </n-button>
           </div>
           <div class="trend-wrap" @mousemove="onTrendMove" @mouseleave="onTrendLeave">
             <svg class="trend-svg" :viewBox="`0 0 ${TREND_W} ${TREND_H}`" preserveAspectRatio="none">
@@ -461,6 +463,7 @@ onMounted(() => { void load(); void loadPins(); });
           </div>
           <div class="trend-axis"><span>{{ trend[0]?.day?.slice(5) }}</span><span>{{ trend[trend.length - 1]?.day?.slice(5) }}</span></div>
         </n-card>
+        <DashboardTrendSettings v-model:show="trendSettingsShow" @saved="load" />
       </div>
 
       <!-- Pinned subnets(使用者釘選) -->
@@ -606,6 +609,9 @@ onMounted(() => { void load(); void loadPins(); });
            LLM 沒啟用就整塊不顯示（跟 AI 對話小工具同一個判斷）；
            無全域讀取權限者拿到 403 → 元件自行不顯示。 -->
       <DashboardAIAudit v-if="aiEnabled" />
+
+      <!-- 機櫃：放最下面（使用者要求），可設定看哪個機房或挑哪幾個機櫃 -->
+      <DashboardRacksCard :locations="allLocations" :racks="allRacks" />
     </n-space>
   </n-spin>
 </template>
@@ -642,6 +648,7 @@ onMounted(() => { void load(); void loadPins(); });
 .hbar-track.stack > div { height: 100%; }
 .hbar-fill { height: 100%; border-radius: 6px; transition: width .3s; }
 .hbar-val { flex: 0 0 auto; min-width: 40px; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; opacity: 0.75; }
+.trend-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .chart-legend { display: flex; gap: 14px; font-size: 12px; opacity: 0.7; margin-bottom: 8px; flex-wrap: wrap; }
 .chart-legend span { display: inline-flex; align-items: center; }
 .chart-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; flex: none; }
@@ -740,10 +747,13 @@ onMounted(() => { void load(); void loadPins(); });
 .kpi-card {
   transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
-.kpi-card:hover {
+/* 只有點得下去的卡片才有浮起與手形游標（不能點的看起來也要像不能點） */
+.kpi-card--link { cursor: pointer; }
+.kpi-card--link:hover {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
+.kpi-card--link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .kpi-icon {
   width: 44px;
   height: 44px;
@@ -776,44 +786,17 @@ onMounted(() => { void load(); void loadPins(); });
 }
 .row-2col {
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) minmax(360px, 2fr);
+  grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr);
   gap: 16px;
   align-items: stretch;
 }
 .row-2col > .row-card {
   height: 100%;
 }
-@media (max-width: 800px) {
+@media (max-width: 960px) {
   .row-2col {
     grid-template-columns: 1fr;
   }
-}
-.donut {
-  width: 200px;
-  height: 200px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.donut-hole {
-  width: 130px;
-  height: 130px;
-  background: var(--n-card-color, white);
-  border-radius: 50%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-}
-.donut-pct {
-  font-size: 28px;
-  font-weight: 700;
-}
-.donut-sub {
-  font-size: 12px;
-  opacity: 0.7;
-  margin-top: 4px;
 }
 .indicator-row {
   display: flex;

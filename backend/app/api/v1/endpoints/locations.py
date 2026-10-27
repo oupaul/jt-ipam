@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 import uuid
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -22,6 +24,7 @@ from app.api.v1.dependencies import (
 from app.core.audit import append_audit
 from app.core.config import get_settings
 from app.core.db import get_session
+from app.core.sqlin import in_values
 from app.core.ui_error import detail_of
 from app.models.location import Location, Rack
 from app.schemas.base import Paginated, StrictModel
@@ -57,6 +60,28 @@ def _detect_image_ext(data: bytes) -> str | None:
 
 def _floorplan_dir() -> Path:
     return Path(get_settings().upload_dir) / "floorplans"
+
+def _store_floorplan(base: Path, stem: str, ext: str, data: bytes) -> str:
+    """寫入平面圖（同步，放在執行緒裡跑），回傳相對路徑。
+
+    `stem` 是 UUID 型別的路徑參數（只會是十六進位與 -）；另外檢查解析後的實際路徑仍在平面圖目錄底下
+    （第二道防線，也是 CodeQL 認得的寫法）。
+    """
+    base.mkdir(parents=True, exist_ok=True)
+    root = os.path.realpath(base)
+    dest = os.path.realpath(os.path.join(root, f"{stem}.{ext}"))
+    if not dest.startswith(root + os.sep):
+        raise HTTPException(400, detail="invalid location id")
+    # 清掉同 id 但不同副檔名的舊圖（避免換格式後殘留）
+    for old in Path(root).glob(f"{stem}.*"):
+        full = os.path.realpath(old)
+        if full != dest and full.startswith(root + os.sep):
+            os.unlink(full)
+    with open(dest, "wb") as fh:
+        fh.write(data)
+    os.chmod(dest, 0o640)
+    return f"floorplans/{stem}.{ext}"
+
 
 
 # ─────────────────── Geocoding proxy ───────────────────
@@ -199,7 +224,7 @@ async def list_locations(
     from app.services.permission import visible_ids
     vis = await visible_ids(session, user=_user, object_type="location")
     if vis is not None:
-        stmt = stmt.where(Location.id.in_(vis)); cstmt = cstmt.where(Location.id.in_(vis))
+        stmt = stmt.where(in_values(Location.id, vis)); cstmt = cstmt.where(in_values(Location.id, vis))
     rows = list(
         (await session.execute(
             stmt.order_by(Location.name).offset((page - 1) * page_size).limit(page_size)
@@ -214,11 +239,11 @@ async def list_locations(
         from app.models.device import Device
         from app.models.location import Rack
         rack_counts = dict((await session.execute(  # type: ignore[arg-type]
-            select(Rack.location_id, func.count()).where(Rack.location_id.in_(loc_ids))
+            select(Rack.location_id, func.count()).where(in_values(Rack.location_id, loc_ids))
             .group_by(Rack.location_id)
         )).all())
         dev_counts = dict((await session.execute(  # type: ignore[arg-type]
-            select(Device.location_id, func.count()).where(Device.location_id.in_(loc_ids))
+            select(Device.location_id, func.count()).where(in_values(Device.location_id, loc_ids))
             .group_by(Device.location_id)
         )).all())
     # 所屬單位名稱
@@ -227,7 +252,7 @@ async def list_locations(
     if cust_ids:
         from app.models.customer import Customer
         cust_names = dict((await session.execute(  # type: ignore[arg-type]
-            select(Customer.id, Customer.name).where(Customer.id.in_(cust_ids))
+            select(Customer.id, Customer.name).where(in_values(Customer.id, cust_ids))
         )).all())
     items = []
     for r in rows:
@@ -360,16 +385,7 @@ async def upload_floorplan(
     if ext is None:
         raise HTTPException(415, detail="unsupported image type (png / jpg / gif / webp only)")
 
-    base = _floorplan_dir()
-    base.mkdir(parents=True, exist_ok=True)
-    rel = f"floorplans/{location_id}.{ext}"
-    dest = base / f"{location_id}.{ext}"
-    # 清掉同 id 但不同副檔名的舊圖（避免換格式後殘留）
-    for old in base.glob(f"{location_id}.*"):
-        if old != dest:
-            old.unlink(missing_ok=True)
-    dest.write_bytes(data)
-    dest.chmod(0o640)
+    rel = await asyncio.to_thread(_store_floorplan, _floorplan_dir(), str(location_id), ext, data)
 
     obj.floor_plan_path = rel
     await append_audit(
@@ -540,7 +556,7 @@ async def list_racks(
     from app.services.permission import visible_ids
     vis = await visible_ids(session, user=_user, object_type="rack")
     if vis is not None:
-        stmt = stmt.where(Rack.id.in_(vis)); cstmt = cstmt.where(Rack.id.in_(vis))
+        stmt = stmt.where(in_values(Rack.id, vis)); cstmt = cstmt.where(in_values(Rack.id, vis))
     # 排序：編號 seq 小的在前（null 排最後），再依名稱
     stmt = stmt.order_by(
         Rack.seq.is_(None), Rack.seq, Rack.name,
@@ -553,7 +569,7 @@ async def list_racks(
         from app.models.device import Device
         for rid, cnt in (await session.execute(
             select(Device.rack_id, func.count())
-            .where(Device.rack_id.in_([r.id for r in rows]))
+            .where(in_values(Device.rack_id, [r.id for r in rows]))
             .group_by(Device.rack_id)
         )).all():
             dev_counts[rid] = int(cnt)
@@ -562,7 +578,7 @@ async def list_racks(
     loc_ids = [r.location_id for r in rows if r.location_id]
     if loc_ids:
         for lid, lname in (await session.execute(
-            select(Location.id, Location.name).where(Location.id.in_(loc_ids))
+            select(Location.id, Location.name).where(in_values(Location.id, loc_ids))
         )).all():
             loc_names[lid] = lname
     items = []

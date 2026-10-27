@@ -9,6 +9,7 @@
 import { computed, h, onMounted, ref } from "vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
+import { trackTask } from "@/composables/useTaskTracker";
 import ScopeOverlapWarning from "@/components/ScopeOverlapWarning.vue";
 import {
   NCard, NDataTable, NSpace, NButton, NTag, NIcon, NTooltip, NAlert, NModal, NForm,
@@ -34,7 +35,8 @@ const { t } = useI18n();
 const msg = useMessage();
 
 const COLS = ["name", "api_url", "enabled", "vsys", "sync_flags", "last_sync_at", "last_error", "actions"];
-const { visibleKeys: vis, setVisible: setVis, reset: resetVis } = useColumnPrefs("paloalto", COLS, COLS);
+const { visibleKeys: vis, setVisible: setVis, reset: resetVis, order, setOrder, orderColumns } =
+  useColumnPrefs("paloalto", COLS, COLS);
 const picker = computed(() => [
   { key: "name", label: t("cols.name") },
   { key: "api_url", label: "API URL" },
@@ -60,7 +62,7 @@ function blankForm() {
     name: "", api_url: "", api_key: "", vsysText: "", api_version: "",
     enabled: true, verify_tls: true,
     sync_dhcp: false, sync_arp: true,
-    sync_policies: false, sync_nat: false, sync_addresses: false,
+    sync_policies: false, sync_nat: false, sync_addresses: false, sync_vpn: true,
     sync_interval_seconds: 300, description: "",
     scope_subnet_ids: [] as string[],
   };
@@ -99,6 +101,7 @@ function openEdit(r: PaloAltoFirewall) {
     sync_dhcp: r.sync_dhcp, sync_arp: r.sync_arp,
     sync_policies: r.sync_policies, sync_nat: r.sync_nat,
     sync_addresses: r.sync_addresses,
+    sync_vpn: r.sync_vpn ?? true,
     sync_interval_seconds: r.sync_interval_seconds,
     description: r.description ?? "",
     scope_subnet_ids: r.scope_subnet_ids ?? [],
@@ -117,8 +120,9 @@ async function submit() {
     sync_dhcp: form.value.sync_dhcp, sync_arp: form.value.sync_arp,
     sync_policies: form.value.sync_policies, sync_nat: form.value.sync_nat,
     sync_addresses: form.value.sync_addresses,
+    sync_vpn: form.value.sync_vpn,
     sync_interval_seconds: form.value.sync_interval_seconds,
-    description: form.value.description || undefined,
+    description: form.value.description ?? "",
     scope_subnet_ids: form.value.scope_subnet_ids,
   };
   if (ver) payload.api_version = ver;
@@ -147,10 +151,9 @@ async function test(r: PaloAltoFirewall) {
 }
 
 async function sync(id: string) {
-  const name = rows.value.find((r) => r.id === id)?.name ?? id.slice(0, 8);
   try {
-    await syncPaloAlto(id);
-    msg.success(t("tasks.queued_toast", { kind: "Palo Alto sync", target: name }));
+    const r = await syncPaloAlto(id);
+    trackTask(r.task_id, { onDone: () => void refresh() });
   } catch (e) { msg.error(apiErrMsg(e)); }
 }
 
@@ -170,7 +173,7 @@ function iconAction(icon: unknown, label: string, onClick: () => void, type?: st
 
 const SYNC_TAGS: [keyof PaloAltoFirewall, string][] = [
   ["sync_dhcp", "DHCP"], ["sync_arp", "ARP"],
-  ["sync_policies", "policy"], ["sync_nat", "NAT"], ["sync_addresses", "addr"],
+  ["sync_policies", "policy"], ["sync_nat", "NAT"], ["sync_addresses", "addr"], ["sync_vpn", "VPN"],
 ];
 
 const allCols = computed<DataTableColumns<PaloAltoFirewall>>(() => autoSort([
@@ -212,7 +215,7 @@ const allCols = computed<DataTableColumns<PaloAltoFirewall>>(() => autoSort([
 ]));
 const cols = computed<DataTableColumns<PaloAltoFirewall>>(() =>
    
-  allCols.value.filter((c: any) => vis.value.includes(c.key)),
+  orderColumns(allCols.value.filter((c: any) => vis.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); void loadSubnetOptions(); });
@@ -241,7 +244,8 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         <template #icon><n-icon><PlusIcon /></n-icon></template>
         {{ t("common.create") }}
       </n-button>
-      <ColumnPicker :all="picker" :visible="vis" @update:visible="setVis" @reset="resetVis" />
+      <ColumnPicker :all="picker" :visible="vis" @update:visible="setVis" @reset="resetVis"
+                    :order="order" @update:order="setOrder" />
     </n-space>
 
     <n-data-table :columns="cols" :data="rows" :loading="loading" :bordered="false" :scroll-x="1200" />
@@ -282,6 +286,7 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
             <n-checkbox v-model:checked="form.sync_policies">{{ t("paloalto.policies") }}</n-checkbox>
             <n-checkbox v-model:checked="form.sync_nat">NAT</n-checkbox>
             <n-checkbox v-model:checked="form.sync_addresses">{{ t("paloalto.addresses") }}</n-checkbox>
+            <n-checkbox v-model:checked="form.sync_vpn">{{ t("paloalto.vpn_s2s") }}</n-checkbox>
           </n-space>
         </n-form-item>
         <n-form-item :label="t('adguard_admin.sync_interval')">

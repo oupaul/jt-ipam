@@ -2,9 +2,9 @@
 
 > English: [INSTALL.md](INSTALL.md) · 繁體中文版：[INSTALL_zh-TW.md](INSTALL_zh-TW.md)
 
-対象は **Proxmox LXC、ベアメタル、仮想マシン**（Ubuntu 22.04 以降 / Debian 12 以降）です。
+対象は **Proxmox LXC、ベアメタル、仮想マシン**で、OS は Debian 12/13 または Ubuntu 22.04/24.04/26.04（x86_64、[対応ディストリビューション](#対応ディストリビューション)を参照）です。
 **主たる推奨の導入方法**は、**systemd + apt** を直接使う方式です（Docker は使いません）。
-Docker Compose の経路もありますが、**任意かつ副次的で、優先される方式ではありません** —
+Docker Compose の経路もありますが、**任意かつ副次的で、優先される方式ではありません**。
 [§2.8](#28-任意docker-composeこれは優先される方式ではありません) を参照してください。
 
 > セキュリティは初日からの要件です。どの環境でも HTTPS を強制します。証明書は nginx の
@@ -19,14 +19,38 @@ Docker Compose の経路もありますが、**任意かつ副次的で、優先
 
 | 項目 | 最低 | 推奨 | 備考 |
 |---|---|---|---|
-| OS | Ubuntu 22.04 / Debian 12 | **Ubuntu 24.04 LTS** | 24.04 は Python 3.12 + PG 16 + Node 18 を同梱しており手間が省けます |
-| CPU | 2 vCPU | 4 vCPU | argon2id と pgvector の埋め込みは CPU を使います |
-| メモリ | 4 GB | 8 GB | LLM サーバーを同居させるならさらに 8 GB |
-| ディスク | 20 GB | 50 GB | 監査ログが増えていきます |
+| OS | Debian 12/13、Ubuntu 22.04/24.04/26.04（x86_64） | **Ubuntu 24.04 LTS** | 対応はこれらのみ（下記参照）。24.04 は Python 3.12 + PG 16 を同梱しており手間が省けます |
+| CPU | 2 vCPU | 4 vCPU | アップグレード時にフロントエンドをビルドします（約 1 分）。RDP コンソール（guacd）とローカルのスキャンエージェント（nmap）が CPU を使います。埋め込みは LLM サーバー側で計算され、このマシンではありません |
+| メモリ | 4 GB | 8 GB | ワーカー 4 つで通常約 1.8 GB を使用し、アップグレード時のフロントエンドのビルドは最大約 1.6 GB。4 GB または 2 コアのマシンではワーカーは 2 つになり、メモリが足りなければビルド中はバックエンドを一時停止します（2 GB のスワップがあれば停止しません）。RDP コンソールは 1 セッションあたり数百 MB。LLM サーバーを同居させるならさらに 8 GB 以上 |
+| ディスク | 20 GB | 50 GB | インストール自体は約 2 GB（Python パッケージ、node_modules、キャッシュ）と OS。データベース、監査ログ、IP 変更履歴、バックアップはネットワークの規模に応じて増えます。journald のログには上限があります |
 | Python | 3.11 | 3.12 | 24.04 の既定は 3.12 |
-| PostgreSQL | 16 + pgvector | — | 22.04 では PGDG リポジトリが必要です（スクリプトが自動で追加します） |
-| Redis | 7 | — | 24.04 の既定は 7.0.15 |
-| Node | 20 LTS | 22 LTS | 24.04 の既定は 18.19。vite 6 は動作しますが警告が出ます |
+| PostgreSQL | 16 + pgvector | なし | 22.04 では PGDG リポジトリが必要です（スクリプトが自動で追加します） |
+| Redis | 7 | なし | 24.04 の既定は 7.0.15 |
+| Node | 22 LTS | なし | フロントエンドのビルドにだけ使います。`jt-ipam.sh` がインストール時に NodeSource 22 を入れ（22 を同梱しているのは Ubuntu 26.04 だけ）、アップグレード時に古い Node を 22 に上げます |
+| guacd | jt-ipam がこの OS 向けにビルドしたもの | なし | **必須**：RDP/VNC コンソールの接続エンジン。`jt-ipam.sh` が入れます（下の guacd の節）。旧エンジンの aardwolf は任意 |
+| Recog | 最新リリース | なし | **任意**：IP 探索が機器や OS バージョンを識別するためのフィンガープリント DB。`jt-ipam.sh` がダウンロードし、毎週新版を確認（下の Recog の節） |
+| CJK フォント | `fonts-noto-cjk` | なし | **PDF レポートに必要**：バックエンドが PDF に埋め込む中国語・日本語フォント（ダウンロード約 60 MB）。`jt-ipam.sh` がインストール時とアップグレード時に入れます。アップグレード時に apt のミラーへ接続できない場合は警告だけで、PDF のエクスポートはフォント不足を表示します（DOCX/ODT は使えます）。あとから `sudo apt install fonts-noto-cjk` で追加できます |
+| SNMP クライアントツール | `snmp`（net-snmp） | なし | **任意**：ローカルのスキャンエージェントによる SNMP 収集（収集者「サーバー」）で使う `snmpget`/`snmpbulkwalk`。`jt-ipam.sh` がインストール時とアップグレード時に入れます（アップグレードで入れられない場合は警告のみ）。リモートのスキャンエージェントはそのインストーラーが入れます（apt は `snmp`、dnf は `net-snmp-utils`、apk は `net-snmp-tools`）。入っていないエージェントは SNMP 機能がないだけです |
+
+### 対応ディストリビューション
+
+| ディストリビューション | バージョン | アーキテクチャ |
+|---|---|---|
+| Debian | 12（bookworm）、13（trixie） | x86_64（amd64） |
+| Ubuntu | 22.04 LTS、24.04 LTS、26.04 LTS | x86_64（amd64） |
+
+これらに限られる理由：RDP と VNC コンソールのエンジンである guacd は**必須コンポーネント**ですが、使える guacd を
+提供しているディストリビューションはありません（Debian は削除、Ubuntu にはリモートコード実行の脆弱性がある 1.3.0 のみ）。
+jt-ipam は上記の各バージョン向けにビルドしており、それ以外では `install` が止まり、`upgrade` は警告します。
+インストーラは `/etc/os-release` の `ID` ＋ `VERSION_ID` で対応するビルドを選ぶため：
+
+- 上記バージョンの **Proxmox LXC テンプレート、仮想マシン、ベアメタル**で動きます。Proxmox VE ホスト自体（Debian）も可。
+- **派生ディストリビューション**（Linux Mint、Pop!_OS、Zorin など）、**その他のバージョン**（Debian 11、Ubuntu 20.04、
+  ビルドのない非 LTS など）、**ARM**（Raspberry Pi、Ampere）は対象外です。
+- **OS の新バージョン**はリリースごとに確認し（`scripts/guacd/check-new-os.sh`）、ビルドと検証が済んでから追加します。
+  この表に載るまで、jt-ipam ホストの OS をメジャーアップグレードしないでください。
+- 上級者向け：他の Debian/Ubuntu バージョン用は `scripts/guacd/build.sh`（Docker が必要）でビルドし、
+  `jt-ipam.sh install --guacd-tarball <ファイル>` で入れられます（当方では未検証）。
 
 **仮想環境での注意**：Proxmox の VM / LXC では、起動や再起動の直後 1〜2 分ほど load average が
 跳ね上がることがあります（ハイパーバイザ上の他の VM が CPU を取り合っているためで、`mpstat` の
@@ -66,11 +90,11 @@ cd /opt/jt-ipam
 
 # 3 つの TLS モードから 1 つを選びます：
 #
-#   nginx         — nginx が HTTPS を終端し、バックエンドはループバック。証明書が無ければ自己署名で自動起動
-#   self-signed   — uvicorn が自前の自己署名証明書で直接提供（nginx 不要。最も早く動きます）
-#   direct        — uvicorn が直接提供し、証明書は自分で用意（無ければ自己署名にフォールバック）
+#   nginx         ：nginx が HTTPS を終端し、バックエンドはループバック。証明書が無ければ自己署名で自動起動
+#   self-signed   ：uvicorn が自前の自己署名証明書で直接提供（nginx 不要。最も早く動きます）
+#   direct        ：uvicorn が直接提供し、証明書は自分で用意（無ければ自己署名にフォールバック）
 
-# (A) nginx ＋一時的な自己署名（後から本物の証明書を cp します）— 本番に推奨
+# (A) nginx ＋一時的な自己署名（後から本物の証明書を cp します）、本番に推奨
 sudo ./scripts/jt-ipam.sh install --tls-mode nginx --public-fqdn ipam.example.com
 
 # (B) uvicorn 直接の自己署名（社内や検証で最も手早い）
@@ -88,7 +112,7 @@ sudo ./scripts/jt-ipam.sh install --tls-mode self-signed --public-fqdn ipam.loca
 4. `SECRET_KEY` / `ENCRYPTION_KEY` / `AUDIT_CHAIN_GENESIS` を生成して `/etc/jt-ipam/backend.env`（0640）へ書き込み
 5. `/etc/jt-ipam/tls/` に自己署名証明書を生成（ECDSA P-384、5 年。SAN には `localhost / FQDN / 短いホスト名 / 127.0.0.1 / ::1 / ホストの IP` を自動的に含めます）
 6. pnpm install とフロントエンドの vite ビルド
-7. `jt-ipam-backend.service` と `jt-ipam-sync.timer`（5 分ごと）、`jt-ipam-backup.timer`（毎日 03:30）の導入
+7. `jt-ipam-backend.service` と `jt-ipam-sync.timer`（5 分ごと）、`jt-ipam-ai-audit.timer`（定期 AI 点検の時刻になったかを 5 分ごとに確認。有効にするまで何もしません）、`jt-ipam-backup.timer`（毎日 03:30）の導入
 8. nginx モードのときのみ：nginx のサイト設定を導入して再読み込み
 
 ### 2.3 最初の管理者を作る
@@ -249,7 +273,7 @@ nginx が TLS を終端し、バックエンドはループバックに留まり
 - **TLS**：TLS 1.2 / 1.3 のみ、現代的な暗号スイート、OCSP stapling、セッションチケットは無効。
 - **HSTS**：`max-age` 2 年 + `includeSubDomains` + `preload`。
 - **CSP**：`default-src 'self'`、`script-src 'self'`、`connect-src 'self'`、`frame-src 'self'`、
-  `frame-ancestors 'none'`、`base-uri 'self'`、`form-action 'self'` — 第三者のスクリプトやフレームの
+  `frame-ancestors 'none'`、`base-uri 'self'`、`form-action 'self'`。第三者のスクリプトやフレームの
   オリジンは一切ありません。
 - **ヘッダ**：`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`、
   `Permissions-Policy`（位置情報 / マイク / カメラ / 決済 / USB を無効）、`Cross-Origin-Opener-Policy`、
@@ -268,7 +292,7 @@ nginx が TLS を終端し、バックエンドはループバックに留まり
 > 公開サイトに CSP / HSTS / Permissions-Policy が*まったく無い*状態になってしまいます。これは
 > 任意ではなく、**必須**の作業です。
 >
-> その境界の機器に、同梱の堅牢化した外部プロキシ用設定を導入してください —
+> その境界の機器に、同梱の堅牢化した外部プロキシ用設定を導入してください：
 > [`deploy/nginx/jt-ipam-external-proxy.conf`](https://github.com/jasoncheng7115/jt-ipam/blob/main/deploy/nginx/jt-ipam-external-proxy.conf)
 > と [`jt-ipam-external-proxy-snippet.conf`](https://github.com/jasoncheng7115/jt-ipam/blob/main/deploy/nginx/jt-ipam-external-proxy-snippet.conf)
 > （HSTS preload、絞り込んだ CSP、X-Frame-Options DENY、nosniff、Referrer-Policy、Permissions-Policy、
@@ -282,8 +306,21 @@ nginx が TLS を終端し、バックエンドはループバックに留まり
 curl -skI https://ipam.example.com/ \
   | grep -iE 'strict-transport|content-security|x-frame|x-content|referrer|permissions|cross-origin|^server'
 # 次が出ること：HSTS、Content-Security-Policy（frame-src 'self'）、X-Frame-Options、X-Content-Type-Options、
-# Referrer-Policy、Permissions-Policy、COOP、CORP —— それぞれちょうど 1 回ずつ、そして Server: nginx（バージョン表記なし）。
+# Referrer-Policy、Permissions-Policy、COOP、CORP：それぞれちょうど 1 回ずつ、そして Server: nginx（バージョン表記なし）。
 ```
+
+**コンソールと SFTP はエッジプロキシを通ります。** SFTP を含むすべてのコンソールは、
+`/api/v1/addresses/<id>/(ssh|sftp|rdp|vnc|novnc|bmc|rustdesk)/ws` の長時間の WebSocket 1 本です。SFTP はこの WebSocket で
+ファイルを 256 KB ずつ送るため、nginx の `client_max_body_size` のような HTTP 本文のサイズ上限はファイルサイズを**制限しません**。
+大きな転送を妨げるのは、経路上の次のような層です：
+
+- このパスで WebSocket のアップグレードを転送しない（コンソールがまったく接続できません）；
+- WebSocket メッセージ 1 件のサイズを制限する（一部の WAF。1 MB 以上を許可してください。RustDesk 互換の Web 接続は映像のキーフレームを丸ごと送るため 16 MB まで許可してください）；
+- WebSocket 接続 1 本の転送量や時間を制限する、または 30 秒未満のアイドルで切断する（jt-ipam は 20 秒ごとにキープアライブを送ります）。
+
+各層の設定を読み解く必要はありません。**管理 → システム設定**の「**SFTP の 1 ファイルあたりの転送上限**」を既定値より大きくすると、
+ブラウザーから各層（エッジプロキシ、IPAM の nginx、バックエンド）を通して実際に転送テストを行い、どの種類の制限に当たったかを表示します。
+測定した速度から、上限サイズのファイルの転送にかかる時間も見積もります。
 
 ### 2.8 任意：Docker Compose（これは優先される方式ではありません）
 
@@ -298,7 +335,7 @@ curl -skI https://ipam.example.com/ \
 `/api` をリバースプロキシする nginx。初回起動時に自己署名の HTTPS 証明書を用意します）が立ち上がります。
 
 前提：**git** と **`docker compose` v2 プラグインを含む Docker Engine** です。公式の
-`get.docker.com` スクリプトなら両方入ります。`apt install docker.io` は**使わないでください** —
+`get.docker.com` スクリプトなら両方入ります。`apt install docker.io` は**使わないでください**。
 `docker compose` サブコマンドがありません。Debian 系以外では、各自のパッケージマネージャで git を
 導入してください。
 
@@ -375,17 +412,17 @@ cd jt-ipam/deploy/docker
 | `APP_PUBLIC_URL` | ✓ | フロントエンドのベース URL |
 | `API_PUBLIC_URL` | ✓ | OIDC / SAML のコールバックに使います |
 | `CORS_ORIGINS` | ✓ | カンマ区切り |
-| `OUTBOUND_ALLOW_CIDRS` | — | safe_http の SSRF 許可リスト。空欄なら公開インターネットのみ |
+| `OUTBOUND_ALLOW_CIDRS` | なし | safe_http の SSRF 許可リスト。空欄なら公開インターネットのみ |
 | `FDB_CURRENT_MAX_AGE_HOURS` | 24 | FDB のエントリを「現在のもの」とみなす期間。それより古いものは履歴として残りますが、スイッチポートの判定には使いません |
 | `FDB_RETENTION_DAYS` | 365 | FDB 履歴の保持日数。0 で無期限。ARP より意図的にずっと長くしています。このテーブルの値打ちは「その機器が以前どのポートにいたか」が分かることだからです |
 | `ARP_RETENTION_DAYS` | 30 | ARP エントリの保持日数。0 で削除しません |
-| `OIDC_*` | — | OIDC の SSO を有効にします |
-| `SAML_*` | — | SAML の SSO を有効にします |
-| `LDAP_*` | — | LDAP / AD の認証 |
-| `OLLAMA_ENABLED` | — | AI のセマンティック検索とチャットを有効にします |
+| `OIDC_*` | なし | OIDC の SSO を有効にします |
+| `SAML_*` | なし | SAML の SSO を有効にします |
+| `LDAP_*` | なし | LDAP / AD の認証 |
+| `OLLAMA_ENABLED` | なし | AI のセマンティック検索とチャットを有効にします |
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | LLM サーバーのアドレス |
 | `OLLAMA_CHAT_MODEL` | `gemma4:26b` | チャット用モデル |
-| `OLLAMA_EMBEDDING_MODEL` | `granite-embedding:278m` | 埋め込み用モデル — **その次元が `EMBEDDING_DIM` と一致している必要があります** |
+| `OLLAMA_EMBEDDING_MODEL` | `granite-embedding:278m` | 埋め込み用モデル。**その次元が `EMBEDDING_DIM` と一致している必要があります** |
 | `EMBEDDING_DIM` | `768` | データベースの `vector(N)` 列のサイズ。変更するならマイグレーションも変える必要があります |
 
 全一覧は `app/core/config.py` の Settings クラスを参照してください。
@@ -394,7 +431,7 @@ cd jt-ipam/deploy/docker
 
 ## 4. 連携の設定（インストール後）
 
-連携はすべて管理画面（`/firewall`、`/wazuh`、`/librenms`、`/dns`）から追加します。
+連携はすべて管理画面の「管理 → 外部システム連携」（例：`/firewall`、`/wazuh`、`/librenms`、`/dns`）から追加します。設定済みの連携はメニューに印が付きます。
 追加すると、既定では `jt-ipam-sync.timer` が 5 分ごとに自動で同期します。
 
 > 補足：v0.4.76 以降、OIDC と SAML の SSO も管理 → システム設定 の Web UI から設定できます
@@ -414,7 +451,7 @@ pfSense には REST API が標準で無いため、サードパーティの **pf
 1. pfSense → System → Package Manager で **pfSense-pkg-RESTAPI** を導入します
 2. System → REST API → Settings で認証方式に **API Key** を追加します（既定は BasicAuth のみです）
 3. System → REST API → Keys でキーを作成します
-4. jt-ipam → pfSense 連携 → 追加 で `https://pfsense` と API キーを入力します。自己署名証明書の場合は TLS の検証を無効にします
+4. jt-ipam の 管理 → 外部システム連携 → pfSense → 追加 で `https://pfsense` と API キーを入力します。自己署名証明書の場合は TLS の検証を無効にします
 5. DHCP / ARP / エイリアス / ルール / NAT を同期します（ベースパスは `/api/v2`、認証は `X-API-Key`）。pfSense は独自の設定ページを持ちます（OPNsense とは共用しません）
 
 ### Wazuh
@@ -430,7 +467,7 @@ pfSense には REST API が標準で無いため、サードパーティの **pf
 
 ### OIDC（Keycloak / Azure AD / Google）
 
-Web UI（管理 → システム設定 → シングルサインオン — OIDC）で設定するか、
+Web UI（管理 → システム設定 → シングルサインオン（OIDC））で設定するか、
 `/etc/jt-ipam/backend.env` に追記します。
 
 ```
@@ -461,6 +498,28 @@ SAML_ADMIN_GROUPS=jt-ipam-admins
 
 ## 5. バックアップと復元
 
+### Recog フィンガープリント DB（任意）
+
+IP 探索は、ホスト自身が返す文字列（SSH バナー、HTTP `Server` ヘッダー、ページタイトル、TLS 証明書、SMB の OS 名）
+を [Recog](https://github.com/rapid7/recog)（Rapid7、BSD-2-Clause）と照合し、機器（ベンダーの出荷時証明書や管理画面）や
+正確な OS バージョンを識別します。未インストールでも探索は動作しますが、識別できる範囲が狭くなります。
+
+- `jt-ipam.sh install` と `upgrade` が最新リリースをダウンロードします（`api.github.com`、`github.com`、
+  `release-assets.githubusercontent.com` への HTTPS 接続が必要）。失敗しても警告のみです。
+- `jt-ipam-recog-refresh.timer` が毎週月曜に新しいリリースを確認し（Recog は 1〜6 週ごとにリリース）、新版がある
+  ときだけダウンロードします。「バージョン情報」にインストール済みのリリース、最終確認日時、「今すぐ更新を確認」ボタンが
+  あり、未インストールまたは 3 週間更新に成功していない場合はシステム診断が警告します。
+- オフラインの場合：[リリースページ](https://github.com/rapid7/recog/releases) から `recog-content-<バージョン>.zip` を
+  ダウンロードし、`sudo /opt/jt-ipam/scripts/jt-ipam.sh upgrade --recog-zip <ファイル>`（または
+  `install --recog-zip <ファイル>`）を実行します。
+
+### 外部 DNS の名前解決（任意）
+
+「公開されているサービス」の FQDN タブで、各名前がインターネット上でどう解決されるかを表示できます。「管理 → システム設定」の
+「DNS リゾルバー」カードで、リゾルバー（例：1.1.1.1）を 1 台以上、確認する公開ドメイン、必要に応じて自組織のグローバルアドレス範囲を
+設定します。公開ドメイン配下の名前だけを外部に問い合わせます。サーバーからリゾルバーへの UDP と TCP の 53 番ポートへの外向き接続が必要です。
+「権威サーバーにも直接問い合わせる」を有効にした場合は、各ドメインの権威サーバーへの接続も必要です。追加のパッケージは不要です。
+
 ### LLM / AI（任意）
 
 AI 対話とセマンティック検索は、既定では**自社運用の Ollama** に対して実行されるため、データは
@@ -488,7 +547,7 @@ ollama pull granite-embedding:278m     # 埋め込み用モデル（768 次元�
 > 欠けていたもので、不一致でもエラーはまったく出ず、「セマンティック検索が何も返さない」と
 > いう症状だけが残っていました。
 
-> ⚠️ **埋め込みモデルの出力次元は `EMBEDDING_DIM`（既定は 768）と一致している必要があります** —
+> ⚠️ **埋め込みモデルの出力次元は `EMBEDDING_DIM`（既定は 768）と一致している必要があります**。
 > これはデータベースの `vector(N)` 列のサイズです。不一致でも**エラーメッセージは一切出ません**。
 > 索引への書き込みがすべて失敗するため、セマンティック検索が何も返さないという症状だけが現れます。
 > 埋め込みモデルを変更したら、設定ページの**次元を確認**を押してください。モデルが返した次元と、
@@ -506,8 +565,8 @@ OpenAI 互換エンドポイント（ChatGPT、vLLM、LM Studio、OpenRouter な
 
 ### 自動バックアップ
 
-インストーラはバックアップを有効にしません。cron か systemd のタイマーを手で追加してください。
-最も簡単なのは次のとおりです。
+インストーラは日次バックアップ（`jt-ipam-backup.timer`）をインストールして有効にし、アップグレード時にはバックアップスクリプトも更新します。
+インストーラを使っていない場合は、次のように手で追加できます。
 
 ```bash
 sudo cp /opt/jt-ipam/scripts/jt-ipam-backup.sh /usr/local/bin/
@@ -519,6 +578,20 @@ sudo systemctl enable --now jt-ipam-backup.timer
 
 既定では毎日 03:30 に実行し、`pg_dump -Fc` と `/etc/jt-ipam/backend.env`、TLS の証明書を
 `/var/backups/jt-ipam/` にまとめ、14 日間保持します。
+
+実行のたびに（成功でも失敗でも）`/var/backups/jt-ipam/last-run` に結果、時刻、最後に成功した時刻、失敗の理由を書きます。「システム診断」画面の「日次バックアップ」と `sudo /opt/jt-ipam/scripts/jt-ipam.sh doctor` はこのファイルを見ます。バックアップが失敗したり 48 時間成功していなかったりすると診断が赤くなり、管理者にシステムアラートが送られます。よくある原因は、jt-ipam のロールが所有していないテーブル（手で残したコピーなど）があり、pg_dump が読めずに中止することです。診断画面に実行するコマンドが表示されます。
+
+### バックアップの暗号化
+
+バックアップのディレクトリにはデータベースのダンプ**と** `backend.env`（ダンプ内の機密を復号する鍵）が入っています。**管理 → システム設定 → 日次バックアップの暗号化** でバックアップのパスフレーズ（12 文字以上）を設定すると、毎日のバックアップを 1 つのファイル `/var/backups/jt-ipam/jt-ipam-<日付>.jtbak` にまとめて暗号化し（scrypt で導出した鍵、1 MiB 単位の AES-256-GCM。切り詰め・入れ替え・改ざんがあると復号できません）、平文のディレクトリは削除します。`last-run` に `encrypted=1` が記録され、パスフレーズが未設定の間はシステム診断と `doctor` が警告します。
+
+パスフレーズはこのホスト以外（パスワードマネージャーなど）に保管してください。忘れるとバックアップを復号できません。変更後も、以前のバックアップには当時のパスフレーズが必要です。復号ツールは Python 3 と `cryptography`（`apt install python3-cryptography`）だけで動くため、jt-ipam を入れ直す前の新しいマシンでも使えます：
+
+```bash
+python3 /opt/jt-ipam/backend/app/services/backup_crypt.py decrypt \
+    /var/backups/jt-ipam/jt-ipam-2026-10-09.jtbak --out /root/jt-ipam-restore
+# → /root/jt-ipam-restore/2026-10-09/（ダンプ、backend.env、tls.tar.gz、uploads.tar.gz）
+```
 
 ### 遠隔地へのバックアップ
 
@@ -533,7 +606,12 @@ sudo systemctl enable --now jt-ipam-backup.timer
 
 ```bash
 # 0. サービスを停止します
-sudo systemctl stop jt-ipam-backend jt-ipam-sync.timer
+sudo systemctl stop jt-ipam-backend jt-ipam-sync.timer jt-ipam-ai-audit.timer
+
+# 0b. 暗号化したバックアップ（.jtbak）は先に復号します（バックアップのパスフレーズを聞かれます）
+python3 /opt/jt-ipam/backend/app/services/backup_crypt.py decrypt \
+    /var/backups/jt-ipam/jt-ipam-2026-05-10.jtbak --out /root/jt-ipam-restore
+# 以下の /var/backups/jt-ipam/2026-05-10/ は /root/jt-ipam-restore/2026-05-10/ に読み替えます
 
 # 1. 空のデータベースを作り直します
 sudo -u postgres dropdb jt_ipam
@@ -548,13 +626,14 @@ sudo -u postgres psql -d jt_ipam -c '
 
 # 2. ダンプを戻します（注意：DNS や API の資格情報など機密の項目を復号するには、同じ ENCRYPTION_KEY が必要です）
 sudo -u postgres pg_restore -d jt_ipam \
-    /var/backups/jt-ipam/jt-ipam-2026-05-10.dump
+    /var/backups/jt-ipam/2026-05-10/jt-ipam-2026-05-10.dump
 
 # 3. 設定ファイルを戻します（残っていれば）
 sudo cp /var/backups/jt-ipam/2026-05-10/backend.env /etc/jt-ipam/
 
-# 4. 起動します
-sudo systemctl start jt-ipam-backend jt-ipam-sync.timer
+# 4. 監査テーブルをログインできない所有者に戻してから（アプリのロールは読み取りと追加のみ）起動します
+sudo bash /opt/jt-ipam/scripts/jt-ipam.sh harden-audit
+sudo systemctl start jt-ipam-backend jt-ipam-sync.timer jt-ipam-ai-audit.timer
 
 # 5. チェーンを検証します（改ざんされた行があれば直ちに分かります）
 curl -X POST https://ipam.example.com/api/v1/audit/verify \
@@ -562,7 +641,7 @@ curl -X POST https://ipam.example.com/api/v1/audit/verify \
 ```
 
 > バックアップファイルには機密情報が含まれます（DB には暗号化された API の資格情報、env には
-> SECRET_KEY と ENCRYPTION_KEY）。`0600` の権限で保管し、暗号化された経路で転送してください
+> SECRET_KEY と ENCRYPTION_KEY）。バックアップの暗号化パスフレーズを設定し（上記）、`0600` の権限で保管し、暗号化された経路で転送してください
 > （ssh 越しの rsync、S3 のサーバー側暗号化など）。
 
 ---
@@ -599,6 +678,7 @@ sudo systemctl start jt-ipam-backend
 ```bash
 journalctl -u jt-ipam-backend -f          # バックエンド
 journalctl -u jt-ipam-sync -n 200          # 定期同期
+journalctl -u jt-ipam-ai-audit -n 200      # 定期 AI 点検
 journalctl -u jt-ipam-backup -n 50         # バックアップ
 ```
 
@@ -608,7 +688,7 @@ journalctl -u jt-ipam-backup -n 50         # バックアップ
 
 ### SIEM / Slack への転送
 
-バックエンドは Webhook の購読に対応しています。管理 → 設定 → 通知 で Webhook の URL を
+バックエンドは Webhook の購読に対応しています。管理 → Webhook で Webhook の URL を
 追加してください。`BACKEND_*` の env に Graylog の GELF エンドポイントを設定して、監査ログを
 すべて転送することもできます。
 
@@ -630,7 +710,7 @@ sudo bash /opt/jt-ipam/scripts/jt-ipam.sh uninstall --purge
 同等の手動手順：
 
 ```bash
-sudo systemctl disable --now jt-ipam-backend jt-ipam-sync.timer jt-ipam-backup.timer
+sudo systemctl disable --now jt-ipam-backend jt-ipam-sync.timer jt-ipam-ai-audit.timer jt-ipam-backup.timer
 sudo rm /etc/systemd/system/jt-ipam-{backend,sync,backup}.{service,timer}
 sudo rm -rf /etc/jt-ipam /var/log/jt-ipam /var/lib/jt-ipam
 sudo -u postgres dropdb jt_ipam
@@ -764,7 +844,7 @@ sudo -u jtipam env $(grep -v '^#' /etc/jt-ipam/backend.env | xargs) \
     --username admin2 --email admin2@your.domain --password-stdin <<<"$ADMIN_PW"
 echo "$ADMIN_PW"
 
-# 方法 B：元の管理者が締め出された／失われた場合 —— DB を直接編集してロックを解除しパスワードを再設定します
+# 方法 B：元の管理者が締め出された/失われた場合、DB を直接編集してロックを解除しパスワードを再設定します
 sudo -u jtipam env $(grep -v '^#' /etc/jt-ipam/backend.env | xargs) \
     /opt/jt-ipam/backend/.venv/bin/python -c '
 import asyncio, sys
@@ -788,13 +868,51 @@ asyncio.run(main(sys.argv[1], sys.argv[2]))
 ' admin "MyNewPassword2026!"
 ```
 
-**Q：Ubuntu 24.04 でフロントエンドのビルドが `Unsupported engine: wanted Node >= 20` と出ます。**
-A：24.04 は nodejs 18 を同梱しています。vite 6 と vue-tsc は動作しますが警告が出ます。消すには
-nvm か nodesource で Node 20 以降を導入してください。
+**Q：`Node.js install failed or too old (need >= 22)` と出る、またはアップグレードで「Node.js 22 could not be installed」の警告枠が出ます。**
+A：Node.js 22 LTS はフロントエンドのビルドにだけ使います（Node 20 は 2026-04-30 でサポート終了）。`jt-ipam.sh`
+はインストール時もアップグレード時も NodeSource（`setup_22.x`）から導入するので、通常は何もする必要はありません。
+導入できない場合（deb.nodesource.com に届かない、プロキシ、apt の競合）、`install` は止まります。`upgrade` は既存の
+Node 20 以降でビルドしてそのまま完了し、最後にその警告枠を出します。このとき pnpm も
+`Unsupported engine: wanted: {"node":">=22"}` を出し、`doctor` は古い Node を指摘し続けます。手動で導入してから
+同じコマンドをやり直してください。
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
 sudo apt install -y nodejs
+node -v      # v22.x
+sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade      # または install
 ```
 
-その後、`/opt/jt-ipam/frontend` で `pnpm install && pnpm build` をやり直します。
+apt がディストリビューション同梱パッケージとの競合（`trying to overwrite ... libnode-dev`）を報告する場合は、先に
+`sudo apt-get purge -y nodejs libnode-dev` で削除してください。nvm を使っている場合、`sudo` を実行したユーザーの
+nvm に Node 22 があればそれをそのまま使い、古い nvm の Node は使いません。
+
+## guacd コンソールエンジン（RDP/VNC の既定）
+
+guacd は [Apache Guacamole](https://guacamole.apache.org/) のサーバー側で、**RDP と VNC コンソールの既定エンジン**で、
+**必須コンポーネント**でもあります（0.6.49 から。既存の環境もアップグレードで切り替わります）。
+SSH も「管理 → システム設定」で切り替えられます。`install` が入れ、入れられなければそこで止まります。`upgrade` は未導入なら入れます。
+guacd が止まっている間、RDP と VNC は任意の組み込みエンジン（aardwolf、入っていれば）に戻り、`doctor`、
+「管理 → システムチェック」、「バージョン情報 → 必須コンポーネント」が問題を表示します。
+
+別途インストールが必要な理由：Debian は guacd の提供をやめ、Ubuntu にはリモートコード実行の脆弱性がある 1.3.0 しかありません。
+そのため jt-ipam はサポート中の OS バージョンごとにビルドを用意しています（Debian 12/13、Ubuntu 22.04/24.04/26.04）。
+OS 自身のライブラリにリンクするので、FreeRDP や libvncclient などのセキュリティ更新は引き続き apt から届きます。
+
+```
+sudo /opt/jt-ipam/scripts/jt-ipam.sh install                     # guacd も入ります
+sudo /opt/jt-ipam/scripts/jt-ipam.sh upgrade                     # 未導入なら入れ、導入済みなら更新
+sudo /opt/jt-ipam/scripts/jt-ipam.sh upgrade --guacd-tarball ./jt-ipam-guacd-...-ubuntu24.04-amd64.tar.gz
+                                                                 # オフライン：同じ場所に .deps ファイルが必要
+```
+
+- `jt-ipam-guacd` systemd サービスとして動き、**127.0.0.1:4822 だけで待ち受けます**。guacd 自体には認証がないため、
+  他のインターフェースで開いてはいけません。サービスは権限のない動的ユーザーで動きます。
+- `upgrade` のたびに jt-ipam の版に対応するビルドへ更新されます。ダウンロードしたファイルは `scripts/guacd/SHA256SUMS` と照合します。
+- 資格情報はサーバーが guacd に渡し、ブラウザーには届きません。SSH のホスト鍵も初回確認後に固定され、guacd はその鍵と一致しなければなりません。
+- guacd 経由の SSH では端末をサーバー側で描画します。コピーと貼り付けは Ctrl+Shift+C/Ctrl+Shift+V（Mac は ⌘C/⌘V）。
+  日本語・中国語の入力メソッドも使えます。
+- `jt-ipam.sh doctor` と「管理 → システムチェック」で、guacd が動いているか、guacd を選んだプロトコルがサポートされているかを確認できます。
+
+ライセンス：guacd は Apache-2.0 です。各パッケージには LICENSE、NOTICE、正確なソースとビルドスクリプトを記した SOURCE ファイルが含まれます。
+これらは jt-ipam がビルドしたもので、Apache の公式リリースではありません。

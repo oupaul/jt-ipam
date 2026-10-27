@@ -37,6 +37,10 @@ class InvalidStateTransition(IPRequestError):
     pass
 
 
+class NoActionableStep(IPRequestError):
+    """多關卡（parallel / stages）：這個人目前沒有可以核准的關卡（REST 回 403）。"""
+
+
 def _add_event(
     session: AsyncSession,
     *,
@@ -88,9 +92,10 @@ async def _notify_requester(
         from app.services.notification import email_users
         u = await session.get(_U, request.requester_user_id)
         if u and u.email:
-            await email_users(session, [u.email], f"[jt-ipam] {title}", body or title)
+            await email_users(session, [u.email], f"[jt-ipam] {title}", body or title,
+                              link=f"/requests/{request.id}")
     from app.services.notify_channels import broadcast_channels
-    await broadcast_channels(session, subject=title, text=body)
+    await broadcast_channels(session, subject=title, text=body, link=f"/requests/{request.id}", emoji="📝", event=event)
 
 
 async def _deliver_to_approvers(
@@ -112,7 +117,8 @@ async def _deliver_to_approvers(
     from app.services.system_config import get_notification_matrix
     mx = (await get_notification_matrix(session)).get(
         "ip_request.created", {"in_app": True, "email": True})
-    if not (mx.get("in_app") or mx.get("email")):
+    from app.services.system_config import notify_wanted
+    if not notify_wanted(mx):
         return
     link = f"/requests/{request.id}"  # 站內鈴鐺用相對路徑（前端 router 解析）
     # Email 用絕對網址：未登入點了會先被導去登入頁，登入成功再回到此審核頁（router next 機制）
@@ -125,7 +131,7 @@ async def _deliver_to_approvers(
                 link=link, object_type="ip_request", object_id=request.id,
             )
     from app.services.notify_channels import broadcast_channels
-    await broadcast_channels(session, subject=title, text=body)
+    await broadcast_channels(session, subject=title, text=body, link=link, emoji="📝", event="ip_request.created")
     if not mx.get("email"):
         return
     try:
@@ -151,7 +157,8 @@ async def _deliver_to_approvers(
         f"按鈕無法點選時，請複製此連結：<br>{_esc(abs_link)}</p></div>"
     )
     for u in approvers:
-        if not u.email:
+        from app.services.notification import deliverable_email
+        if not deliverable_email(u.email):
             continue
         try:
             await send_email_via_config(
@@ -200,13 +207,13 @@ async def _notify_stage(
     gids = {_uuid.UUID(x) for x in step["group_ids"] if _is_uuid(x)}
     if gids:
         rows = (await session.execute(
-            select(UserGroupMember.user_id).where(UserGroupMember.group_id.in_(gids))
+            select(UserGroupMember.user_id).where(UserGroupMember.group_id.in_(gids))  # bounded: approver groups
         )).all()
         uids.update(r[0] for r in rows)
     if not uids:
         return
     users = list((await session.execute(
-        select(_User).where(_User.id.in_(uids), _User.is_active.is_(True))
+        select(_User).where(_User.id.in_(uids), _User.is_active.is_(True))  # bounded: approver groups
     )).scalars().all())
     body = f"申請 {subnet.cidr} 的 IP 已進入「{step['name']}」關卡，待你審核。"
     await _deliver_to_approvers(
@@ -402,6 +409,31 @@ async def record_step_approval(
         if pending:
             await _notify_stage(session, request=request, subnet=subnet, step_index=pending[0])
     return False
+
+
+async def approve_per_policy(
+    session: AsyncSession, *, request: IPRequest, subnet: Subnet, approver: User,
+    override_ip: str | None = None,
+) -> bool:
+    """依審核政策核准（REST 端點與 AI 工具共用）。回傳 True＝已全數通過並配發。
+
+    多關卡模式只核准「此使用者目前可審的最前面那一關」，全部通過才配發；單關卡模式直接核准＋配發。
+    呼叫端要先用 ip_request_policy.can_approve 確認這個人是審核人。2026-10-15 以前 AI 工具自己
+    直接呼叫 approve_request：多關卡審核在第一關就配發 IP，等於跳過後面的關卡。
+    """
+    from app.services.ip_request_policy import MULTI_STEP_MODES, actionable_steps, get_policy
+    pol = await get_policy(session)
+    if pol["approver_mode"] in MULTI_STEP_MODES:
+        steps = await actionable_steps(session, approver, request, pol)
+        if not steps:
+            raise NoActionableStep("No approval step is actionable for you")
+        return await record_step_approval(
+            session, request=request, subnet=subnet, approver=approver,
+            step_index=steps[0], override_ip=override_ip,
+        )
+    await approve_request(session, request=request, subnet=subnet, approver=approver,
+                          override_ip=override_ip)
+    return True
 
 
 async def reject_request(

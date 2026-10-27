@@ -10,15 +10,19 @@
 
 from __future__ import annotations
 
+import contextlib
 import posixpath
 import stat as statmod
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
+import asyncssh
+
 from app.core.ui_error import UiError, ui_detail
 
-# 單一檔案的上下傳上限。IPAM 的用途是設定檔、憑證、log 片段，不是搬映像檔；
-# 沒有上限的話一個 20 GB 的檔案會把瀏覽器記憶體與後端一起拖垮。
+# 單一檔案上下傳上限的**預設值**。實際值由系統設定決定（`get_sftp_max_file_mb`，2026-09-26 起
+# 可以改）：IPAM 的本意是設定檔、憑證、log 片段，所以預設小；要搬映像檔由管理者自己放大。
 MAX_FILE_BYTES = 100 * 1024 * 1024
 
 # 一次列出的目錄項目上限。原本壓在 2000 是怕畫面一次畫太多列而卡住 —— 前端改成分頁之後
@@ -57,16 +61,19 @@ def normalize_path(path: str | None, *, cwd: str = "/") -> str:
 _WHAT_ZH = {"download": "下載", "upload": "上傳"}
 
 
-def check_size(size: int | None, *, what: str) -> int:
-    """檔案大小檢查。`None`＝遠端沒回報大小，視為未知並拒絕（寧可不傳）。"""
+def check_size(size: int | None, *, what: str, max_bytes: int = MAX_FILE_BYTES) -> int:
+    """檔案大小檢查。`None`＝遠端沒回報大小，視為未知並拒絕（寧可不傳）。
+
+    `max_bytes` 由呼叫端帶系統設定的值；不給就是預設的 100 MB。
+    """
     zh = _WHAT_ZH.get(what, what)
     if size is None:
         raise SftpError(f"{zh}：遠端沒有回報檔案大小，無法確認是否超過上限",
                         code=f"sftp_{what}_size_unknown")
     if size < 0:
         raise SftpError(f"{zh}：檔案大小異常", code=f"sftp_{what}_size_invalid")
-    if size > MAX_FILE_BYTES:
-        mb = MAX_FILE_BYTES // (1024 * 1024)
+    if size > max_bytes:
+        mb = max_bytes // (1024 * 1024)
         raise SftpError(f"{zh}：檔案超過 {mb} MB 上限（這個功能是給設定檔與紀錄用的）",
                         code=f"sftp_{what}_too_large", max=mb)
     return size
@@ -265,3 +272,79 @@ async def walk_for_delete(sftp: Any, root: str) -> list[tuple[str, str]]:
     await walk(root)
     plan.append(("dir", root))
     return plan
+
+
+# ─────────────────── 上傳：同名處理＋暫存檔（2026-10-04）───────────────────
+# 以前一開檔就用 "wb" 把同名檔清成 0 位元組、事前不問；上傳中斷時又 remove(path) —— 原本的檔案等於被刪掉。
+# 現在一律寫到同目錄的暫存檔，完整寫完才換成正式檔名；失敗或放棄只刪暫存檔，原檔從頭到尾不動。
+
+UPLOAD_TMP_MARK = ".jtipam-upload-"
+CONFLICT_CHOICES = ("overwrite", "rename")
+
+
+@dataclass
+class UploadTarget:
+    final_path: str
+    tmp_path: str
+    replaces: bool                  # 正式檔名目前已有檔案（覆蓋）
+    mode: int | None = None         # 被覆蓋的檔案原本的權限，換名前套到新檔上
+
+
+def _split(path: str) -> tuple[str, str]:
+    d, _, n = path.rpartition("/")
+    return (d or "/"), n
+
+
+async def _exists(sftp: Any, path: str) -> Any | None:
+    try:
+        return await sftp.stat(path)
+    except asyncssh.SFTPNoSuchFile:
+        return None
+
+
+async def begin_upload(sftp: Any, path: str, *, on_conflict: str | None) -> UploadTarget:
+    """決定寫到哪裡。同名時：沒指定＝先問（丟 `sftp_exists`，什麼都不動）、overwrite＝覆蓋、rename＝兩份都留。"""
+    choice = on_conflict if on_conflict in CONFLICT_CHOICES else None
+    final = path
+    st = await _exists(sftp, final)
+    if st is not None:
+        if choice is None:
+            d, n = _split(final)
+            raise SftpError(
+                f"遠端已有同名檔案：{n}", code="sftp_exists", name=n, path=final,
+                size=int(getattr(st, "size", 0) or 0), mtime=getattr(st, "mtime", None))
+        if choice == "rename":
+            d, n = _split(final)
+            stem, dot, ext = n.rpartition(".") if "." in n.lstrip(".") else (n, "", "")
+            for i in range(1, 1000):
+                cand = f"{d.rstrip('/')}/{stem} ({i}){dot}{ext}"
+                if await _exists(sftp, cand) is None:
+                    final, st = cand, None
+                    break
+            else:
+                raise SftpError(f"找不到可用的檔名：{n}", code="sftp_exists", name=n, path=path, size=0, mtime=None)
+    d, n = _split(final)
+    tmp = f"{d.rstrip('/')}/.{n}{UPLOAD_TMP_MARK}{uuid.uuid4().hex[:8]}"
+    mode = (getattr(st, "permissions", None) & 0o7777) if st is not None and getattr(st, "permissions", None) else None
+    return UploadTarget(final_path=final, tmp_path=tmp, replaces=st is not None, mode=mode)
+
+
+async def finish_upload(sftp: Any, t: UploadTarget) -> None:
+    """暫存檔換成正式檔名。覆蓋時先套原本的權限，再用 posix-rename（一步取代，原檔不會有不見的空窗）；
+    伺服器不支援時退回「刪原檔再換名」。"""
+    if t.mode is not None:
+        with contextlib.suppress(asyncssh.SFTPError):
+            await sftp.chmod(t.tmp_path, t.mode)
+    if t.replaces:
+        try:
+            await sftp.posix_rename(t.tmp_path, t.final_path)
+            return
+        except (asyncssh.SFTPOpUnsupported, asyncssh.SFTPBadMessage):
+            await sftp.remove(t.final_path)
+    await sftp.rename(t.tmp_path, t.final_path)
+
+
+async def abort_upload(sftp: Any, t: UploadTarget) -> None:
+    """失敗或放棄：只刪暫存檔。"""
+    with contextlib.suppress(Exception):
+        await sftp.remove(t.tmp_path)

@@ -28,13 +28,14 @@ import {
 import { listSections } from "@/api/sections";
 import { listScanAgents } from "@/api/phase3";
 import { listVLANs, listVRFs, listLocations, type VLAN, type VRF } from "@/api/basic";
-import type { Subnet, Section } from "@/types";
+import type { Subnet, Section, ScanScope } from "@/types";
 import { EditIcon, PlusIcon, SaveIcon, CancelIcon } from "@/icons";
 import { probeInstall } from "@/utils/probeInstall";
 import { useCustomers } from "@/composables/useCustomers";
-import { listJumpHosts } from "@/api/jumpHosts";
+import ConsoleEgressSelect from "@/components/ConsoleEgressSelect.vue";
 import { useSubnetTree } from "@/composables/useSubnetTree";
 import { useScanProbes, probeLabel } from "@/api/scanProbes";
+import { useAuthStore } from "@/stores/auth";
 
 const props = defineProps<{
   show: boolean;
@@ -48,19 +49,11 @@ const emit = defineEmits<{
 }>();
 
 const { t, locale } = useI18n();
+const auth = useAuthStore();
+const isAdmin = computed(() => !!auth.me?.is_admin);
 const msg = useMessage();
 const { catalog } = useScanProbes();
 const { options: customerOptions, ensureLoaded: ensureCustomerOptsLoaded } = useCustomers();
-// 主控台的連線出口（issue #24）。跳板清單只有 admin 讀得到 —— 讀不到就不顯示這個欄位，
-// 而不是讓一般使用者看到一個永遠空的下拉。
-const jumpOptions = ref<{ label: string; value: string }[]>([]);
-async function loadJumpOptions() {
-  try {
-    jumpOptions.value = (await listJumpHosts()).items
-      .filter((j) => j.enabled)
-      .map((j) => ({ label: `${j.name}（${j.username}@${j.host}:${j.port}）`, value: j.id }));
-  } catch { jumpOptions.value = []; }
-}
 const { bump: bumpSubnetTree } = useSubnetTree();
 
 const showModel = computed({
@@ -126,6 +119,7 @@ const form = ref({
   master_subnet_id: null as string | null,
   customer_id: null as string | null,
   jump_host_id: null as string | null,
+  console_agent_id: null as string | null,
   is_pool: false,
   is_full: false,
   ai_audit_enabled: true,
@@ -134,6 +128,7 @@ const form = ref({
   scan_method: ["icmp"] as string[],
   threshold_pct: null as number | null,
   scan_agent_id: null as string | null,
+  scan_scope: "auto" as ScanScope,
   gateway: "" as string,
   dns_servers: "" as string,
   location_id: null as string | null,
@@ -141,6 +136,35 @@ const form = ref({
 });
 
 const saving = ref(false);
+
+// 掃描範圍（0205）：數字要與後端 services/scan_plan.py 一致
+const AUTO_SWEEP_MAX = 4096;
+const DISCOVER_PER_CYCLE = 1024;
+const scanScopeOpts = computed(() => (["auto", "all", "known", "ranges"] as const)
+  .map((v) => ({ label: t(`subnets.scan_scope_${v}`), value: v })));
+/** IPv4 可用位址數；IPv6 或格式不對回 null（代理目前只掃 IPv4） */
+function usableV4(cidr: string): number | null {
+  const m = /^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/.exec(cidr.trim());
+  if (!m) return null;
+  const p = Number(m[2]);
+  if (p > 32) return null;
+  const n = 2 ** (32 - p);
+  return p < 31 ? n - 2 : n;
+}
+const scanScopeHint = computed<{ type: "info" | "warning"; text: string } | null>(() => {
+  const scope = form.value.scan_scope;
+  const n = usableV4(form.value.cidr);
+  const fmt = (x: number) => x.toLocaleString(locale.value);
+  if (scope === "known") return { type: "info", text: t("subnets.scan_scope_known_hint") };
+  if (scope === "ranges") return { type: "info", text: t("subnets.scan_scope_ranges_hint") };
+  if (n === null || n <= AUTO_SWEEP_MAX) return null;
+  if (scope === "all") {
+    return { type: "warning", text: t("subnets.scan_scope_all_large_hint",
+      { total: fmt(n), rounds: fmt(Math.ceil(n / AUTO_SWEEP_MAX)) }) };
+  }
+  return { type: "info", text: t("subnets.scan_scope_auto_large_hint",
+    { total: fmt(n), rounds: fmt(Math.ceil(n / DISCOVER_PER_CYCLE)), per: fmt(DISCOVER_PER_CYCLE) }) };
+});
 
 async function loadAuxOpts() {
   try {
@@ -182,7 +206,6 @@ async function loadAuxOpts() {
     allSubnets.value = res.items;
   } catch { /* silent */ }
   void ensureCustomerOptsLoaded();
-  void loadJumpOptions();
 }
 
 function resetForm() {
@@ -197,6 +220,7 @@ function resetForm() {
       master_subnet_id: (r as any).master_subnet_id ?? null,
       customer_id: r.customer_id ?? null,
       jump_host_id: r.jump_host_id ?? null,
+      console_agent_id: r.console_agent_id ?? null,
       is_pool: r.is_pool, is_full: r.is_full,
       ai_audit_enabled: r.ai_audit_enabled ?? true,
       anomaly_enabled: r.anomaly_enabled ?? true,
@@ -205,6 +229,7 @@ function resetForm() {
       threshold_pct: r.threshold_pct,
       // 既有已啟用掃描但沒代理的子網路＝本機直掃 → 顯示為「本機直接掃」(不強迫重選)
       scan_agent_id: r.scan_agent_id ?? (r.scan_enabled ? LOCAL_SCAN : null),
+      scan_scope: r.scan_scope ?? "auto",
       gateway: r.gateway ?? "",
       dns_servers: r.dns_servers ?? "",
       location_id: r.location_id ?? null,
@@ -217,11 +242,13 @@ function resetForm() {
       description: "",
       vlan_id: null, vrf_id: null, master_subnet_id: null, customer_id: null,
       jump_host_id: null,
+      console_agent_id: null,
       is_pool: false, is_full: false,
       ai_audit_enabled: true, anomaly_enabled: true,
       scan_enabled: false, scan_method: ["icmp"],
       threshold_pct: null,
       scan_agent_id: null,
+      scan_scope: "auto",
       gateway: "", dns_servers: "", location_id: null,
       allow_overlap: false,
     };
@@ -231,9 +258,14 @@ function resetForm() {
 // 開啟時載入選項並重置表單
 watch(() => props.show, (open) => {
   if (open) {
+    // 先填表單、再載選項：以前是載完選項才 resetForm，那之前點的勾選（例如「啟用掃描」）會被蓋掉
+    resetForm();
     void (async () => {
       await loadAuxOpts();
-      resetForm();
+      // 新增時的預設區段要等區段清單載入才知道
+      if (!props.editing && !form.value.section_id) {
+        form.value.section_id = props.presetSectionId || sections.value[0]?.id || "";
+      }
     })();
   }
 });
@@ -260,6 +292,7 @@ async function submit() {
         master_subnet_id: form.value.master_subnet_id ?? null,
         customer_id: form.value.customer_id ?? null,
         jump_host_id: form.value.jump_host_id ?? null,
+        console_agent_id: form.value.console_agent_id ?? null,
         is_pool: form.value.is_pool,
         is_full: form.value.is_full,
         ai_audit_enabled: form.value.ai_audit_enabled,
@@ -268,6 +301,7 @@ async function submit() {
         scan_method: form.value.scan_method,
         threshold_pct: form.value.threshold_pct ?? null,
         scan_agent_id: scanAgentId,
+        scan_scope: form.value.scan_scope,
         gateway: form.value.gateway.trim() || null,
         dns_servers: form.value.dns_servers.trim() || null,
         location_id: form.value.location_id ?? null,
@@ -282,6 +316,7 @@ async function submit() {
         vrf_id: form.value.vrf_id ?? null,
         customer_id: form.value.customer_id ?? null,
         jump_host_id: form.value.jump_host_id ?? null,
+        console_agent_id: form.value.console_agent_id ?? null,
         is_pool: form.value.is_pool, is_full: form.value.is_full,
         ai_audit_enabled: form.value.ai_audit_enabled,
         anomaly_enabled: form.value.anomaly_enabled,
@@ -289,6 +324,7 @@ async function submit() {
         scan_method: form.value.scan_method,
         threshold_pct: form.value.threshold_pct ?? null,
         scan_agent_id: scanAgentId,
+        scan_scope: form.value.scan_scope,
         gateway: form.value.gateway.trim() || null,
         dns_servers: form.value.dns_servers.trim() || null,
         location_id: form.value.location_id ?? null,
@@ -345,15 +381,9 @@ async function submit() {
         <n-select v-model:value="form.customer_id" :options="customerOptions"
                   :placeholder="t('common.not_specified')" clearable filterable />
       </n-form-item>
-      <n-form-item v-if="jumpOptions.length" :label="t('jump_hosts.exit')">
-        <div style="width: 100%">
-          <n-select v-model:value="form.jump_host_id" :options="jumpOptions"
-                    :placeholder="t('jump_hosts.exit_direct')" clearable filterable />
-          <div style="font-size: 11px; opacity: .7; margin-top: 4px">
-            {{ t("jump_hosts.exit_hint") }}
-          </div>
-        </div>
-      </n-form-item>
+      <ConsoleEgressSelect v-model:jump-host-id="form.jump_host_id"
+                           v-model:console-agent-id="form.console_agent_id"
+                           :scan-agent-id="form.scan_agent_id === LOCAL_SCAN ? null : form.scan_agent_id" />
       <n-form-item :label="t('subnets.gateway')">
         <n-input v-model:value="form.gateway" :placeholder="t('subnets.gateway_ph')" />
       </n-form-item>
@@ -372,11 +402,12 @@ async function submit() {
       </n-form-item>
       <n-form-item :label="t('subnets.checks')">
         <n-space vertical size="small" style="width: 100%">
-          <n-checkbox v-model:checked="form.anomaly_enabled">
+          <!-- 關掉這兩項只有管理員可以（集中設定本來就是管理員限定，後端也會擋） -->
+          <n-checkbox v-model:checked="form.anomaly_enabled" :disabled="!isAdmin">
             {{ t("subnets.anomaly_enable") }}
           </n-checkbox>
           <span style="font-size: 12px; opacity: .7">{{ t("subnets.anomaly_hint") }}</span>
-          <n-checkbox v-model:checked="form.ai_audit_enabled">
+          <n-checkbox v-model:checked="form.ai_audit_enabled" :disabled="!isAdmin">
             {{ t("subnets.ai_audit_enable") }}
           </n-checkbox>
           <span style="font-size: 12px; opacity: .7">{{ t("subnets.ai_audit_hint") }}</span>
@@ -449,6 +480,15 @@ async function submit() {
           <!-- 本機根本沒裝代理 → 直接給安裝指引，不要讓人自己猜 -->
           <n-alert v-else-if="!localAgent" type="info" :show-icon="false" :bordered="false">
             {{ t("subnets.scan_agent_no_local_hint") }}
+          </n-alert>
+        </n-space>
+      </n-form-item>
+      <n-form-item v-if="form.scan_enabled" :label="t('subnets.scan_scope')">
+        <n-space vertical :size="6" style="width:100%">
+          <n-select v-model:value="form.scan_scope" :options="scanScopeOpts" data-testid="subnet-scan-scope" />
+          <n-alert v-if="scanScopeHint" :type="scanScopeHint.type" :show-icon="false" :bordered="false"
+                   data-testid="subnet-scan-scope-hint">
+            {{ scanScopeHint.text }}
           </n-alert>
         </n-space>
       </n-form-item>

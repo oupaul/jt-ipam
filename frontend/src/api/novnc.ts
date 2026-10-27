@@ -13,6 +13,7 @@ export interface PveCredential {
   has_private_key: boolean;
   last_used_at: string | null;
   created_at: string;
+  device_changed?: boolean;   // 存下之後位址換了設備：不自動帶入（utils/savedCreds）
 }
 export async function listPveCredentials(targetIpId?: string): Promise<PveCredential[]> {
   const { data } = await apiClient.get<PveCredential[]>("/api/v1/ssh-credentials", {
@@ -51,8 +52,11 @@ export async function requestNovncTicket(
     tfa_code?: string;
   },
 ): Promise<NovncTicket> {
+  // 這個請求後端要依序打 PVE 的登入、（被拒時）查 realm、開 vncproxy，最壞要將近 30 秒。
+  // 用預設的 15 秒逾時的話，PVE 連不上時前端會比後端先放棄，畫面只剩「取得連線票證失敗」、
+  // 看不到後端講的原因（2026-09-24 重現）。
   const { data } = await apiClient.post<NovncTicket>(
-    `/api/v1/addresses/${addressId}/novnc/ticket`, body,
+    `/api/v1/addresses/${addressId}/novnc/ticket`, body, { timeout: 45_000 },
   );
   return data;
 }

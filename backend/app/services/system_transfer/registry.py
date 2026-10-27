@@ -20,7 +20,7 @@ SCOPES: tuple[str, ...] = (
     "integrations",   # 整合連線設定（含加密金鑰）：LibreNMS/OPNsense/pfSense/Proxmox/Wazuh/AdGuard/掃描代理/憑證代理/SSH 憑證/Webhook
     "synced",         # 由整合拉回、可重新同步的鏡像資料：ARP/FDB/同步別名/規則/VM/hostname 觀測…
     "operational",    # 短暫／歷史資料：稽核記錄 / IP 異動 / 申請 / 背景作業 / 通知 / AI 對話
-    "oui",            # IEEE OUI 廠商庫（大、可重新產生）
+    "oui",            # 參考資料庫（大、可重新下載）：IEEE OUI 廠商庫、Recog 指紋庫
 )
 
 DEFAULT_SCOPE: tuple[str, ...] = ("settings", "users_rbac", "core", "integrations")
@@ -38,6 +38,8 @@ CATEGORY: dict[str, str] = {
     "groups": "users_rbac",
     "user_group_members": "users_rbac",
     "api_tokens": "users_rbac",
+    # 復原碼只存 argon2 雜湊，搬到別台照樣能用
+    "user_recovery_codes": "users_rbac",
     "user_preferences": "users_rbac",
     "permissions": "users_rbac",
     # core — IPAM
@@ -49,6 +51,8 @@ CATEGORY: dict[str, str] = {
     "vlan_domains": "core",
     "vlans": "core",
     "subnets": "core",
+    # 子網路內的位址範圍（集區，issue #40）：使用者自己定義的資料，跟著子網路搬
+    "ip_ranges": "core",
     "ip_addresses": "core",
     "devices": "core",
     "nat_translations": "core",
@@ -57,6 +61,11 @@ CATEGORY: dict[str, str] = {
     "dns_servers": "core",
     "dns_zones": "core",
     "dns_records": "core",
+    "dns_compare_groups": "core",          # 比對群組設定（成員是 dns_servers.compare_group_id）
+    "dns_compare_group_diffs": "synced",   # 比對結果：下一輪同步就重算
+    "integration_own_addresses": "synced",  # 整合回報的設備自身位址：下一輪同步就重抓
+    "external_dns_results": "synced",       # 外部 DNS 解析結果：下一輪查詢就重算
+    "external_dns_changes": "operational",  # 公網解析變動的歷史
     # core — 憑證集中保管
     "certificates": "core",
     "cert_versions": "core",
@@ -98,14 +107,42 @@ CATEGORY: dict[str, str] = {
     "scan_agents": "integrations",
     "zabbix_instances": "integrations",
     "zabbix_hosts": "synced",
-    # 探測工作是短命的執行紀錄（兩分鐘就過期），與稽核／背景作業同歸短暫資料
+    # 探測工作是執行紀錄（工具頁的兩分鐘就過期；IP 探測的歷次結果也屬歷史），與稽核／背景作業同歸短暫資料
     "agent_probe_jobs": "operational",
+    # 掃描代理每一輪的耗時（負載面板的趨勢，只保留 7 天）
+    "scan_agent_cycles": "operational",
+    # 異常觀測（0224）：每一筆異常出現到消失的期間，戰情室時序用；消失後保留 90 天
+    "anomaly_observations": "operational",
+    # 戰情室 12 AI 情報（0231）：播報流（誰在看、租約）與播報批次（最多 24 小時）；換一台重新產生就有
+    "warroom_intel_streams": "operational",
+    "warroom_intel_batches": "operational",
     "cert_agents": "integrations",
+    "cert_push_targets": "integrations",
     "webhook_subscriptions": "integrations",
     "windows_dhcp_servers": "integrations",
+    "kea_dhcp_servers": "integrations",
+    "isc_dhcp_servers": "integrations",
+    # Technitium DHCP：設定跟著整合走；範圍鏡像可以重新拉
+    "technitium_dhcp_servers": "integrations",
+    "technitium_dhcp_scopes": "synced",
+    # ISOinsight 整合：來源設定跟著整合走；來源租約觀察是可重新拉取的鏡像；同步記錄是歷史
+    "isoinsight_sources": "integrations",
+    "isoinsight_leases": "synced",
+    "isoinsight_sync_runs": "operational",
+    "rustdesk_servers": "integrations",
     "fortigate_firewalls": "integrations",
     "paloalto_firewalls": "integrations",
+    # Check Point：管理伺服器設定跟著整合走；閘道／物件／規則是可重新拉的鏡像
+    "checkpoint_servers": "integrations",
+    # 第二階段：每台閘道的 Gaia API 連線跟著整合走；DHCP 子網路鏡像可以重新拉
+    "checkpoint_gaia_targets": "integrations",
     "mikrotik_routers": "integrations",
+    # SNMP 收集（0217）：憑證（含加密的社群字串／v3 密碼）與收集目標跟著整合走；鄰居是可重新收集的鏡像；
+    # 收集記錄是歷史
+    "snmp_credentials": "integrations",
+    "snmp_targets": "integrations",
+    "snmp_neighbors": "synced",
+    "snmp_runs": "operational",
     "ocs_servers": "integrations",
     "opnsense_alias_mappings": "integrations",
     "ssh_credentials": "integrations",
@@ -113,8 +150,12 @@ CATEGORY: dict[str, str] = {
     "jump_hosts": "integrations",
     # synced（可重新拉取的鏡像）
     "librenms_devices": "synced",
+    # RustDesk 裝置清單：代理下一輪回報就重建；last_online_at（我們自己記的）搬不過去也只是要重新看到一次上線
+    "rustdesk_peers": "synced",
     "librenms_links": "synced",
     "arp_entries": "synced",
+    # 沒有納管、但看得到在用的位址：掃描代理下一輪就重建
+    "unmanaged_sightings": "synced",
     "fdb_entries": "synced",
     "device_vlans": "synced",
     "opnsense_rules": "synced",
@@ -126,17 +167,52 @@ CATEGORY: dict[str, str] = {
     "fortigate_address_objects": "synced",
     "paloalto_policies": "synced",
     "paloalto_address_objects": "synced",
+    "checkpoint_gateways": "synced",
+    "checkpoint_objects": "synced",
+    "checkpoint_rules": "synced",
+    "checkpoint_dhcp_subnets": "synced",
     "mikrotik_rules": "synced",
+    "mikrotik_neighbors": "synced",
     "mikrotik_address_lists": "synced",
     "wazuh_agents": "synced",
     "ip_hostname_observations": "synced",
+    "ip_hostname_reports": "synced",       # 逐來源實例的主機名稱目擊（觀測由它推導）
     "virtual_machines": "synced",
     "vm_interfaces": "synced",
     "dhcp_pool_ranges": "synced",
     "dhcp_reservations": "synced",
+    "dhcp_exclusions": "synced",           # DHCP 伺服器的排除區間（0207）
+    "dhcp_lease_sightings": "synced",      # 逐來源的 DHCP 租約目擊（in_dhcp_lease 由它推導）
     "esxi_instances": "integrations",
+    "hyperv_instances": "integrations",
+    "openstack_instances": "integrations",
+    # Neutron 子網路與對應：含使用者的手動對應決定，跟著連線設定走（不當成可重抓的鏡像）
+    "openstack_subnets": "integrations",
+    "openstack_ports": "synced",           # Neutron port 鏡像：下一輪同步就重抓
     # operational（短暫／歷史）
     "audit_logs": "operational",
+    # 登入工作階段：搬到別台沒有意義（Cookie 屬於原本的網址），只在選了「營運資料」時才帶
+    "user_sessions": "operational",
+    # IP 變更評估（0187）：計畫、每次分析的快照、待辦、覆核、AI 產出 —— 歷史資料
+    "change_plans": "operational",
+    "change_plan_revisions": "operational",
+    "impact_runs": "operational",
+    "impact_evidence": "operational",
+    "impact_relations": "operational",
+    "impact_findings": "operational",
+    "impact_gaps": "operational",
+    "change_tasks": "operational",
+    "impact_reviews": "operational",
+    "impact_ai_artifacts": "operational",
+    # IP 變更評估 M2（0189）：人工登錄的服務與依賴 —— 跟網段、裝置一樣是要搬的核心資料（引用物件時保留型別＋id）
+    "impact_services": "core",
+    "impact_service_endpoints": "core",
+    "impact_dependency_groups": "core",
+    "impact_dependency_members": "core",
+    # RustDesk 客戶端回報的連線／檔案／告警稽核：與 jt-ipam 自己的稽核記錄同性質
+    "rustdesk_audit_events": "operational",
+    # RustDesk「刪除舊註冊」的請求與結果：執行紀錄（等待中的過一天就逾時），不是要跟著搬的設定
+    "rustdesk_peer_deletes": "operational",
     "ip_change_log": "operational",
     # 逐日存活觀測：可重建的運維資料，不隨設定搬移
     "ip_liveness_days": "operational",
@@ -155,8 +231,10 @@ CATEGORY: dict[str, str] = {
     # DHCP 觀測是「某個時刻在那個網路上看到的事」，換一台機器就不成立
     "dhcp_sightings": "operational",
     "phpipam_migration_mapping": "operational",
-    # oui
+    # oui（參考資料庫）
     "oui_vendors": "oui",
+    # Recog 指紋庫：每一列是一整個指紋檔，合併匯入時整檔覆蓋，不會出現兩版混在一起
+    "recog_databases": "oui",
     # 中央機密（特別處理；分類僅供 validate 檢查完整性）
     ENCRYPTED_SECRETS_TABLE: "_secrets",
 }

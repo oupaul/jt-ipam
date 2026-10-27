@@ -24,6 +24,132 @@ def test_windows_run_ps_wraps_connection_error():
         a._run_ps("Get-DnsServer")
 
 
+def _captured_session(monkeypatch):  # type: ignore[no-untyped-def]
+    import winrm
+    seen: dict = {}
+
+    class FakeSession:
+        def __init__(self, **kw):  # type: ignore[no-untyped-def]
+            seen.update(kw)
+
+    monkeypatch.setattr(winrm, "Session", FakeSession)
+    return seen
+
+
+def test_windows_validates_the_certificate_by_default(monkeypatch):
+    from app.services.dns.windows_dns import WindowsDNSAdapter
+    seen = _captured_session(monkeypatch)
+    WindowsDNSAdapter(host=HOST, username="u", password="p", port=5986, use_ssl=True)._session()
+    assert seen["server_cert_validation"] == "validate"
+    assert seen["target"].startswith("https://")
+
+
+def test_windows_can_skip_certificate_validation_for_self_signed_winrm(monkeypatch):
+    """客戶 2026-10-08：WinRM HTTPS 用自簽憑證 → CERTIFICATE_VERIFY_FAILED；比照其他整合可關閉驗證。"""
+    from app.services.dns.windows_dns import WindowsDNSAdapter
+    seen = _captured_session(monkeypatch)
+    WindowsDNSAdapter(host=HOST, username="u", password="p", port=5986, use_ssl=True, verify_tls=False)._session()
+    assert seen["server_cert_validation"] == "ignore"
+    assert seen["target"].startswith("https://"), "關閉驗證仍然走 HTTPS（加密照舊，只是不驗憑證）"
+
+
+async def test_factory_passes_verify_tls_from_extra_config(monkeypatch):
+    import json as _json
+    from types import SimpleNamespace
+
+    from app.services.dns import factory
+    from app.services.dns.windows_dns import WindowsDNSAdapter
+
+    async def fake_secret(*a, **k):  # type: ignore[no-untyped-def]
+        return "p"
+
+    monkeypatch.setattr(factory, "_load_secret", fake_secret)
+    srv = SimpleNamespace(type="windows_dns", server_address=HOST, api_url=None,
+                          extra_config=_json.dumps({"username": "u", "verify_tls": False}))
+    a = await factory.get_adapter(None, srv)
+    assert isinstance(a, WindowsDNSAdapter)
+    assert a.verify_tls is False
+    srv.extra_config = _json.dumps({"username": "u"})
+    assert (await factory.get_adapter(None, srv)).verify_tls is True
+
+
+def test_windows_http_5985_forces_ntlm_message_encryption(monkeypatch):
+    """客戶 2026-10-08：Windows Server 2022 防火牆預設只開 WinRM HTTP 5985。
+    走 HTTP 時一定要 NTLM 加密（message_encryption=always）：不支援就失敗，不可退回明文。"""
+    from app.services.dns.windows_dns import WindowsDNSAdapter
+    seen = _captured_session(monkeypatch)
+    WindowsDNSAdapter(host=HOST, username="u", password="p", use_ssl=False, port=5985)._session()
+    assert seen["target"] == f"http://{HOST}:5985/wsman"
+    assert seen["message_encryption"] == "always"
+    assert seen["transport"] == "ntlm"
+
+
+async def test_factory_default_port_follows_the_scheme(monkeypatch):
+    import json as _json
+    from types import SimpleNamespace
+
+    from app.services.dns import factory
+
+    async def fake_secret(*a, **k):  # type: ignore[no-untyped-def]
+        return "p"
+
+    monkeypatch.setattr(factory, "_load_secret", fake_secret)
+    srv = SimpleNamespace(type="windows_dns", server_address=HOST, api_url=None,
+                          extra_config=_json.dumps({"username": "u", "use_ssl": False}))
+    a = await factory.get_adapter(None, srv)
+    assert (a.use_ssl, a.port) == (False, 5985)
+    # 沒記錄傳輸方式＝HTTP 5985（使用者 2026-10-09；既有伺服器在 0197 已明確寫成 HTTPS）
+    srv.extra_config = _json.dumps({"username": "u"})
+    a = await factory.get_adapter(None, srv)
+    assert (a.use_ssl, a.port) == (False, 5985)
+    srv.extra_config = _json.dumps({"username": "u", "use_ssl": True})
+    assert (await factory.get_adapter(None, srv)).port == 5986
+    srv.extra_config = _json.dumps({"username": "u", "use_ssl": True, "winrm_port": 15986})
+    assert (await factory.get_adapter(None, srv)).port == 15986
+
+
+def test_windows_self_signed_error_says_how_to_fix():
+    import ssl
+
+    from app.services.dns.windows_dns import WindowsDNSAdapter
+    a = WindowsDNSAdapter(host=HOST, username="u", password="p")
+
+    def boom():
+        raise ConnectionError(ssl.SSLCertVerificationError(
+            1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate"))
+
+    a._session = boom
+    with pytest.raises(DNSAdapterError) as ei:
+        a._run_ps("Get-DnsServer")
+    assert ei.value.code == "dns_winrm_cert"
+    assert "self-signed" in ei.value.params["reason"]
+
+
+def test_windows_https_port_unreachable_suggests_http_5985():
+    """客戶 2026-10-11：「HTTPSConnectionPool(host=…, port=5986): Max retries exceeded… ConnectTimeout」——
+    Windows Server 預設只開 HTTP 5985，1.0.5 以前建立的連線沿用 HTTPS 5986。錯誤要直接講怎麼改。"""
+    from app.services.dns.windows_dns import WindowsDNSAdapter
+    a = WindowsDNSAdapter(host=HOST, username="u", password="p", use_ssl=True, port=5986)
+
+    def boom():
+        raise ConnectionError(f"HTTPSConnectionPool(host='{HOST}', port=5986): Max retries exceeded with url: "
+                              "/wsman (Caused by ConnectTimeoutError(...))")
+
+    a._session = boom
+    with pytest.raises(DNSAdapterError) as ei:
+        a._run_ps("Get-DnsServer")
+    assert ei.value.code == "dns_winrm_https_unreachable"
+    assert ei.value.params["port"] == 5986 and ei.value.params["host"] == HOST
+    assert "5985" in str(ei.value), "退回訊息（通知、API 使用者看到的）也要講 5985"
+
+    # 走 HTTP 時連不到：不是這個原因，維持一般錯誤
+    b = WindowsDNSAdapter(host=HOST, username="u", password="p", use_ssl=False, port=5985)
+    b._session = boom
+    with pytest.raises(DNSAdapterError) as ei2:
+        b._run_ps("Get-DnsServer")
+    assert ei2.value.code != "dns_winrm_https_unreachable"
+
+
 # ───────────────────────── BIND 9 (dnspython) ─────────────────────────
 
 async def test_bind9_healthcheck_wraps_oserror(monkeypatch):
@@ -80,3 +206,18 @@ async def test_unbound_get_wraps_non_json(monkeypatch):
     )
     with pytest.raises(DNSAdapterError):
         await a.healthcheck()
+
+
+def test_windows_dhcp_https_port_unreachable_suggests_http_5985(monkeypatch):
+    """Windows DHCP 走同一套 WinRM：HTTPS 5986 連不到時同樣要講改成 HTTP 5985（客戶 2026-10-11）。"""
+    from app.services import windows_dhcp as wd
+    monkeypatch.setattr(wd, "_check_address_safe", lambda _h: None)
+    c = wd.WindowsDhcpClient(host="192.0.2.25", username="u", password="p", use_ssl=True, port=5986)
+
+    def boom():
+        raise ConnectionError("HTTPSConnectionPool(host='192.0.2.25', port=5986): Max retries exceeded "
+                              "(Caused by ConnectTimeoutError(...))")
+    monkeypatch.setattr(c, "_session", boom)
+    with pytest.raises(wd.WindowsDhcpError) as ei:
+        c._run_ps("Get-DhcpServerv4Scope")
+    assert "HTTP (5985)" in str(ei.value) and "192.0.2.25:5986" in str(ei.value)

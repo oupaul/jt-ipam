@@ -1,6 +1,6 @@
 """FastAPI 應用入口。
 
-OWASP A02 — production guard、安全 headers、CORS 白名單；
+OWASP A02 — production guard、安全 headers、CORS 允許清單；
 A09 — 結構化日誌與 request id。
 """
 
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import structlog
 from fastapi import FastAPI, Request
@@ -26,6 +27,27 @@ from app.core.middleware import (
     RequestIDMiddleware,
     SecurityHeadersMiddleware,
 )
+
+
+class _MCPTrailingSlash:
+    """把完全等於 /api/mcp、/mcp，以及 /api/phpipam/ 底下沒帶結尾斜線的請求路徑補上斜線（純 ASGI）。"""
+
+    _PATHS = frozenset({"/api/mcp", "/mcp"})
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        path = scope.get("path") or ""
+        # phpIPAM 相容 API 也補：phpIPAM 本身兩種寫法都接，我們的路由都帶斜線，不補就回 307；
+        # Proxmox VE SDN 外掛（LWP）對 PATCH／DELETE 不跟轉址，刪除與更新就直接失敗（10-24）
+        if scope.get("type") == "http" and (
+                path in self._PATHS or (path.startswith("/api/phpipam/") and not path.endswith("/"))):
+            scope = dict(scope)
+            scope["path"] = path + "/"
+            if scope.get("raw_path"):
+                scope["raw_path"] = bytes(scope["raw_path"]) + b"/"
+        await self.app(scope, receive, send)
 
 
 def _mount_spa(app: FastAPI) -> None:
@@ -51,7 +73,7 @@ def _mount_spa(app: FastAPI) -> None:
         async def get_response(self, path: str, scope: Scope):  # type: ignore[override]
             # API 命名空間的 404 保持 JSON（不可被 fallback 吃掉變成回 HTML）——
             # 前端 client 靠 JSON 錯誤判斷；回 index.html 會變成「JSON 解析失敗」的迷惑錯誤
-            spa_fallback = path.split("/", 1)[0] not in ("api", "graphql", "mcp", "healthz")
+            spa_fallback = path.split("/", 1)[0] not in ("api", "mcp", "healthz")
             # Starlette 找不到檔案是「拋」HTTPException(404)，不是回 404 response —— 兩種都要接
             fell_back = False
             try:
@@ -142,7 +164,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 log.info("orphan_tasks_reconciled", count=res.rowcount)
     except Exception as exc:
         log.warning("orphan_task_reconcile_failed", error=str(exc))
+    # IP 變更評估：沒有心跳的分析重新排隊並啟動（只看 impact_runs 自己的心跳，不會誤殺別的 worker 正在跑的）
+    try:
+        from app.services.change_impact.jobs import reclaim_and_relaunch
+        n = await reclaim_and_relaunch()
+        if n:
+            log.info("impact_runs_relaunched", count=n)
+    except Exception as exc:
+        log.warning("impact_run_reclaim_failed", error=str(exc))
+    # 戰情室 12 AI 情報：每分鐘看一次哪些播報流到期（有人在看、或管理員打開背景產生）。
+    # 每個 worker 都跑，但產生靠資料庫租約，同一個範圍只會有一個去問模型
+    import asyncio
+
+    async def _intel_loop() -> None:
+        from app.services.warroom import intel
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await intel.background_tick()
+            except Exception as exc:                  # 排程迴圈不可以因為一次錯誤就停掉
+                log.warning("warroom_intel_tick_failed", error=exc.__class__.__name__)
+    intel_task = asyncio.create_task(_intel_loop())
     yield
+    intel_task.cancel()
     log.info("shutdown")
 
 
@@ -181,16 +225,15 @@ def create_app() -> FastAPI:
     app.include_router(api_v1_router, prefix="/api/v1")
     app.include_router(phpipam_router, prefix="/api/phpipam")
 
-    # ── GraphQL（Phase 2）──
-    from app.graphql.schema import make_graphql_router
-    app.include_router(make_graphql_router(), prefix="/graphql")
-
     # ── MCP server（Phase 4）──
     # 掛在 /api/mcp：nginx 只反代 /api/ 到後端，掛 /api 底下外部 client 才連得到。
     # 另保留 /mcp 給 direct（uvicorn 自簽 TLS）模式 / 內部呼叫。
     from app.mcp.server import build_mcp_app
     app.mount("/api/mcp", build_mcp_app())
     app.mount("/mcp", build_mcp_app())
+    # 不帶斜線的 /api/mcp、/mcp 也要進到 MCP：掛載點只認 /api/mcp/…，不帶斜線的落到前端靜態檔回 405，
+    # 而手冊與設定頁的客戶端設定產生器給的正是不帶斜線的網址（2026-09-30 盤點 API 手冊時抓到）
+    app.add_middleware(_MCPTrailingSlash)
 
     # ── Plugins（Phase 4）──
     from app.plugins import load_plugins
@@ -217,9 +260,11 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        # 標頭要帶上：401 的 WWW-Authenticate、限流 429 的 Retry-After（以前被丟掉，2026-09-30 發現）
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.detail},
+            headers=getattr(exc, "headers", None),
         )
 
     @app.exception_handler(Exception)

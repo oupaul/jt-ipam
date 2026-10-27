@@ -12,12 +12,12 @@ an OWASP ZAP baseline scan with zero new findings before it is published.
 |---|---|
 | `0.6.x` (current) | Fixes and security fixes |
 | `0.5.x` | Security fixes only |
-| `0.4.x` and older | Unsupported — please upgrade |
+| `0.4.x` and older | Unsupported; please upgrade |
 
 Releases are tagged (`vX.Y.Z`) from `v0.6.8` onwards. Earlier versions were published
 without tags; if you are running one, upgrade rather than pin to it.
 
-Because releases are frequent, "supported" means the newest patch of that line —
+Because releases are frequent, "supported" means the newest patch of that line:
 a fix is delivered as a new patch release, not as a backport onto an older patch.
 
 ## Reporting a vulnerability
@@ -37,10 +37,21 @@ you.
 
 - TLS is mandatory (nginx reverse proxy or uvicorn self-signed).
 - Secrets (DNS credentials, SNMP, API tokens) are encrypted at the application
- layer; passwords use argon2id; MFA via TOTP.
-- All outbound integration URLs are SSRF allow-listed (metadata / link-local
- blocked).
-- Audit events are chained with SHA-256.
+ layer, each bound to its purpose with AES-GCM associated data; passwords use
+ argon2id.
+- Two-factor authentication (TOTP) can be required for administrators or for
+ everyone, with one-time recovery codes; a TOTP code cannot be replayed.
+- Server-side sessions: the refresh token lives only in an HttpOnly, SameSite=Strict
+ cookie and is rotated with reuse detection; sign-out, deactivation and admin
+ revocation take effect immediately, and open consoles are closed within 30 seconds.
+- Outbound connections are checked at connect time for HTTP and before connecting
+ for every other protocol (cloud metadata, link-local and reserved addresses are
+ blocked; consoles also refuse loopback).
+- Audit events are chained with SHA-256, append-only in the database, anchored
+ externally, and include exports and secret reveals.
+- Daily backups can be encrypted with a passphrase.
+- What maps to ISO/IEC 27001:2022 and ISO/IEC 42001:2023 controls, and how to verify each item,
+ is in [docs/COMPLIANCE.md](docs/COMPLIANCE.md).
 
 ## Accepted risks (documented, with compensating controls)
 
@@ -74,7 +85,10 @@ neutralised in practice by the surrounding controls.
 
 Before every release we run a ZAP scan (HTTP + behind the public reverse proxy)
 and require **no findings beyond the documented baseline** above
-(`deploy/zap-baseline.conf`) — i.e. zero new High/Medium/Low.
+(`deploy/zap-baseline.conf`), i.e. zero new High/Medium/Low.
+
+CI also runs a ZAP baseline scan on every push, against the real nginx configuration
+and a production build of the frontend; any alert outside the baseline fails the build.
 
 When in doubt about whether something is a security issue, report it privately
 and we will triage.

@@ -763,11 +763,15 @@ async def tcp_check(
         async with sem:
             if time.monotonic() - started > OVERALL_DEADLINE:
                 return PortResult(target=t, port=port, error="整體時間上限已到，未執行")
+            try:
+                addr = await _diag_addr(t, port)
+            except NetDiagError as exc:
+                return PortResult(target=t, port=port, error=str(exc))
             t0 = time.monotonic()
             writer = None
             try:
                 _, writer = await asyncio.wait_for(
-                    asyncio.open_connection(t, port), timeout=timeout)
+                    asyncio.open_connection(addr, port), timeout=timeout)
                 return PortResult(target=t, port=port, open=True,
                                   latency_ms=round((time.monotonic() - t0) * 1000, 2))
             except TimeoutError:
@@ -877,13 +881,19 @@ async def udp_check(
                 return UdpResult(target=host, port=port, detail="整體時間上限已到，未執行")
             name, payload = _UDP_PROBES.get(port, ("empty", b"\x00"))
             res = UdpResult(target=host, port=port, probe=name)
+            try:
+                addr = await _diag_addr(host, port)
+            except NetDiagError as exc:
+                res.state = "no_reply"
+                res.detail = str(exc)
+                return res
             loop = asyncio.get_running_loop()
             done: asyncio.Future = loop.create_future()
             transport = None
             t0 = time.monotonic()
             try:
                 transport, _ = await loop.create_datagram_endpoint(
-                    lambda: _UdpProto(done), remote_addr=(host, port))
+                    lambda: _UdpProto(done), remote_addr=(addr, port))
                 transport.sendto(payload)
                 state, data = await asyncio.wait_for(done, timeout=timeout)
                 res.state = state
@@ -973,13 +983,18 @@ async def tls_check(
         async with sem:
             sni = server_name or host
             res = TlsResult(target=host, port=port)
+            try:
+                addr = await _diag_addr(host, port)
+            except NetDiagError as exc:
+                res.error = str(exc)
+                return res
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
             writer = None
             try:
                 _reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(host, port, ssl=ctx, server_hostname=sni),
+                    asyncio.open_connection(addr, port, ssl=ctx, server_hostname=sni),
                     timeout=timeout)
                 sslobj = writer.get_extra_info("ssl_object")
                 der = sslobj.getpeercert(binary_form=True)
@@ -1018,7 +1033,7 @@ async def tls_check(
                     except (OSError, ssl.SSLError):
                         pass
             if res.ok:
-                res.trusted = await _verify_trusted(host, port, sni, timeout)
+                res.trusted = await _verify_trusted(addr, port, sni, timeout)
             return res
 
     return list(await asyncio.gather(*(one(t) for t in targets)))
@@ -1080,6 +1095,125 @@ class HttpResult:
     error: str | None = None
 
 
+class DiagTargetBlocked(NetDiagError):
+    """HTTP 檢查不可以打到 jt-ipam 主機自己或雲端中繼資料位址。"""
+
+
+async def _assert_diag_http_target(url: str) -> None:
+    """HTTP 檢查的目標檢查（CodeQL 標出的 SSRF，2026-09-29）。
+
+    這是內網診斷工具，**私有網段是本來的用途，不擋**；但本機（127.0.0.0/8、::1）、link-local
+    （169.254.0.0/16 ＝ 雲端中繼資料 169.254.169.254、fe80::/10）、多播與未指定位址不是診斷對象 ——
+    打得到就等於任何登入的人都能讓伺服器替他去讀本機服務與雲端憑證。主機名稱要先解析，
+    解析出來的每個位址都檢查（DNS 可以把好看的名字指到 127.0.0.1）。
+    """
+    import asyncio
+    import socket
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise DiagTargetBlocked(f"not an http(s) URL: {url[:200]}")
+    host = parts.hostname
+    try:
+        addrs = [ipaddress.ip_address(host)]
+    except ValueError:
+        loop = asyncio.get_running_loop()
+        try:
+            infos = await loop.getaddrinfo(host, parts.port or (443 if parts.scheme == "https" else 80),
+                                           type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise DiagTargetBlocked(f"DNS resolution failed for {host}: {exc}") from exc
+        addrs = [ipaddress.ip_address(i[4][0]) for i in infos]
+    _diag_check(host, addrs)
+
+
+async def _diag_addr(host: str, port: int) -> str:
+    """TCP／UDP／TLS 檢查要連的位址：解析、套用診斷規則，回傳**檢查過的那個 IP**。
+
+    直接連那個 IP（不再讓 asyncio 自己解析一次），檢查與連線之間 DNS 換答案也不怕。
+    名稱解析失敗丟 NetDiagError（訊息跟以前 open_connection 給的一樣是系統的原因）。
+    """
+    from app.core.safe_http import UnsafeOutboundURL, _aresolve
+    try:
+        addrs = await _aresolve(host, port)
+    except UnsafeOutboundURL as exc:
+        cause = exc.__cause__
+        raise NetDiagError(getattr(cause, "strerror", None) or str(exc)) from exc
+    if not addrs:
+        raise NetDiagError(f"沒有可用的位址：{host}")
+    _diag_check(host, addrs)
+    return str(addrs[0])
+
+
+_LOCAL_CACHE: tuple[float, frozenset[str]] = (0.0, frozenset())
+
+
+def _local_addresses() -> frozenset[str]:
+    """這台伺服器自己的位址（迴路以外）。Linux 讀 /proc/net/fib_trie 的 LOCAL 項與 /proc/net/if_inet6；
+    讀不到就退回主機名稱解析。快取 60 秒（介面位址不常變，每次 HTTP 檢查都讀檔沒必要）。"""
+    import ipaddress
+    import socket
+    import time
+    global _LOCAL_CACHE
+    now = time.monotonic()
+    if now - _LOCAL_CACHE[0] < 60:
+        return _LOCAL_CACHE[1]
+    out: set[str] = set()
+    try:
+        last = None
+        with open("/proc/net/fib_trie", encoding="ascii", errors="replace") as fh:
+            for line in fh:
+                s = line.strip()
+                if s.startswith("|--"):
+                    last = s[3:].strip()
+                elif "host LOCAL" in s and last:
+                    out.add(last)
+    except OSError:
+        pass
+    try:
+        with open("/proc/net/if_inet6", encoding="ascii", errors="replace") as fh:
+            for line in fh:
+                h = line.split()[0] if line.split() else ""
+                if len(h) == 32:
+                    out.add(str(ipaddress.ip_address(int(h, 16))))
+    except (OSError, ValueError):
+        pass
+    if not out:
+        try:
+            out.update(socket.gethostbyname_ex(socket.gethostname())[2])
+        except OSError:
+            pass
+    clean = set()
+    for a in out:
+        try:
+            ip = ipaddress.ip_address(a)
+        except ValueError:
+            continue
+        if not ip.is_loopback:
+            clean.add(str(ip))
+    _LOCAL_CACHE = (now, frozenset(clean))
+    return _LOCAL_CACHE[1]
+
+
+def _diag_check(host: str, addrs: list[Any]) -> None:
+    """診斷工具的位址規則：私網是本來的用途（不擋），本機／link-local／多播不是。
+
+    送出前檢查一次（錯誤訊息清楚）；連線當下再套用一次（`GuardedTransport`）—— 兩次之間
+    DNS 可以換答案。`_ip_in` 會把 `::ffff:127.0.0.1` 這類 IPv4 對映位址當成它代表的 IPv4。
+    """
+    from app.core.safe_http import _BLOCKED_CIDRS, _ip_in
+
+    local = _local_addresses()
+    for ip in addrs:
+        if _ip_in(ip, _BLOCKED_CIDRS):
+            raise DiagTargetBlocked(f"{host} ({ip}) is loopback / link-local / multicast — not a diagnostic target")
+        # 伺服器自己的區網位址：打得到就能讀本機上只綁區網介面的服務（2026-10-06 CodeQL 判讀）
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if str(ip) in local or (mapped is not None and str(mapped) in local):
+            raise DiagTargetBlocked(f"{host} ({ip}) is this server — not a diagnostic target")
+
+
 async def http_check(url: str, *, timeout: float = 10.0, max_redirects: int = 5,
                      verify_tls: bool = False) -> HttpResult:
     """取狀態碼、轉址鏈與幾個關鍵標頭。
@@ -1087,7 +1221,7 @@ async def http_check(url: str, *, timeout: float = 10.0, max_redirects: int = 5,
     預設**不驗證 TLS**：這是診斷工具，對方憑證有問題正是要看的事情之一，
     因驗證失敗而什麼都拿不到反而沒用（是否受信任請用 TLS 憑證檢查那支）。
     """
-    import httpx
+    from app.core.safe_http import guarded_client
 
     if not url.startswith(("http://", "https://")):
         url = "http://" + url
@@ -1097,9 +1231,11 @@ async def http_check(url: str, *, timeout: float = 10.0, max_redirects: int = 5,
     current = url
     t0 = time.monotonic()
     try:
-        async with httpx.AsyncClient(verify=verify_tls, follow_redirects=False,
-                                     timeout=timeout, trust_env=False) as client:
+        async with guarded_client(timeout=timeout, verify=verify_tls, http2=False,
+                                  check=_diag_check) as client:
             for _ in range(max_redirects + 1):
+                # 每一跳都先檢查目標（轉址可以把人帶去本機或雲端中繼資料位址）
+                await _assert_diag_http_target(current)
                 r = await client.get(current)
                 if r.is_redirect and r.headers.get("location"):
                     res.redirects.append(HttpHop(url=current, status=r.status_code,

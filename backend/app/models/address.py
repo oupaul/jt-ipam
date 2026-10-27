@@ -51,6 +51,13 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     switch_port_confident: Mapped[bool | None] = mapped_column(Boolean)
 
     exclude_from_ping: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: 上線狀態跟著所屬設備（0215，客戶 2026-10-14）：多 LAN 路由器的閘道不回 ping 但在用。
+    #: 每輪把同設備其他位址最新的會過期證據搬到 arp_seen["device"]（services/device_liveness）；
+    #: 沒掛設備時不算離線（「使用中（不回應探測）」）
+    liveness_from_device: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false"))
+    #: 「跟著設備」這一輪的依據是同設備的哪個位址（沒有＝來自 LibreNMS 的設備狀態或沒有依據）
+    device_evidence_ip: Mapped[str | None] = mapped_column(INET)
     # 此 IP「略過」的探測項目（扣除）；icmp 與 exclude_from_ping 雙向同步以保留既有行為。
     excluded_probes: Mapped[list[str]] = mapped_column(
         ARRAY(String), server_default=text("'{}'::varchar[]"), nullable=False,
@@ -58,6 +65,14 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # OS 偵測結果：原始字串 + 正規化家族 key（前端依 family 配 icon）。see core/os_fingerprint.py
     os_guess: Mapped[str | None] = mapped_column(String(160))
     os_family: Mapped[str | None] = mapped_column(String(24))
+    #: 掃描代理定期偵測判讀出的設備類型（camera / printer / storage …，見 services/device_identity）
+    #: 與廠牌型號。判讀與 IP 探測同一套（含 Recog 指紋庫）；判讀不出來時保留上一次的結果。
+    device_kind: Mapped[str | None] = mapped_column(String(24))
+    device_model: Mapped[str | None] = mapped_column(String(120))
+    device_identified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 目前這台設備從什麼時候開始用這個位址（0209）：MAC 換成另一張網卡時寫（services/device_turnover.py）。
+    #: 拿來判斷綁在位址上的資料（RustDesk、Wazuh、OCS、探測結果、已存帳密、AI 忽略）是不是換手前的
+    device_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: OCS Inventory 代理回報的 OS 原始字串。獨立欄位（不污染掃描代理的 os_guess）——
     #: 經 os_precedence 排在 scanner 之上，讓 agent 回報的 OS 蓋過 nmap 的指紋猜測。
     os_ocs: Mapped[str | None] = mapped_column(String(160))
@@ -69,6 +84,9 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     ocs_agent: Mapped[str | None] = mapped_column(String(128))
     #: OCS 最新幾筆備註（itmgmt_comments）：[{date,user,comment,action}]。
     ocs_notes: Mapped[list[Any] | None] = mapped_column(JSONB)
+    #: OCS 回報的硬體摘要（services/ocs.hardware_summary）：系統／主機板／BIOS／CPU／記憶體／磁碟／顯示卡。
+    #: 裝置明細的 OCS 卡片顯示這一份，而不是裝置本身的欄位（那可能是別的來源寫的）。
+    ocs_hw: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     # 各 probe 上次被執行的時間（由 report 回填），給「下次到期」顯示用。{"icmp": "...", "os": "..."}
     probe_last_run: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     ptr_ignore: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -82,6 +100,10 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # 主控台的連線出口（issue #24）：空＝沿用所屬子網路的設定；有值就覆寫它
     jump_host_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("jump_hosts.id", ondelete="SET NULL"), index=True,
+    )
+    # 或經由掃描代理中繼（issue #24 階段二，0175）；與 jump_host_id 只能擇一
+    console_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scan_agents.id", ondelete="SET NULL"), index=True,
     )
 
     custom_fields: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
@@ -155,16 +177,24 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     bmc_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default=text("false")
     )
+    # 「以 RustDesk 連線」按鈕（叫出操作者電腦上的 RustDesk 客戶端）；比照 VNC 逐 IP 開啟
+    rustdesk_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
 
     __table_args__ = (
         UniqueConstraint("subnet_id", "ip", name="ip_subnet_ip_uq"),
         CheckConstraint(
-            "state IN ('active','reserved','offline','dhcp','used')",
+            # deprecated／quarantine 是 0218 才加進來的（之前畫面能選、存檔卻 500）
+            "state IN ('active','reserved','offline','dhcp','used','deprecated','quarantine')",
             name="ip_state_valid",
         ),
         CheckConstraint(
-            "discovery_source IN ('manual','scanner','librenms','dns','proxmox','opnsense','phpipam')",
+            "discovery_source IN ('manual','scanner','librenms','dns','proxmox','opnsense','phpipam',"
+            "'pfsense','vmware','librenms_arp','isoinsight','snmp_arp','hyperv','openstack')",
             name="ip_discovery_source_valid",
         ),
         Index("ix_ip_addresses_ip_gist", "ip", postgresql_using="gist"),
+        CheckConstraint("jump_host_id IS NULL OR console_agent_id IS NULL",
+                        name="ip_console_egress_one"),
     )

@@ -2,7 +2,7 @@
 
 與 Windows DNS 共用同一套安全作法：
 - `_check_address_safe`：SSRF 防護（封鎖 metadata/link-local；私網需 OUTBOUND_ALLOW_PRIVATE）
-- `_safe_ps_arg`：PowerShell 參數白名單，杜絕指令注入（A03）
+- `_safe_ps_arg`：PowerShell 參數允許清單，杜絕指令注入（A03）
 - 阻塞式 pywinrm 包進 `asyncio.to_thread`，不卡住 event loop
 
 只做 GET 類的 cmdlet（Get-*），絕不改 Windows DHCP 任何設定。
@@ -14,18 +14,13 @@ import asyncio
 import ipaddress
 import json
 import re
-import socket
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select
-from sqlalchemy import update as sa_update
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
-from app.core.safe_http import _BLOCKED_CIDRS, _PRIVATE_CIDRS, _ip_in
 from app.core.security import decrypt_secret, encrypt_secret
-from app.models.address import IPAddress
 from app.models.windows_dhcp import WindowsDhcpServer
 
 _PS_SAFE = re.compile(r"^[A-Za-z0-9._:\-/]+$")
@@ -54,27 +49,20 @@ def _safe_ps_arg(value: str) -> str:
 
 
 def _check_address_safe(host: str) -> None:
-    settings = get_settings()
+    """A10：跟 HTTP 相同的出站規則（core/net_guard 的 strict）：雲端中繼資料／本機擋、私網照設定。"""
+    from app.core.net_guard import check_target
+    from app.core.safe_http import UnsafeOutboundURL
     try:
-        addrs = [ipaddress.ip_address(host)]
-    except ValueError:
-        try:
-            infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
-        except socket.gaierror as exc:
-            raise WindowsDhcpError(f"DNS resolution failed for {host}") from exc
-        addrs = [ipaddress.ip_address(info[4][0]) for info in infos]
-    for ip in addrs:
-        if _ip_in(ip, _BLOCKED_CIDRS):
-            raise WindowsDhcpError(f"Blocked IP for SSRF: {ip}")
-        if _ip_in(ip, _PRIVATE_CIDRS) and not settings.outbound_allow_private:
-            raise WindowsDhcpError(f"Private IP {ip} not allowed without OUTBOUND_ALLOW_PRIVATE")
+        check_target(host, policy="strict")
+    except UnsafeOutboundURL as exc:
+        raise WindowsDhcpError(str(exc)) from exc
 
 
 class WindowsDhcpClient:
     """對單一台 Windows DHCP Server 的唯讀 WinRM 用戶端。"""
 
     def __init__(self, *, host: str, username: str, password: str,
-                 port: int = 5986, use_ssl: bool = True, verify_tls: bool = True,
+                 port: int = 5985, use_ssl: bool = False, verify_tls: bool = True,
                  timeout: float = 30.0) -> None:
         if not host:
             raise WindowsDhcpError("Windows DHCP: host is required")
@@ -90,12 +78,15 @@ class WindowsDhcpClient:
     def _session(self) -> Any:
         # winrm import 放這裡，讓單元測試不必裝齊全部相依
         import winrm
+        _check_address_safe(self.host)        # 連線當下再檢查一次（建構之後 DNS 可能換了答案）
         scheme = "https" if self.use_ssl else "http"
         return winrm.Session(
             target=f"{scheme}://{self.host}:{self.port}/wsman",
             auth=(self.username, self.password),
             transport="ntlm",
             server_cert_validation="validate" if (self.use_ssl and self.verify_tls) else "ignore",
+            # HTTP 5985 時內容與帳密一律以 NTLM 加密；加密不了就連線失敗，不退回明文（OWASP A02）
+            message_encryption="auto" if self.use_ssl else "always",
             operation_timeout_sec=int(self.timeout),
             read_timeout_sec=int(self.timeout) + 5,
         )
@@ -106,6 +97,15 @@ class WindowsDhcpClient:
         except WindowsDhcpError:
             raise
         except Exception as exc:   # winrm/requests 的連線/認證/TLS/timeout 都不是我們的例外型別
+            text = str(exc)
+            if self.use_ssl and re.search(
+                    r"ConnectTimeout|Max retries exceeded|Connection refused|NewConnectionError|timed out", text):
+                # Windows Server 預設只開 HTTP 5985；1.0.5 以前建立的連線沿用 HTTPS 5986（客戶 2026-10-11）
+                raise WindowsDhcpError(
+                    f"WinRM HTTPS {self.host}:{self.port} is unreachable. Windows Server only opens HTTP 5985 by "
+                    f"default: unless an HTTPS listener was set up, edit this server under "
+                    f"Admin → External integrations → Windows DHCP and switch WinRM to HTTP (5985). ({text[-200:]})"
+                ) from exc
             raise WindowsDhcpError(
                 f"WinRM connection failed: {exc.__class__.__name__}: {exc}"
             ) from exc
@@ -142,6 +142,15 @@ class WindowsDhcpClient:
         return self._run_json(
             f"Get-DhcpServerv4Reservation -ScopeId {sid} "
             "| Select-Object IPAddress,ClientId,Name,Description "
+            "| ConvertTo-Json -Depth 4 -Compress"
+        )
+
+    def get_exclusions(self, scope_id: str) -> list[dict[str, Any]]:
+        """Get-DhcpServerv4ExclusionRange：這個 scope 範圍裡不發給任何人的位址（常拿來留給設固定 IP 的設備）。"""
+        sid = _safe_ps_arg(scope_id)
+        return self._run_json(
+            f"Get-DhcpServerv4ExclusionRange -ScopeId {sid} "
+            "| Select-Object StartRange,EndRange "
             "| ConvertTo-Json -Depth 4 -Compress"
         )
 
@@ -191,6 +200,11 @@ async def healthcheck(inst: WindowsDhcpServer) -> dict[str, Any]:
     return {"host": inst.host, "scopes": len(scopes)}
 
 
+def _inactive(scope: dict[str, Any]) -> bool:
+    """Get-DhcpServerv4Scope 的 State：Active／Inactive。"""
+    return str(scope.get("State") or "").lower() == "inactive"
+
+
 async def sync_reservations(session: AsyncSession, inst: WindowsDhcpServer) -> int:
     """Windows DHCP 的保留位址（每個 scope 各問一次）。
 
@@ -203,12 +217,14 @@ async def sync_reservations(session: AsyncSession, inst: WindowsDhcpServer) -> i
     rows: list[Reservation] = []
     for sc in scopes:
         sid = _as_str(sc.get("ScopeId"))
-        if not sid:
-            continue
+        if not sid or _inactive(sc):
+            continue   # 停用的 scope 不會發放：它的保留不算（使用者 2026-10-13：「停用的不要抓」）
         try:
             got = await asyncio.to_thread(cli.get_reservations, sid)
-        except WindowsDhcpError:
-            continue        # 單一 scope 失敗不該讓整台同步失敗
+        except WindowsDhcpError as exc:
+            # 以前略過這個 scope 照樣「取代」：那個 scope 的固定分配全被清掉（2026-10-12）。
+            # 讀不完整就整段失敗、保留上一輪的資料
+            raise WindowsDhcpError(f"reservations of scope {sid}: {exc}（保留既有資料）") from exc
         for r in got:
             ip = _as_str(r.get("IPAddress"))
             if not ip:
@@ -224,16 +240,24 @@ async def sync_reservations(session: AsyncSession, inst: WindowsDhcpServer) -> i
 
 
 async def sync_scopes(session: AsyncSession, inst: WindowsDhcpServer) -> int:
-    """把 Windows DHCP 的 scope 鏡像進 dhcp_pool_ranges（只清自己的列）。"""
+    """把 Windows DHCP 的 scope 鏡像進 dhcp_pool_ranges（只清自己的列）。
+
+    發放範圍要扣掉排除區間（Address Pool 裡「IP addresses excluded from distribution」）：客戶把設了
+    固定 IP 的設備逐一排除，以前沒讀，那些位址都被當成「在 DHCP 範圍內」（2026-10-12）。
+    排除區間另外記進 dhcp_exclusions。任何一個 scope 的排除區間讀不到就整段失敗、保留上一輪 ——
+    照寫完整範圍等於又把那些位址當成會發放。
+    """
     from app.models.dhcp import DHCPPoolRange
+    from app.services.dhcp_exclusions import Exclusion, clip, replace_exclusions, subtract
 
     cli = _client(inst)
     scopes = await asyncio.to_thread(cli.get_scopes)
     now = datetime.now(UTC)
 
-    rows: list[tuple[str | None, str, str]] = []
+    rows: list[tuple[str | None, str, str, str, str]] = []
+    excluded: list[Exclusion] = []
     for sc in scopes:
-        if str(sc.get("State") or "").lower() == "inactive":
+        if _inactive(sc):
             continue   # 停用的 scope 不會發放
         start, end = _as_str(sc.get("StartRange")), _as_str(sc.get("EndRange"))
         if not start or not end:
@@ -245,15 +269,28 @@ async def sync_scopes(session: AsyncSession, inst: WindowsDhcpServer) -> int:
                 cidr = str(ipaddress.ip_network(f"{scope_id}/{mask}", strict=False))
             except ValueError:
                 cidr = scope_id
-        rows.append((cidr, start, end))
+        cuts: list[tuple[str, str]] = []
+        if scope_id:
+            try:
+                got = await asyncio.to_thread(cli.get_exclusions, scope_id)
+            except WindowsDhcpError as exc:
+                raise WindowsDhcpError(f"exclusions of scope {scope_id}: {exc}（保留既有範圍）") from exc
+            for x in got:
+                a, b = _as_str(x.get("StartRange")), _as_str(x.get("EndRange"))
+                if a and b:
+                    cuts.append((a, b))
+        excluded += [Exclusion(a, b, cidr) for a, b in clip(start, end, cuts)]
+        rows += [(cidr, a, b, start, end) for a, b in subtract(start, end, cuts)]
 
+    await replace_exclusions(session, source_type="windows_dhcp", source_id=inst.id,
+                             source_name=inst.name, engine="windows", rows=excluded)
     await session.execute(delete(DHCPPoolRange).where(
         DHCPPoolRange.source_type == "windows_dhcp", DHCPPoolRange.source_id == inst.id,
     ))
-    for cidr, start, end in rows:
+    for cidr, start, end, pool_start, pool_end in rows:
         session.add(DHCPPoolRange(
             source_type="windows_dhcp", source_id=inst.id, source_name=inst.name,
-            subnet_cidr=cidr, start_ip=start, end_ip=end,
+            subnet_cidr=cidr, start_ip=start, end_ip=end, pool_start=pool_start, pool_end=pool_end,
             family=6 if ":" in start else 4, source="windows", synced_at=now,
         ))
     return len(rows)
@@ -262,55 +299,55 @@ async def sync_scopes(session: AsyncSession, inst: WindowsDhcpServer) -> int:
 async def sync_leases(session: AsyncSession, inst: WindowsDhcpServer) -> int:
     """把租約標記到「既有」IP 上（in_dhcp_lease + MAC/主機名稱），**不自動新建 IP**。
 
-    與 OPNsense / pfSense 的行為一致；撤銷同樣只在有設 scope_subnet_ids 時做，
-    避免多台 DHCP 在全域範圍互相清掉對方的標記。
+    租約旗標逐來源記錄（services/dhcp_leases.py）：每個 scope 都讀成功才清掉這台不再發的，
+    不會清到別台 DHCP 還發著的。
     """
-    from app.services.arp_precedence import consider_mac
-    from app.services.hostname import apply_observation
+    from app.services.fw_sightings import SightingBatch
 
     cli = _client(inst)
     scopes = await asyncio.to_thread(cli.get_scopes)
     scope_ids = list(inst.scope_subnet_ids) if inst.scope_subnet_ids else None
 
     seen = 0
-    leased: set[str] = set()
+    failed_scopes: list[str] = []
+    from app.models.windows_dhcp import WindowsDhcpServer as _Srv
+    from app.services.dhcp_leases import LeaseRun
+    from app.services.hostname_reports import HostnameRun, enabled_peers
+    hn_run = HostnameRun(session, source="windows_dhcp", origin=f"windows_dhcp:{inst.id}",
+                         peers=await enabled_peers(session, _Srv))
+    lease_run = LeaseRun(session, source_type="windows_dhcp", source_id=inst.id)
+    # 整批（以前每筆租約各比對一次 IP、再判斷一次 MAC：10 萬筆租約一輪約 40 萬次查詢）
+    batch = SightingBatch(session, source="windows_dhcp", subnet_ids=scope_ids,
+                          lease_run=lease_run, hn_run=hn_run)
     for sc in scopes:
         sid = _as_str(sc.get("ScopeId"))
-        if not sid:
-            continue
+        if not sid or _inactive(sc):
+            continue   # 停用的 scope 不會發放：清單裡殘留的租約不算
         try:
             leases = await asyncio.to_thread(cli.get_leases, sid)
         except WindowsDhcpError:
-            continue   # 單一 scope 失敗不拖垮整批
+            failed_scopes.append(sid)
+            continue   # 單一 scope 失敗不拖垮整批（但這一輪就不能清任何東西，見下方）
         for ls in leases:
             ip_text = _as_str(ls.get("IPAddress"))
             if not ip_text:
                 continue
-            leased.add(ip_text)
-            stmt = select(IPAddress).where(func.host(IPAddress.ip) == ip_text)
-            if scope_ids:
-                stmt = stmt.where(IPAddress.subnet_id.in_(scope_ids))
-            # 重疊網段同 IP 可能多筆 → 取一筆即可（見已知地雷 #7）
-            ipa = (await session.execute(stmt.limit(1))).scalars().first()
-            if ipa is None:
+            # 清單也列出過期／被拒絕的（不屬於任何人）與沒人在用的保留位址（InactiveReservation）：
+            # 前兩種整筆略過；後者名稱仍是這個位址設定的名字，但不算「有租約」
+            state = (_as_str(ls.get("AddressState")) or "").lower()
+            if state.startswith(("expired", "declined")):
                 continue
-            ipa.in_dhcp_lease = True
-            mac = _norm_mac(ls.get("ClientId"))
-            if mac:
-                await consider_mac(session, ip=ipa, mac=mac, source="windows_dhcp")
+            active = not state or state.startswith(("active", "offered"))
+            # 唯一才算：重疊網段同 IP 多筆又沒設範圍時不猜（以前任意取一筆，見已知地雷 #7）
             hostname = _as_str(ls.get("HostName"))
-            if hostname:
-                await apply_observation(
-                    session, ip=ipa, source="windows_dhcp", hostname=hostname.split(".")[0],
-                )
-            seen += 1
+            batch.add(ip_text, evidence=None, mac=_norm_mac(ls.get("ClientId")),
+                      hostname=hostname.split(".")[0] if hostname else None, lease=active)
+    seen = sum(1 for found, _e in await batch.flush() if found)
 
-    if scope_ids:
-        stmt2 = sa_update(IPAddress).where(
-            IPAddress.subnet_id.in_(scope_ids), IPAddress.in_dhcp_lease.is_(True))
-        if leased:
-            stmt2 = stmt2.where(func.host(IPAddress.ip).notin_(leased))
-        await session.execute(stmt2.values(in_dhcp_lease=False))
+    # 有 scope 讀取失敗：那個 scope 的租約這一輪沒看到，不代表過期 —— 名稱與租約旗標都不清。
+    # 以前會照清：失敗 scope 裡每一筆 IP 的「有 DHCP 租約」都被拿掉（2026-09-26 稽核）
+    await hn_run.finish(complete=not failed_scopes)
+    await lease_run.finish(complete=not failed_scopes)
     return seen
 
 

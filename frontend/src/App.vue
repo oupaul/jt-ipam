@@ -66,7 +66,26 @@ const _menuActive = {
 const TH_LIGHT = "#f7f9fc";
 const TH_DARK = "rgba(148, 163, 184, 0.10)";
 const TH_DARK_BASE = "#1a212c";
+// 固定欄（操作欄 fixed: "right"）用 sticky 疊在捲動中的欄位上面：深色的表頭與滑過列是半透明的，
+// 固定欄照用就會透出底下的欄位、字疊在一起。這三個是「半透明值疊在卡片底色 #0f1825 上」算出來的不透明色，
+// 看起來與旁邊一樣。卡片底色或 TH_DARK 改了要一起重算。
+const FIXED_TH_DARK = "#1c2634";        // TH_DARK 疊在卡片上
+const FIXED_TD_DARK = "#0f1825";        // 卡片底色
+const FIXED_TD_HOVER_DARK = "#17202e";  // 滑過列 rgba(148,163,184,.06) 疊在卡片上
 
+// 頁籤要看得出可以切換（使用者 2026-10-16：「頁籤視覺上不夠明顯，常常被忽略」）：每個頁籤是有內距的按鈕、
+// 彼此緊湊、選中的加粗；底色條與滑過效果在下方全域樣式（.n-tabs--bar-type／--line-type）
+const _tabsShape = {
+  tabFontWeight: "500", tabFontWeightActive: "600",
+  tabPaddingSmallBar: "6px 12px", tabPaddingMediumBar: "8px 14px", tabPaddingLargeBar: "10px 16px",
+  tabPaddingSmallLine: "6px 12px", tabPaddingMediumLine: "8px 14px", tabPaddingLargeLine: "10px 16px",
+  tabGapSmallBar: "2px", tabGapMediumBar: "4px", tabGapLargeBar: "4px",
+  tabGapSmallLine: "2px", tabGapMediumLine: "4px", tabGapLargeLine: "4px",
+};
+
+/* 單選按鈕組（分層／自動排列這類）的 small 高度要與全站 small 按鈕一致：下面的 CSS 把 small 按鈕統一拉到 34px，
+   單選按鈕組沒跟上，同一排會高低不齊（使用者 10-21 指出 IP 變更評估關係圖的工具列） */
+const _radioShape = { buttonHeightSmall: "34px" };
 const lightOverrides = {
   common: {
     ..._common,
@@ -94,7 +113,9 @@ const lightOverrides = {
   Card: { color: "#ffffff", borderColor: "#e8ebf2" },
   Menu: _menuActive,
   DataTable: { thColor: TH_LIGHT, borderColor: "#eef1f6", tdColorHover: "#f7f9fc" },
-  Tabs: { tabTextColorActiveLine: PRIMARY, barColor: PRIMARY },
+  Radio: _radioShape,
+  Tabs: { ..._tabsShape, tabTextColorActiveLine: PRIMARY, tabTextColorActiveBar: PRIMARY, barColor: PRIMARY,
+          tabTextColorLine: "#334155", tabTextColorBar: "#334155" },
 };
 
 // 深色：科幻風——藍黑深色 + 青色(cyan)點綴、霓光綠主色，分層藍石板，細邊框帶藍調
@@ -137,7 +158,9 @@ const darkOverrides = {
     itemIconColorChildActive: "#34d399",
   },
   DataTable: { thColor: TH_DARK_BASE, borderColor: "rgba(255,255,255,0.07)", tdColorHover: "rgba(255,255,255,0.04)" },
-  Tabs: { tabTextColorActiveLine: "#34d399", barColor: "#34d399" },
+  Radio: _radioShape,
+  Tabs: { ..._tabsShape, tabTextColorActiveLine: "#34d399", tabTextColorActiveBar: "#34d399", barColor: "#34d399",
+          tabTextColorLine: "#c3cfdf", tabTextColorBar: "#c3cfdf" },
 };
 const themeOverrides = computed(() =>
   effectiveTheme.value === "dark" ? darkOverrides : lightOverrides,
@@ -147,6 +170,9 @@ const themeOverrides = computed(() =>
 // 複製一份色碼到別的檔案的話，主題一改就會有一個地方沒跟上。
 const cssVars = computed(() => ({
   "--table-th-color": effectiveTheme.value === "dark" ? TH_DARK : TH_LIGHT,
+  "--table-fixed-th-color": FIXED_TH_DARK,
+  "--table-fixed-td-color": FIXED_TD_DARK,
+  "--table-fixed-td-hover": FIXED_TD_HOVER_DARK,
 }));
 </script>
 
@@ -171,17 +197,58 @@ const cssVars = computed(() => ({
 </template>
 
 <style>
+/* ── 頁籤看得出可以切換（使用者 2026-10-16）──
+   以前只是一排字加一條底線，沒選中的頁籤看起來不像能點。現在：頁籤列有淡底色條、每個頁籤是圓角按鈕，
+   滑過有底色、選中的加底色與 3px 底線。只套用預設（bar）與 line 型；segment／card 型本來就像按鈕。 */
+/* 淺色：不要灰色底條（使用者 2026-10-16：一整條灰色色塊不好看），改用頁籤列下方細線＋選中淡綠底 */
+html { --jt-tabs-strip: transparent; --jt-tabs-hover: rgba(15, 23, 42, 0.04);
+       --jt-tabs-active: rgba(24, 160, 88, 0.08); --jt-tabs-line: #e5e9f0; }
+html[data-theme="dark"] { --jt-tabs-strip: rgba(148, 197, 255, 0.05); --jt-tabs-hover: rgba(148, 197, 255, 0.09);
+       --jt-tabs-active: rgba(52, 211, 153, 0.14); --jt-tabs-line: transparent; }
+.n-tabs.n-tabs--bar-type > .n-tabs-nav,
+.n-tabs.n-tabs--line-type > .n-tabs-nav {
+  background: var(--jt-tabs-strip);
+  border-radius: 8px 8px 0 0;
+  padding: 4px 6px 0;
+  box-shadow: inset 0 -1px 0 var(--jt-tabs-line);
+}
+.n-tabs.n-tabs--bar-type .n-tabs-tab,
+.n-tabs.n-tabs--line-type .n-tabs-tab {
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  transition: background-color .15s ease;
+}
+.n-tabs.n-tabs--bar-type .n-tabs-tab:not(.n-tabs-tab--active):not(.n-tabs-tab--disabled):hover,
+.n-tabs.n-tabs--line-type .n-tabs-tab:not(.n-tabs-tab--active):not(.n-tabs-tab--disabled):hover {
+  background: var(--jt-tabs-hover);
+}
+.n-tabs.n-tabs--bar-type .n-tabs-tab.n-tabs-tab--active,
+.n-tabs.n-tabs--line-type .n-tabs-tab.n-tabs-tab--active {
+  background: var(--jt-tabs-active);
+}
+.n-tabs.n-tabs--bar-type .n-tabs-bar,
+.n-tabs.n-tabs--line-type .n-tabs-bar {
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+}
+
 /* 卡片柔和陰影：淺色模式給層次感（深色靠表面/邊框對比，黑陰影本就不明顯） */
 .n-card { box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 2px 6px rgba(16, 24, 40, 0.05); }
 
 /* tooltip 內若含連結（例如表格 ellipsis tooltip 會把綠色 <a> 一起複製進來），
    淺色主題下 tooltip 是深底，綠字看不清 → 讓 tooltip 內連結改用 tooltip 自身的淺色字 */
 .n-tooltip a { color: inherit !important; text-decoration: underline; }
+/* 提示文字不可以超出畫面：窄視窗（手機、縮小的瀏覽器）長的提示要換行（使用者回報 RustDesk 按鈕的提示被切掉） */
+.n-tooltip { max-width: min(420px, calc(100vw - 80px)); box-sizing: border-box; }
 
 /* 表格「操作」欄：依「該欄實際可用寬度」自動決定顯示完整按鈕或只剩 icon。
    欄位寬度不足以容納完整按鈕時 → 收成只剩 icon（不換行）。
    只要把該欄 column 設 className: "col-actions" 即可套用，免改每顆按鈕。 */
 td.col-actions { container-type: inline-size; }
+/* IP 欄：位址本身不斷行；後面的角色圖示（自動收錄、閘道、DHCP、固定分配…）放不下就換行，
+   不可以溢出蓋到右邊的主機名稱欄（使用者回報綠色鎖頭擋到主機名稱） */
+.ip-cell { display: inline-flex; align-items: center; flex-wrap: wrap; row-gap: 2px; max-width: 100%; }
+.ip-cell-addr { white-space: nowrap; }
 td.col-actions .n-space { flex-wrap: nowrap !important; }
 @container (max-width: 230px) {
   td.col-actions .n-button__content { font-size: 0; justify-content: center; }
@@ -249,10 +316,42 @@ body,
     "Noto Sans TC", "Helvetica Neue", Arial, sans-serif;
 }
 
+/* 手機：分頁列放不下時換行，「共 N 筆」維持一行（以前被擠成直排、頁碼超出畫面） */
+@media (max-width: 640px) {
+  .n-pagination { flex-wrap: wrap; row-gap: 6px; justify-content: flex-end; }
+  .n-pagination .n-pagination-prefix { white-space: nowrap; }
+}
+
+/* 手機側欄打開時，後面的頁面不跟著捲（MainLayout 切換這個 class） */
+html.sider-open,
+html.sider-open body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* 瀏覽器自己的配色（沒指定顏色的文字、捲軸、原生控制項）跟著 jt-ipam 的主題，不跟著作業系統。
+   index.html 的 color-scheme 是 light dark（第一次繪製前用）：作業系統深色、jt-ipam 淺色時，瀏覽器給沒指定顏色的
+   文字白色，掛在 body 底下的下拉選單裡的說明就成了白字白底（2026-10-06 使用者回報畫質、請求提權選單最後一塊空白） */
+html[data-theme="light"] { color-scheme: light; }
+html[data-theme="dark"] { color-scheme: dark; }
+/* 子網路指示計的位址範圍底線（SubnetGrid.rangeBar）：淺色主題用深一點的顏色＋白色分隔線，
+   亮青色壓在綠色格子上、又在白底上幾乎看不見（使用者 2026-10-11） */
+html[data-theme="light"] { --jt-range-dhcp: #0369a1; --jt-range-reserved: #be185d; --jt-range-other: #475569; --jt-range-sep: #ffffff; }
+html[data-theme="dark"] { --jt-range-dhcp: #22d3ee; --jt-range-reserved: #f472b6; --jt-range-other: #94a3b8; --jt-range-sep: rgba(0, 0, 0, 0.55); }
+
 /* 淺色：給卡片一點陰影 + 圓角，從一片白裡浮出來 */
 html[data-theme="light"] .n-card {
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06),
               0 0 0 1px rgba(15, 23, 42, 0.04);
+}
+/* 主控台（SSH／RDP／VNC／SFTP／RustDesk／BMC／noVNC）的連線卡片：整頁只有這一張卡浮在背景上，
+   一般卡片那層淡陰影看不出邊緣（使用者 2026-10-20）。比照登入卡片；選擇器要比上面那條更具體才不會被蓋掉 */
+html[data-theme="light"] .n-card.console-connect-card,
+html:not([data-theme]) .n-card.console-connect-card {
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12), 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+html[data-theme="dark"] .n-card.console-connect-card {
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.30);
 }
 html[data-theme="light"] .n-layout-sider {
   box-shadow: 1px 0 0 rgba(15, 23, 42, 0.05);
@@ -286,6 +385,19 @@ html[data-theme="dark"] .n-data-table-td {
 }
 html[data-theme="dark"] .n-data-table-tr:hover .n-data-table-td {
   background-color: rgba(148, 163, 184, 0.06) !important;
+}
+/* 固定欄不可以半透明：會透出底下捲過去的欄位（色碼見 FIXED_*_DARK） */
+html[data-theme="dark"] .n-data-table-th.n-data-table-th--fixed-left,
+html[data-theme="dark"] .n-data-table-th.n-data-table-th--fixed-right {
+  background-color: var(--table-fixed-th-color) !important;
+}
+html[data-theme="dark"] .n-data-table-td.n-data-table-td--fixed-left,
+html[data-theme="dark"] .n-data-table-td.n-data-table-td--fixed-right {
+  background-color: var(--table-fixed-td-color);
+}
+html[data-theme="dark"] .n-data-table-tr:hover .n-data-table-td.n-data-table-td--fixed-left,
+html[data-theme="dark"] .n-data-table-tr:hover .n-data-table-td.n-data-table-td--fixed-right {
+  background-color: var(--table-fixed-td-hover) !important;
 }
 
 /* ── 深色科幻風點綴 ── */
@@ -324,7 +436,7 @@ html[data-theme="light"] .n-card > .n-card-header {
    ════════════════════════════════════════════════════════════════ */
 @media (max-width: 640px) {
   /* 內容區與卡片留白縮小，把寶貴的水平空間還給內容 */
-  .n-layout-content .n-layout-scroll-container { padding: 10px !important; }
+  .n-layout-content .n-layout-scroll-container { padding: 10px 10px 88px !important; }  /* 底部留給 AI 助手浮動按鈕（MainLayout） */
   .n-card > .n-card__content { padding: 12px !important; }
   .n-card > .n-card-header { padding: 12px 12px 10px !important; }
 

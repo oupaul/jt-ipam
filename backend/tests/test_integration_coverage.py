@@ -3,7 +3,7 @@
 由來（2026-09-02，使用者：「只要加了新的支援整合 所有功能都要跟進」）：Palo Alto 的
 同步、規則異動偵測、設定頁都做好了，但一輪盤點之後還是有一串地方停在前一家：
 AI 對話的工具（`list_firewalls` 少一家、沒有對應的政策／位址工具）、IP 詳細資料的
-防火牆反查、稽核的目標名稱對照、未授權 DHCP 的整合主機白名單、規則異動頁的說明文字。
+防火牆反查、稽核的目標名稱對照、未授權 DHCP 的整合主機允許清單、規則異動頁的說明文字。
 
 這些漏掉的共同點是**不會壞、只會少**：功能看起來正常，只是少了一家，所以沒人發現。
 唯一擋得住的方式就是把「一個整合要出現在哪些地方」寫成清單，讓漏掉的當場失敗。
@@ -22,7 +22,7 @@ BACKEND = Path(__file__).resolve().parent.parent
 FRONTEND = BACKEND.parent / "frontend"
 
 #: 有「防火牆規則／位址物件」的廠牌 —— 每一家都要走完下面每一項。
-FIREWALL_VENDORS = ("opnsense", "pfsense", "fortigate", "paloalto", "mikrotik")
+FIREWALL_VENDORS = ("opnsense", "pfsense", "fortigate", "paloalto", "checkpoint", "mikrotik")
 
 
 def _read(path: Path) -> str:
@@ -44,6 +44,7 @@ def test_list_firewalls_covers_every_vendor() -> None:
 VENDOR_TOOL_SUFFIXES = {
     "fortigate": ("policies", "addresses"),
     "paloalto": ("policies", "addresses"),
+    "checkpoint": ("rules", "objects"),
     "mikrotik": ("rules", "address_lists"),
 }
 
@@ -75,7 +76,7 @@ def test_rule_change_page_text_lists_every_vendor() -> None:
     """說明文字漏掉一家，使用者會以為那家沒在被盯著（使用者實際回報過）。"""
     labels = {"opnsense": "OPNsense", "pfsense": "pfSense",
               "fortigate": "FortiGate", "paloalto": "Palo Alto",
-              "mikrotik": "MikroTik"}
+              "checkpoint": "Check Point", "mikrotik": "MikroTik"}
     missing_label = [v for v in FIREWALL_VENDORS if v not in labels]
     assert not missing_label, f"新廠牌要在這裡補上顯示名稱：{missing_label}"
     for locale in ("zh-TW", "en-US", "ja-JP"):
@@ -108,6 +109,8 @@ def test_place_knows_every_vendor(path: str, what: str) -> None:
 AUDIT_OBJECT_TYPE = {
     "opnsense": "opnsense_firewall", "pfsense": "pfsense_firewall",
     "fortigate": "fortigate_firewall", "paloalto": "paloalto_firewall",
+    # Check Point 的整合單位是管理伺服器（一台管多個閘道）
+    "checkpoint": "checkpoint_server",
     "mikrotik": "mikrotik_router",
 }
 

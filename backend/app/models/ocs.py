@@ -77,6 +77,10 @@ class OcsServer(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #: ⚠️ 預設關：軟體清單讓每台從 ~2 KB 膨脹到 ~80 KB（5000 台 ≈ 400 MB/輪）
     sync_software: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
+    #: 限定子網路範圍（UUID 字串陣列）。重疊網段時只跟這些子網路裡的 IP 比對 MAC，
+    #: 「未裝 Agent 的 IP」也只列這些子網路。空＝全域（比照 Wazuh 等整合）。
+    scope_subnet_ids: Mapped[list[Any] | None] = mapped_column(JSONB)
+
     #: 同步頻率。2.11（有增量）跑得動每小時；2.10 只能全量，管理員應自己調長。
     sync_interval_seconds: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("3600"))
@@ -85,6 +89,9 @@ class OcsServer(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     #: 盤點時間不是活性訊號。也用來擋「過期的 OCS 主機名稱壓過新鮮的掃描結果」。
     stale_after_days: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=text("30"))
+    #: OCS 伺服器的時區（issue #51，0206）：LASTDATE 是 MySQL DATETIME，存的是 OCS 主機的本地時間、沒有時區。
+    #: 升級前就有的整合是 UTC（維持原本結果）；新建的預設用 jt-ipam 主機的時區（APP_TIMEZONE）
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False, server_default="UTC")
 
     # ── 診斷與同步狀態（連線診斷與 sync 回寫）──
     #: 偵測到的版本字串（如 "2.11.0"）。決定能不能走增量。診斷時填。

@@ -9,16 +9,19 @@
  *  - U 編號從上到下標示，符合機房現場認知
  */
 import { computed, ref, watch, onMounted, onBeforeUnmount } from "vue";
-import { RACK_SLOTS, usesLevels, rackPixelHeight, slotNotation } from "@/utils/rackSlots";
+import { RACK_SLOTS, usesLevels, rackPixelHeight, slotNotation, boardList } from "@/utils/rackSlots";
+import { finishColors, keyholeTile, PLY_COLOR, ANGLE_HOLE_PITCH_PX, ANGLE_PLY_PX } from "@/utils/rackFinish";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
-import { NCard, NEmpty, NAlert, NSpace, NTooltip, NButton, NButtonGroup, NIcon, NDropdown, NSlider } from "naive-ui";
+import { NCard, NEmpty, NAlert, NSpace, NTooltip, NButton, NButtonGroup, NIcon, NDropdown, NSlider, NPopover } from "naive-ui";
+import { otherFaceHints, type FaceHint } from "@/utils/rackOtherFace";
 import type { RackDiagram } from "@/api/racks";
-import { rackTypeColor as colorFor } from "@/utils/rackColors";
+import { rackTypeFill as colorFor, RACK_DEVICE_TYPES } from "@/utils/rackColors";
 import { exportRacksDrawio, exportRacksPng, exportRacksSvg,
   type ExportDiagram } from "@/utils/rackGraphicsExport";
 import { exportTable, type ExportColumn } from "@/utils/tableExport";
 import { ExportIcon } from "@/icons";
+import { useExportBusy } from "@/composables/useExportBusy";
 import { getRackNameAlign, type RackNameAlign } from "@/api/basic";
 
 // 全域設定：機櫃中裝置名稱靠左/置中/靠右（管理員在系統設定調整）
@@ -39,6 +42,23 @@ const isShelf = computed(() => usesLevels(rackKind.value));
 const isWire = computed(() => rackKind.value === "wire_shelf");
 const isIndustrial = computed(() => rackKind.value === "industrial");
 const isWood = computed(() => rackKind.value === "wood_shelf");
+// 三種新型態：角鋼層架（L 型立柱＋鋼橫桿＋夾板）、KALLAX 格子櫃、LackRack（LACK 邊桌當機櫃）
+const isAngle = computed(() => rackKind.value === "angle_shelf");
+const isKallax = computed(() => rackKind.value === "kallax");
+const isLack = computed(() => rackKind.value === "lackrack");
+/** 表面顏色換成 CSS 變數（配色與匯出、嵌入圖共用 utils/rackFinish.ts 那一份） */
+const finishVars = computed<Record<string, string>>(() => {
+  const c = finishColors(rackKind.value, (props.diagram as any)?.finish);
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(c)) out[`--fin-${k}`] = v;
+  if (isAngle.value) {
+    out["--ply"] = PLY_COLOR;
+    out["--rd-ply"] = ANGLE_PLY_PX + "px";
+    out["--rd-keyholes"] = keyholeTile(c.hole ?? "rgba(0,0,0,0.4)", sidePx.value);
+    out["--rd-hole-pitch"] = ANGLE_HOLE_PITCH_PX + "px";
+  }
+  return out;
+});
 /**
  * 木質層架（IKEA IVAR）背面的 OBSERVATÖR 支撐桿：**一根**斜桿，不是 X。
  * 它是固定 100 公分的鋼條，所以跨幾層由層架寬度決定 —— 跨距由後端算好
@@ -74,7 +94,7 @@ function rowsText(n: number, kind?: string | null): string {
 const rowsLabel = computed(() => rowsText(props.diagram?.u_height ?? 0, rackKind.value));
 // 層架不是機櫃 —— 標題寫「機櫃：」會讓人以為型態沒存到。標點交給各語系（中日文全形）。
 const cardTitle = computed(() => t("racks.card_title", {
-  kind: usesLevels(rackKind.value) ? t("racks.card_shelf") : t("nav.racks"),
+  kind: usesLevels(rackKind.value) ? t("racks.card_shelf") : t("racks.card_rack"),   // 單數（英文曾顯示「Racks: TYO-R01」）
   name: props.diagram?.name ?? "", rows: rowsLabel.value,
 }));
 
@@ -87,14 +107,28 @@ const cardTitle = computed(() => t("racks.card_title", {
 /** 整排並列時不顯示逐櫃工具列：上方已經有共用的一排，而且工具列的寬度會讓卡片
  *  收不進來（窄機櫃旁邊留一大片空白）。 */
 const showControls = computed(() => props.controls && !props.floorAlignTo);
+const ZOOM_MIN = 0.35;
+/**
+ * 手機的預設比例依畫面算，不沿用桌機的 100%（使用者回報手機上太大）：取「寬度放得下、整座
+ * 高度一個畫面看得完」的比例，上限 45%、下限 35%（42U 會落在 35%）。拉過拉桿就記住，
+ * 跟桌機分開記 —— 桌機習慣的大小搬到手機上通常不合用。
+ */
+const MOBILE_ZOOM_MAX = 0.45;
+const narrow = typeof window !== "undefined" && !!window.matchMedia?.("(max-width: 767px)").matches;
+const ZOOM_KEY = narrow ? "jt.rackZoom.mobile" : "jt.rackZoom";
 const zoom = ref(1);
+let zoomFromUser = false;
+let zoomAutoSetting = false;
 try {
-  const v = Number(localStorage.getItem("jt.rackZoom"));
-  if (v >= 0.35 && v <= 1) zoom.value = v;
+  const v = Number(localStorage.getItem(ZOOM_KEY));
+  if (v >= ZOOM_MIN && v <= 1) { zoom.value = v; zoomFromUser = true; }
 } catch { /* 隱私模式讀不到就用預設 */ }
+// flush: sync —— 自動套用時要能分辨「程式設的」與「使用者拉的」，非同步的 watch 會錯過旗標
 watch(zoom, (v: number) => {
-  try { localStorage.setItem("jt.rackZoom", String(v)); } catch { /* 忽略 */ }
-});
+  if (zoomAutoSetting) return;
+  zoomFromUser = true;
+  try { localStorage.setItem(ZOOM_KEY, String(v)); } catch { /* 忽略 */ }
+}, { flush: "sync" });
 
 /**
  * 一格裡的垂直定位。**只能在這裡算**：層內疊放要用行內 style 設 bottom/height，
@@ -136,6 +170,8 @@ const rowPxList = computed<number[]>(() => {
 });
 /** 層板畫出來多厚 px。層高填的是淨空高，板厚另外占位置。 */
 const boardPx = computed(() => Number((props.diagram as any)?.render_board_px ?? 0) || 0);
+/** 最上面那一列之上的厚度 px（LackRack 的桌面） */
+const topPx = computed(() => Number((props.diagram as any)?.render_top_px ?? 0) || 0);
 /** 層架的最上面那片板**上面**也放得了東西 → 多一列可放的位置。 */
 const openTop = computed(() => Boolean((props.diagram as any)?.open_top));
 /** 最下層板離地多高 px —— 立柱要往下長到地面，否則層架看起來像被齊平切掉。 */
@@ -157,7 +193,7 @@ const postTop = computed(() => {
   if (!openTop.value || !cells.value.length) return 0;
   // 減掉板厚：cells[0].px 是「頂板上方那一列」的高度（含它下緣的那片板），
   // 從板底起算會讓 22px 厚的板整片凸出在柱子之上。柱子要從板的**頂端**開始。
-  return Math.max(0, cells.value[0].px - boardPx.value);
+  return Math.max(0, cells.value[0].px - cells.value[0].board);
 });
 const boundaryTops = computed<number[]>(() => {
   const out = [-3];
@@ -167,9 +203,48 @@ const boundaryTops = computed<number[]>(() => {
   // 不跳掉就會有一圈套環浮在半空中。與層板的處理一致。
   return openTop.value ? out.slice(1) : out;
 });
-const colPx = computed(() => {
-  const base = props.diagram?.render_width_px ?? 250;
-  return props.compact ? Math.min(base, 300) : base;
+// 縮圖不在這裡限寬：以前 compact 把寬度壓到 300、高度不動，寬的層架（KALLAX 2×2、90 公分鍍鉻層架）
+// 就被擠成瘦長形。寬度上限改由 fitZoom 整張等比縮。
+const colPx = computed(() => props.diagram?.render_width_px ?? 250);
+// 機櫃兩側的走線空間（19 吋設備區以外、外寬多出來的部分）：600mm 每側約 35px、800mm 約 87px。
+// KALLAX／角鋼層架／LackRack 借這個值畫兩側的外框／立柱／桌腳；其他層架是 0。
+// 後端算好，畫面與匯出吃同一個值。
+const sidePx = computed(() => {
+  const v = Number((props.diagram as any)?.render_side_px ?? 0) || 0;
+  return isShelf.value && !isKallax.value && !isAngle.value ? 0 : v;
+});
+/**
+ * LackRack 的桌腳與桌面（y 從第一列的頂端起算）。跟匯出、嵌入圖一樣畫成有輪廓線的方塊：
+ * 以前用一疊背景漸層拼，桌面與腳底都沒有邊，白色桌子在白色卡片上幾乎看不見，
+ * 最下面那截桌腳也像是突出去（使用者回報）。每一片板的最下面那一截就是桌面，
+ * 疊起來的桌子之間那片板上面多出來的是上面那張的腳下空隙。
+ */
+const lackParts = computed(() => {
+  if (!isLack.value || !cells.value.length) return null;
+  const slab = cells.value[0].board;
+  const tops: number[] = [];
+  let acc = 0;
+  for (const c of cells.value) {
+    acc += c.px;
+    if (c.board > 0) tops.push(acc - slab);
+  }
+  return tops.length ? { slab, tops, legTop: tops[0] } : null;
+});
+/** KALLAX 直的內隔板：每一條的位置（占設備區寬的比例）、寬 px，以及從哪裡畫到哪裡。
+ *  畫在裝置**上面**：資料上的橫向格位是整片寬度切 60 格，隔板不占格位，
+ *  蓋在上面才看得出「裝置放在格子裡」。 */
+const kallaxDividers = computed(() => {
+  if (!isKallax.value || cells.value.length < 2) return null;
+  const cols = Math.max(1, Number((props.diagram as any)?.render_cols ?? 1));
+  const w = Number((props.diagram as any)?.render_divider_px ?? 0) || 0;
+  const first = cells.value[0];
+  const last = cells.value[cells.value.length - 1];
+  const top = first.px;                       // 頂部那一列（含外框頂板）之下
+  const total = cells.value.reduce((a, c) => a + c.px, 0);
+  return {
+    w, top, height: total - top - last.board,
+    at: Array.from({ length: cols - 1 }, (_, i) => (i + 1) / cols),
+  };
 });
 
 // 共用：產生機櫃 SVG 字串 + 尺寸
@@ -231,7 +306,9 @@ function exportData(fmt: "csv" | "xlsx" | "ods" | "md" | "txt") {
     .map((dev: any) => ({ ...dev, slot: slotNotation(dev) }));
   exportTable(fmt, `rack-${d.name}`, cols, rows as any, `Rack ${d.name}`);
 }
-function onExport(key: string) {
+const { exporting, run: runExport } = useExportBusy();
+function onExport(key: string) { void runExport(() => doExport(key)); }
+function doExport(key: string) {
   if (key === "svg") exportSvg();
   else if (key === "png") exportPng();
   else if (key === "drawio") exportDrawio();
@@ -258,8 +335,12 @@ interface Props {
   bare?: boolean;               // 去掉卡片外框與標題（嵌入用）
   face?: "front" | "rear" | null;  // 外部強制指定檢視面（合併卡共用切換用）；null = 用自身切換
   controls?: boolean;              // 是否顯示自身的面切換 + 匯出（合併卡傳 false 改由外層統一）
+  sharedZoom?: number | null;      // 外部指定的顯示大小（機房整排共用一條拉桿）；null = 用自身的
+  /** compact 並排時（儀表板）傳入該排最高那台的自然高度 px：整排用同一個縮放比例。
+   *  不傳就各自縮到放得下 —— 高的被縮、矮的不縮，並排時大小比例就失真了（使用者回報）。 */
+  fitTo?: number | null;
 }
-const props = withDefaults(defineProps<Props>(), { showLegend: true, editable: false, floorAlignTo: 0, highlightId: null, compact: false, bare: false, face: null, controls: true });
+const props = withDefaults(defineProps<Props>(), { showLegend: true, editable: false, floorAlignTo: 0, highlightId: null, compact: false, bare: false, face: null, controls: true, sharedZoom: null, fitTo: null });
 const faceView = ref<"front" | "rear">("front");   // 機櫃正面 / 背面切換
 // 實際採用的檢視面：外部有指定就用外部（合併卡共用），否則用自身切換
 const effFace = computed(() => props.face ?? faceView.value);
@@ -276,19 +357,39 @@ const measuredPx = ref(0);
 const measuredW = ref(0);
 const ownPx = computed(() => measuredPx.value || rackPixelHeight(props.diagram as any));
 /** 未縮放的自然寬度。縮放後**版面寬度不會自己縮**，卡片會停在原寬度、右邊空一塊。 */
-const ownW = computed(() => measuredW.value || (colPx.value + 40));
+const ownW = computed(() => measuredW.value || (colPx.value + 2 * sidePx.value + 40));
 onMounted(() => {
   if (!wrapEl.value || typeof ResizeObserver === "undefined") return;
   const ro = new ResizeObserver(() => {
     // 量的是**未縮放**的自然尺寸：transform 不影響 offsetWidth / offsetHeight
     if (!wrapEl.value) return;
     measuredPx.value = wrapEl.value.offsetHeight;
-    measuredW.value = wrapEl.value.offsetWidth;
+    // 寬度要**無條件進位**：offsetWidth 會四捨五入，KALLAX 實際 428.28px 卻量成 428，外層就窄了
+    // 0.28px → 「一律顯示捲軸」的 Mac 上每個 KALLAX 底下都多一條橫向捲軸（使用者回報）
+    const scale = effZoom.value || 1;
+    measuredW.value = Math.max(wrapEl.value.offsetWidth,
+                               Math.ceil(wrapEl.value.getBoundingClientRect().width / scale - 0.01));
     if (props.diagram) emit("measured", props.diagram.rack_id, measuredPx.value);
+    autoFitMobile();
   });
   ro.observe(wrapEl.value);
   onBeforeUnmount(() => ro.disconnect());
 });
+const scrollEl = ref<HTMLElement | null>(null);
+function autoFitMobile() {
+  if (!narrow || zoomFromUser || !showControls.value || props.sharedZoom != null || props.compact) return;
+  const natW = measuredW.value;
+  const natH = measuredPx.value;
+  const availW = scrollEl.value?.clientWidth || 0;
+  if (!natW || !natH || !availW) return;
+  const availH = Math.max(240, window.innerHeight - 170);   // 扣掉頂列、工具列與卡片標題
+  const fit = Math.floor(Math.min(availW / natW, availH / natH) * 20) / 20;
+  const z = Math.min(MOBILE_ZOOM_MAX, Math.max(ZOOM_MIN, fit));
+  if (z === zoom.value) return;
+  zoomAutoSetting = true;
+  zoom.value = z;
+  zoomAutoSetting = false;
+}
 /**
  * 落地對齊：比該排最高的那台矮多少，就在上面補多少空白。
  *
@@ -299,13 +400,17 @@ onMounted(() => {
  */
 /** 縮圖放得下的高度（px）。超過就整張等比縮小 —— 比例不動，字級再由 --rd-fit 補回來。 */
 const COMPACT_MAX_PX = 460;
+/** 單獨一張縮圖（裝置詳細資料側欄）放得下的寬度：超過也是整張等比縮，不壓扁 */
+const COMPACT_MAX_W = 300;
 const fitZoom = computed(() => {
   if (!props.compact) return 1;
+  if (props.fitTo) return props.fitTo > COMPACT_MAX_PX ? COMPACT_MAX_PX / props.fitTo : 1;
   const nat = ownPx.value || rackPixelHeight(props.diagram as any) || 1;
-  return nat > COMPACT_MAX_PX ? COMPACT_MAX_PX / nat : 1;
+  const byH = nat > COMPACT_MAX_PX ? COMPACT_MAX_PX / nat : 1;
+  return colPx.value > COMPACT_MAX_W ? Math.min(byH, COMPACT_MAX_W / colPx.value) : byH;
 });
 /** 真正套上去的縮放：縮圖先縮到放得下，再乘上使用者拉的那一段。 */
-const effZoom = computed(() => fitZoom.value * zoom.value);
+const effZoom = computed(() => fitZoom.value * (props.sharedZoom ?? zoom.value));
 
 const floorPad = computed(() =>
   Math.max(0, (props.floorAlignTo || 0) - ownPx.value));
@@ -314,6 +419,8 @@ const emit = defineEmits<{
   /** 量到的自然高度（px）。並排落地對齊的基準必須用**量出來的**值 —— 由資料推算的高度
    *  少了外框的 border/padding，而那是逐型態不同的，於是最高的那一台會比別人低個幾 px。 */
   (e: "measured", rackId: string, px: number): void;
+  /** 外部控制檢視面時（機房整排），點提示的「切換到背面」要請外層切 */
+  (e: "update:face", face: "front" | "rear"): void;
 }>();
 const hoveredId = ref<string | null>(null);   // hover 某 U → 整台裝置點亮+框線
 
@@ -328,6 +435,9 @@ interface DevPart {
   run: number;
   /** 這台跨過那幾格的**高度總和** px。層高可以一層一層不同，所以不能用 run × 列高。 */
   runPx: number;
+  /** 最下面那一格底下那片板多厚 —— 名稱置中要扣掉它。以前扣的是整台共用的板厚，
+   *  KALLAX 的外框、LackRack 的桌面比共用值厚，名稱就被推到板子裡。 */
+  runBoard: number;
   /** 層內的垂直位置（0 貼著層板，往上長）與佔幾格 —— 層架一層可以疊放、也可不放滿 */
   vslot: number;
   vspan: number;
@@ -341,6 +451,7 @@ interface DevPart {
 interface Cell {
   u: number;                       // 1-based, top-most U
   px: number;                      // 這一層畫出來多高（淨空高 + 層板厚度）
+  board: number;                   // 這一列底下那片板多厚 px（KALLAX 外框、LackRack 桌面會比較厚）
   isTop: boolean;                  // 是不是「頂板上方」那一列（層架才有）
   parts: DevPart[];                // 這個 U 上的裝置（依起始格排序）
   gaps: { slot: number; span: number }[];   // 沒被佔到的空隙（可點來新增）
@@ -376,10 +487,10 @@ const cells = computed<Cell[]>(() => {
   const bottomUp = props.diagram.numbering === "bottom-up";
   const map: Record<number, Cell> = {};
   for (let u = 1; u <= u_height; u++)
-    map[u] = { u, px: rowPxOf(u) + boardPx.value, isTop: u > real, parts: [], gaps: [] };
+    map[u] = { u, px: rowPxOf(u) + boardPx.value, board: boardPx.value, isTop: u > real, parts: [], gaps: [] };
   const mk = (d: any): DevPart => ({
     id: d.device_id, name: d.name, type: d.type, vendor: d.vendor, model: d.model,
-    u_size: d.u_size, is_top: false, is_bottom: false, is_mid: false, run: 1, runPx: 0,
+    u_size: d.u_size, is_top: false, is_bottom: false, is_mid: false, run: 1, runPx: 0, runBoard: 0,
     slot: Number(d.rack_slot ?? 0), span: Number(d.rack_slot_span ?? RACK_SLOTS),
   vslot: Number(d.rack_vslot ?? 0), vspan: Number(d.rack_vslot_span ?? RACK_SLOTS),
     primary_ip: d.primary_ip,
@@ -402,6 +513,10 @@ const cells = computed<Cell[]>(() => {
     const i = order.findIndex((c) => c.isTop);
     if (i > 0) order.unshift(...order.splice(i, 1));
   }
+  // 每一列底下那片板的厚度照**畫面順序**（由上往下）套上：KALLAX 的頂板、底板是外框，
+  // LackRack 每張桌子之間有一片桌面。其他型態每片一樣厚，結果跟以前相同。
+  const boards = boardList(props.diagram as any, order.length);
+  order.forEach((c, i) => { c.board = boards[i]; c.px = rowPxOf(c.u) + boards[i]; });
 
   for (const c of order) {
     c.parts.sort((a, b) => a.slot - b.slot);
@@ -438,11 +553,70 @@ const cells = computed<Cell[]>(() => {
     const head = order[idxs[0]].parts.find((x) => x.id === id);
     if (head) head.is_mid = true;
     const runPx = idxs.reduce((a, i) => a + order[i].px, 0);
+    const runBoard = order[idxs[idxs.length - 1]].board;
     for (const i of idxs)
-      for (const p of order[i].parts) if (p.id === id) { p.run = idxs.length; p.runPx = runPx; }
+      for (const p of order[i].parts) if (p.id === id) { p.run = idxs.length; p.runPx = runPx; p.runBoard = runBoard; }
   }
   return order;
 });
+
+/**
+ * 另一面的裝置提示（2026-10-21 設計「側邊提示軌＋背面數量」）：看正面時右側提示軌標「背 ×N」，
+ * 看背面時反過來標「前 ×N」。固定看得到（不靠滑鼠停留），也不遮住這一面的裝置：
+ * 標準機櫃與層架放在框外右側的提示軌；格櫃放在對應的格位，那一格這一面有東西時才退回提示軌。
+ * 縮圖（裝置詳細資料、儀表板）不畫：空間不夠，那裡的重點是本機的位置。
+ */
+interface PlacedHint extends FaceHint { key: string; top: number; height: number; inCell: boolean }
+const kallaxCols = computed(() => (isKallax.value ? Math.max(1, Number((props.diagram as any)?.render_cols ?? 1)) : 1));
+const otherFace = computed<"front" | "rear">(() => (effFace.value === "front" ? "rear" : "front"));
+const faceHints = computed<PlacedHint[]>(() => {
+  if (!props.diagram || props.compact) return [];
+  const hints = otherFaceHints(props.diagram.devices as any, effFace.value, rackKind.value, kallaxCols.value);
+  if (!hints.length) return [];
+  // 每一列在畫面上的 y（由上往下累加）
+  const pos = new Map<number, { top: number; px: number; board: number; cell: Cell }>();
+  let acc = 0;
+  for (const c of cells.value) { pos.set(c.u, { top: acc, px: c.px, board: c.board, cell: c }); acc += c.px; }
+  const width = RACK_SLOTS / kallaxCols.value;
+  const out: PlacedHint[] = [];
+  for (const h of hints) {
+    const rows = [...pos.entries()].filter(([u]) => u >= h.from && u <= h.to).map(([, v]) => v);
+    if (!rows.length) continue;
+    const top = Math.min(...rows.map((r) => r.top));
+    const bottom = Math.max(...rows.map((r) => r.top + r.px - r.board));
+    let inCell = false;
+    if (h.col != null) {
+      const lo = h.col * width, hi = lo + width;
+      inCell = !rows[0].cell.parts.some((p) => p.slot < hi && p.slot + p.span > lo);
+    }
+    out.push({ ...h, key: `${h.from}-${h.to}-${h.col ?? ""}`, top, height: Math.max(12, bottom - top), inCell });
+  }
+  return out;
+});
+const railHints = computed(() => faceHints.value.filter((h) => !h.inCell));
+const cellHints = computed(() => faceHints.value.filter((h) => h.inCell));
+function hintLabel(h: FaceHint): string {
+  return t(effFace.value === "front" ? "racks.rear_hint" : "racks.front_hint", { n: h.devices.length });
+}
+function hintTitle(h: FaceHint): string {
+  const where = isShelf.value
+    ? (h.from > (props.diagram?.u_height ?? 0) ? t("racks.level_top") : t("racks.level_at", { n: h.from }))
+    : (h.from === h.to ? `U${h.from}` : `U${h.from}–U${h.to}`);
+  return t(effFace.value === "front" ? "racks.rear_devices_at" : "racks.front_devices_at", { where });
+}
+/** 切到另一面並保留位置：版面高度不隨檢視面改變，捲動位置本來就在；被提示的裝置短暫亮起 */
+const flashIds = ref<Set<string>>(new Set());
+let flashTimer: ReturnType<typeof setTimeout> | null = null;
+const openHint = ref<string | null>(null);
+function switchToOther(h: FaceHint) {
+  openHint.value = null;
+  const target = otherFace.value;
+  if (props.face == null) faceView.value = target;
+  else emit("update:face", target);
+  flashIds.value = new Set(h.devices.map((d) => String(d.device_id)));
+  if (flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => { flashIds.value = new Set(); }, 2400);
+}
 </script>
 
 <template>
@@ -462,12 +636,12 @@ const cells = computed<Cell[]>(() => {
           </n-button>
         </n-button-group>
         <span class="zoom-ctl" :title="t('rack_diagram.zoom')">
-          <n-slider v-model:value="zoom" :min="0.35" :max="1" :step="0.05"
+          <n-slider v-model:value="zoom" :min="ZOOM_MIN" :max="1" :step="0.05"
                     :format-tooltip="(v: number) => Math.round(v * 100) + '%'" style="width: 110px" />
           <span class="zoom-ctl__val">{{ Math.round(zoom * 100) }}%</span>
         </span>
-        <n-dropdown trigger="click" :options="exportOptions" @select="onExport">
-          <n-button size="tiny" :title="t('rack_diagram.export_svg_hint')">
+        <n-dropdown trigger="click" :options="exportOptions" :disabled="exporting" @select="onExport">
+          <n-button size="tiny" :loading="exporting" :disabled="exporting" :title="t('rack_diagram.export_svg_hint')">
             <template #icon><n-icon><ExportIcon /></n-icon></template>
             {{ t("common.export") }}
           </n-button>
@@ -492,21 +666,45 @@ const cells = computed<Cell[]>(() => {
         :description="t('rack_diagram.empty')"
       />
 
-      <div v-else class="rack-zoom"
+      <!-- 比卡片寬（手機）時在這一層左右捲：以前整張溢出卡片、頁面又不能橫向捲，右半邊看不到 -->
+      <div v-else ref="scrollEl" class="rack-scroll">
+      <div class="rack-zoom"
            :style="{ height: ownPx * effZoom + 'px', width: ownW * effZoom + 'px',
                      marginTop: floorPad * effZoom + 'px', '--rd-fit': String(fitZoom) }">
        <div ref="wrapEl" class="rack-wrap"
             :style="{ transform: effZoom === 1 ? undefined : `scale(${effZoom})` }">
         <!-- U 編號：機櫃框外左側 gutter -->
-        <div class="u-gutter">
+        <div class="u-gutter" :style="topPx ? { paddingTop: 6 + topPx + 'px' } : undefined">
+          <!-- 編號置中在那一列**自己的**空間（扣掉底下那片板）：機櫃最下面那一 U 底下是 75mm 的底座，
+               連板一起置中的話編號會掉進底座裡（使用者回報）。 -->
           <div v-for="cell in cells" :key="'g' + cell.u" class="u-num-out"
-               :style="{ height: cell.px + 'px' }">{{ cell.isTop ? t("racks.level_top") : cell.u }}</div>
+               :style="{ height: cell.px + 'px', paddingBottom: cell.board + 'px', boxSizing: 'border-box' }">{{ cell.isTop ? t("racks.level_top") : cell.u }}</div>
         </div>
         <div class="rack-frame"
-             :class="{ 'is-shelf': isShelf, 'is-wire': isWire, 'is-industrial': isIndustrial, 'is-wood': isWood }"
-             :style="{ '--rd-col-w': colPx + 'px', '--rd-row-h': rowPx + 'px',
+             :class="{ 'is-shelf': isShelf, 'is-wire': isWire, 'is-industrial': isIndustrial, 'is-wood': isWood,
+                       'is-angle': isAngle, 'is-kallax': isKallax, 'is-lack': isLack }"
+             :style="{ '--rd-col-w': colPx + 'px', '--rd-side': sidePx + 'px', '--rd-row-h': rowPx + 'px',
                        '--rd-board': boardPx + 'px', '--rd-post-top': postTop + 'px',
-                       '--rd-floor': floorPx + 'px' }">
+                       '--rd-floor': floorPx + 'px', '--rd-top': topPx + 'px',
+                       '--rd-base': (isShelf || isLack ? 0 : (cells[cells.length - 1]?.board ?? 0)) + 'px',
+                       ...finishVars }">
+          <!-- KALLAX：外框（兩側與頂板、底板的顏色）＋直的內隔板。外框從頂板開始，
+               頂板上面那一列是開放的（KALLAX 頂部可以放東西）。 -->
+          <i v-if="isKallax" class="kallax-box" :style="{ top: postTop + 'px' }" aria-hidden="true" />
+          <template v-if="kallaxDividers">
+            <i v-for="(f, i) in kallaxDividers.at" :key="'kd' + i" class="kallax-div" aria-hidden="true"
+               :style="{ top: kallaxDividers.top + 'px', height: kallaxDividers.height + 'px',
+                         width: kallaxDividers.w + 'px',
+                         left: `calc(var(--rd-side) + (100% - 2 * var(--rd-side)) * ${f} - ${kallaxDividers.w / 2}px)` }" />
+          </template>
+          <!-- LackRack：兩支桌腳從最上面那張的桌面一路到地面，每張桌子一片桌面蓋在腳上
+               （疊起來的桌子因此看得出各自的腳）。都有輪廓線，跟匯出、嵌入圖同一種畫法。 -->
+          <template v-if="lackParts">
+            <i class="lack-leg is-left" :style="{ top: lackParts.legTop + 'px' }" aria-hidden="true" />
+            <i class="lack-leg is-right" :style="{ top: lackParts.legTop + 'px' }" aria-hidden="true" />
+            <i v-for="(y, i) in lackParts.tops" :key="'lt' + i" class="lack-top"
+               :style="{ top: y + 'px', height: lackParts.slab + 'px' }" aria-hidden="true" />
+          </template>
           <!-- 頂板：CSS 是用每一列的 border-bottom 畫層板，最上面那片畫不出來 ——
                層架頂端幾乎一定有一片板，少了就像少一層（SVG 那邊是多畫一片解決的）。 -->
           <!-- 開放頂端時**不畫**這片：最上面那一列就是頂板的上面，那裡沒有板。
@@ -520,14 +718,14 @@ const cells = computed<Cell[]>(() => {
           <template v-for="cell in cells" :key="cell.u">
             <!-- 一個 U = 12 格的橫向網格；裝置與空隙都用百分比絕對定位，
                  所以整 U / 1/2 / 1/3 / 1/4 / 1/6 走的是同一條渲染路徑（issue #31）。 -->
-            <div class="u-row u-slots" :class="{ 'is-top': cell.isTop }"
-                 :style="{ height: cell.px + 'px' }">
+            <div class="u-row u-slots" :class="{ 'is-top': cell.isTop, 'has-board': cell.board > 0 }"
+                 :style="{ height: cell.px + 'px', '--rd-board': cell.board + 'px' }">
               <n-tooltip v-for="p in cell.parts" :key="p.id + '@' + p.slot"
                          trigger="hover" :delay="60" placement="right">
                 <template #trigger>
                   <div
                     class="u-part u-occupied"
-                    :class="{ 'u-top': p.is_top, 'u-bottom': p.is_bottom, 'u-cont': !p.is_bottom, 'u-hl': hoveredId === p.id || highlightId === p.id, 'u-dim': !!highlightId && highlightId !== p.id }"
+                    :class="{ 'u-top': p.is_top, 'u-bottom': p.is_bottom, 'u-cont': !p.is_bottom, 'u-hl': hoveredId === p.id || flashIds.has(String(p.id)), 'u-self': !!highlightId && highlightId === p.id }"
                     :style="{ background: colorFor(p.type), left: pct(p.slot), width: pct(p.span),
                               ...partVStyle(p),
                               justifyContent: p.span >= 12 ? nameJustify : 'center' }"
@@ -538,7 +736,7 @@ const cells = computed<Cell[]>(() => {
                     <span v-if="p.is_mid" class="d-name-span"
                           :class="{ 'd-name-span-half': p.span < 12 }"
                           :style="{ height: (p.vslot || p.vspan < RACK_SLOTS)
-                                              ? '100%' : (p.runPx - boardPx) + 'px' }">
+                                              ? '100%' : (p.runPx - p.runBoard) + 'px' }">
                       <span class="d-name" :class="{ 'd-name-half': p.span < 12 }">{{ p.name }}</span>
                     </span>
                   </div>
@@ -556,6 +754,29 @@ const cells = computed<Cell[]>(() => {
                 </div>
               </n-tooltip>
 
+              <!-- 格櫃：另一面的提示放在對應的格位（這一面那一格是空的才放進來，不遮裝置） -->
+              <template v-for="h in cellHints" :key="'ch' + h.key">
+                <n-popover v-if="h.from === cell.u" trigger="click" placement="right" :width="300"
+                           :show="openHint === h.key" @update:show="(v: boolean) => (openHint = v ? h.key : null)">
+                  <template #trigger>
+                    <button type="button" class="face-chip face-chip--cell" data-testid="rack-face-hint"
+                            :style="{ left: `calc(${pct((h.col ?? 0) * (RACK_SLOTS / kallaxCols) + RACK_SLOTS / kallaxCols)} - 6px)` }"
+                            @click.stop>{{ hintLabel(h) }}</button>
+                  </template>
+                  <div class="face-pop">
+                    <div class="face-pop__t">{{ hintTitle(h) }}</div>
+                    <div class="face-pop__n">{{ t("racks.devices_total", { n: h.devices.length }) }}</div>
+                    <button v-for="d in h.devices" :key="d.device_id" type="button" class="face-pop__d" @click="goDevice(String(d.device_id))">
+                      <i class="face-pop__sw" :style="{ background: colorFor(d.type) }" />
+                      <span class="face-pop__name">{{ d.name }}</span>
+                      <span class="face-pop__m">{{ [t(`devices.type_${d.type}`), d.model].filter(Boolean).join(" · ") }}</span>
+                    </button>
+                    <n-button size="small" type="primary" block @click="switchToOther(h)">
+                      {{ t(otherFace === "rear" ? "racks.switch_to_rear" : "racks.switch_to_front") }}
+                    </n-button>
+                  </div>
+                </n-popover>
+              </template>
               <!-- 空隙：點了就帶著「哪一個 U、哪一格」去新增 -->
               <div v-for="g in cell.gaps" :key="'gap' + g.slot"
                    class="u-part u-gap" :class="{ 'u-pickable': editable }"
@@ -569,20 +790,42 @@ const cells = computed<Cell[]>(() => {
             </div>
           </template>
         </div>
+        <!-- 另一面的提示軌：對齊 U 位／層，跨多 U 用括線；只有在有提示時才占寬度 -->
+        <div v-if="railHints.length" class="face-rail" :style="{ paddingTop: 6 + topPx + 'px' }">
+          <div class="face-rail__in" :style="{ height: cells.reduce((a, c) => a + c.px, 0) + 'px' }">
+            <n-popover v-for="h in railHints" :key="h.key" trigger="click" placement="right" :width="300"
+                       :show="openHint === h.key" @update:show="(v: boolean) => (openHint = v ? h.key : null)">
+              <template #trigger>
+                <button type="button" class="face-hint" data-testid="rack-face-hint"
+                        :class="{ 'is-span': h.height > 30 }"
+                        :style="{ top: h.top + 'px', height: h.height + 'px' }">
+                  <span class="face-chip">{{ hintLabel(h) }}</span>
+                </button>
+              </template>
+              <div class="face-pop">
+                <div class="face-pop__t">{{ hintTitle(h) }}</div>
+                <div class="face-pop__n">{{ t("racks.devices_total", { n: h.devices.length }) }}</div>
+                <button v-for="d in h.devices" :key="d.device_id" type="button" class="face-pop__d" @click="goDevice(String(d.device_id))">
+                  <i class="face-pop__sw" :style="{ background: colorFor(d.type) }" />
+                  <span class="face-pop__name">{{ d.name }}</span>
+                  <span class="face-pop__m">{{ [t(`devices.type_${d.type}`), d.model].filter(Boolean).join(" · ") }}</span>
+                </button>
+                <n-button size="small" type="primary" block @click="switchToOther(h)">
+                  {{ t(otherFace === "rear" ? "racks.switch_to_rear" : "racks.switch_to_front") }}
+                </n-button>
+              </div>
+            </n-popover>
+          </div>
+        </div>
        </div>
+      </div>
       </div>
 
       <div v-if="showLegend" class="legend">
-        <span class="legend-item" :style="{ background: colorFor('router') }">router</span>
-        <span class="legend-item" :style="{ background: colorFor('switch') }">switch</span>
-        <span class="legend-item" :style="{ background: colorFor('firewall') }">firewall</span>
-        <span class="legend-item" :style="{ background: colorFor('server') }">server</span>
-        <span class="legend-item" :style="{ background: colorFor('storage') }">storage</span>
-        <span class="legend-item" :style="{ background: colorFor('ap') }">ap</span>
-        <span class="legend-item" :style="{ background: colorFor('ipmi') }">ipmi</span>
-        <span class="legend-item" :style="{ background: colorFor('patch_panel') }">patch panel</span>
-        <span class="legend-item" :style="{ background: colorFor('pdu') }">pdu</span>
-        <span class="legend-item" :style="{ background: colorFor('ups') }">ups</span>
+        <!-- 圖例用裝置類型的顯示名稱（以前直接印 router／patch panel 這些代碼） -->
+        <span v-for="ty in RACK_DEVICE_TYPES" :key="ty" class="legend-item" :style="{ background: colorFor(ty) }">
+          {{ t(`devices.type_${ty}`) }}
+        </span>
         <span class="legend-note">{{ t("racks.rear_legend") }}</span>
       </div>
     </n-space>
@@ -590,6 +833,30 @@ const cells = computed<Cell[]>(() => {
 </template>
 
 <style scoped>
+/* 另一面的提示軌（背 ×N／前 ×N）：框外右側，對齊 U 位；跨多 U 用左側括線 */
+.face-rail { flex: 0 0 auto; width: 58px; }
+.face-rail__in { position: relative; }
+.face-hint { position: absolute; left: 0; right: 0; display: flex; align-items: center; padding: 0 0 0 8px;
+  background: none; border: 0; cursor: pointer; font: inherit; }
+.face-hint::before { content: ""; position: absolute; left: 0; top: 2px; bottom: 2px; width: 3px; border-radius: 2px;
+  background: #5b6ee1; }
+.face-hint.is-span::before { width: 6px; background: transparent; border: 2px solid #5b6ee1; border-right: 0; border-radius: 3px 0 0 3px; }
+.face-chip { display: inline-block; background: #5b6ee1; color: #fff; font: 600 11px/1 system-ui, sans-serif;
+  padding: 4px 6px; border-radius: 4px; white-space: nowrap; }
+.face-hint:hover .face-chip, .face-hint:focus-visible .face-chip { background: #4357d6; box-shadow: 0 0 0 2px rgba(91, 110, 225, .35); }
+/* 格櫃：放在那一格的右下角 */
+.face-chip--cell { position: absolute; bottom: 4px; transform: translateX(-100%); border: 0; cursor: pointer; z-index: 2; }
+.face-pop { display: grid; gap: 8px; }
+.face-pop__t { font-weight: 700; font-size: 14px; }
+.face-pop__n { font-size: 12px; opacity: .7; margin-top: -6px; }
+.face-pop__d { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 8px; text-align: left;
+  border: 1px solid rgba(127, 127, 127, .25); border-radius: 6px; padding: 6px 8px; background: none; cursor: pointer;
+  font: inherit; color: inherit; }
+.face-pop__d:hover { border-color: #5b6ee1; }
+.face-pop__sw { grid-row: span 2; width: 14px; height: 14px; border-radius: 3px; margin-top: 2px; }
+.face-pop__name { font-weight: 600; overflow-wrap: anywhere; }
+.face-pop__m { font-size: 12px; opacity: .7; }
+
 /* 衝突清單：繁中可讀句子（取代原本的 JSON dump） */
 .conflict-list { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.7; }
 
@@ -604,7 +871,8 @@ const cells = computed<Cell[]>(() => {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  width: 26px;
+  min-width: 26px;                 /* 不寫死寬度：英文的「Top」曾被擠成「To / p」 */
+  white-space: nowrap;
   padding-right: 6px;
   font: bold 12px ui-monospace, SFMono-Regular, Menlo, monospace;
   color: rgba(127, 127, 127, 0.75);
@@ -620,25 +888,47 @@ const cells = computed<Cell[]>(() => {
   padding: 4px;
   width: var(--rd-col-w, 250px);
   background: rgba(127, 127, 127, 0.04);
+  /* 腳（離地）是用 ::after 往框外畫的，不占版面 —— 不留這段，量出來的高度就不含腳，
+     腳會壓到下面的圖例（LackRack 桌下 44mm 最明顯），並排時也會以框的下緣而不是地面對齊。 */
+  margin-bottom: var(--rd-floor, 0px);
 }
 /* 標準機櫃：畫成箱體 —— 兩側是有安裝孔的立柱（19 吋機櫃的方孔條），
    不是一條細框線。孔距 1U 三孔是實物的樣子，這裡用等距近似即可。 */
-.rack-frame:not(.is-shelf):not(.is-industrial) {
+.rack-frame:not(.is-shelf):not(.is-industrial):not(.is-lack) {
   border-width: 2px;
   border-color: rgba(120, 126, 134, 0.85);
-  padding-left: 9px; padding-right: 9px;
+  /* 外框＝櫃體側板；側板與立柱之間是走線空間（--rd-side，由外寬算出），立柱與設備區在正中 */
+  padding-left: calc(9px + var(--rd-side, 0px)); padding-right: calc(9px + var(--rd-side, 0px));
   position: relative;
   background:
+    /* 頂板（--rd-top）與底座（--rd-base，最下面那一 U 底下那片板）：整個櫃寬的實心板。
+       以前只有外框那條線，使用者說「近乎只有一條線，不合理」。畫在最上層蓋住立柱與走線刻線。 */
+    linear-gradient(180deg, #dfe2e6, #c3c8ce) 0 0 / 100% calc(4px + var(--rd-top, 0px)) no-repeat,
+    linear-gradient(180deg, #c3c8ce, #aab0b7) 0 100% / 100% calc(4px + var(--rd-base, 0px)) no-repeat,
     /* 安裝孔**只在兩側立柱上**。第一版寫成整片 100% 寬的橫向漸層，
        結果整個櫃體都是橫條紋 —— 圖磚要限制在 8px 的立柱寬度內。 */
     radial-gradient(circle at 4px 7px,
-      rgba(40, 44, 50, 0.5) 0 1.3px, transparent 1.6px) left top / 8px 14px repeat-y,
+      rgba(40, 44, 50, 0.5) 0 1.3px, transparent 1.6px) var(--rd-side, 0px) 0 / 8px 14px repeat-y,
     radial-gradient(circle at 4px 7px,
-      rgba(40, 44, 50, 0.5) 0 1.3px, transparent 1.6px) right top / 8px 14px repeat-y,
-    linear-gradient(90deg,
-      #cfd3d8 0, #e8ebee 3px, #c3c8ce 8px, transparent 8px,
-      transparent calc(100% - 8px), #c3c8ce calc(100% - 8px), #e8ebee calc(100% - 3px), #cfd3d8 100%),
+      rgba(40, 44, 50, 0.5) 0 1.3px, transparent 1.6px) calc(100% - var(--rd-side, 0px)) 0 / 8px 14px repeat-y,
+    linear-gradient(90deg, #cfd3d8 0, #e8ebee 3px, #c3c8ce 8px)
+      var(--rd-side, 0px) 0 / 8px 100% no-repeat,
+    linear-gradient(270deg, #cfd3d8 0, #e8ebee 3px, #c3c8ce 8px)
+      calc(100% - var(--rd-side, 0px)) 0 / 8px 100% no-repeat,
+    /* 走線空間：淡底＋每 14px 一道理線槽的刻線，看得出「這裡是走線用的」 */
+    repeating-linear-gradient(180deg, rgba(120, 126, 134, 0.35) 0 2px, transparent 2px 14px)
+      0 0 / var(--rd-side, 0px) 100% no-repeat,
+    repeating-linear-gradient(180deg, rgba(120, 126, 134, 0.35) 0 2px, transparent 2px 14px)
+      100% 0 / var(--rd-side, 0px) 100% no-repeat,
+    linear-gradient(rgba(127, 127, 127, 0.10), rgba(127, 127, 127, 0.10)) 0 0 / var(--rd-side, 0px) 100% no-repeat,
+    linear-gradient(rgba(127, 127, 127, 0.10), rgba(127, 127, 127, 0.10)) 100% 0 / var(--rd-side, 0px) 100% no-repeat,
     rgba(127, 127, 127, 0.04);
+}
+/* 機櫃的頂板與底座要占高度：頂板＝內距上緣，底座＝最下面那一 U 的下框（透明，
+   露出上面那層底座背景）。U 與 U 之間沒有板，照舊是一條虛線。 */
+.rack-frame:not(.is-shelf):not(.is-lack) { padding-top: calc(4px + var(--rd-top, 0px)); }
+.rack-frame:not(.is-shelf):not(.is-lack) .u-row.has-board {
+  border-bottom: var(--rd-board) solid transparent;
 }
 /* 機櫃也要有腳：底部兩隻短腳，高度與層架的離地一致，否則底部看起來像被齊平切掉。 */
 .rack-frame:not(.is-shelf)::after {
@@ -660,11 +950,18 @@ const cells = computed<Cell[]>(() => {
 
 /* 工業機櫃：箱體更厚重，立柱也更寬 */
 .rack-frame.is-industrial {
-  padding-left: 11px; padding-right: 11px;
+  padding-left: calc(11px + var(--rd-side, 0px)); padding-right: calc(11px + var(--rd-side, 0px));
   background:
-    linear-gradient(90deg,
-      #838a93 0, #a7aeb6 4px, #6f767e 10px, transparent 10px,
-      transparent calc(100% - 10px), #6f767e calc(100% - 10px), #a7aeb6 calc(100% - 4px), #838a93 100%),
+    linear-gradient(180deg, #9aa1a9, #7d848c) 0 0 / 100% calc(4px + var(--rd-top, 0px)) no-repeat,
+    linear-gradient(180deg, #7d848c, #656c74) 0 100% / 100% calc(4px + var(--rd-base, 0px)) no-repeat,
+    linear-gradient(90deg, #838a93 0, #a7aeb6 4px, #6f767e 10px)
+      var(--rd-side, 0px) 0 / 10px 100% no-repeat,
+    linear-gradient(270deg, #838a93 0, #a7aeb6 4px, #6f767e 10px)
+      calc(100% - var(--rd-side, 0px)) 0 / 10px 100% no-repeat,
+    repeating-linear-gradient(180deg, rgba(90, 95, 105, 0.35) 0 2px, transparent 2px 14px)
+      0 0 / var(--rd-side, 0px) 100% no-repeat,
+    repeating-linear-gradient(180deg, rgba(90, 95, 105, 0.35) 0 2px, transparent 2px 14px)
+      100% 0 / var(--rd-side, 0px) 100% no-repeat,
     rgba(90, 95, 105, 0.10);
 }
 /* 一般層架（issue #30）：沒有機櫃導軌，畫成層板 —— 每一層下緣一條實線，兩側不封邊。 */
@@ -678,7 +975,8 @@ const cells = computed<Cell[]>(() => {
 .rack-frame.is-industrial {
   border: 4px solid rgba(90, 95, 105, 0.85);
   border-radius: 3px;
-  background: rgba(90, 95, 105, 0.10);
+  /* 不設 background：上面那段畫立柱與走線區。以前這裡的 background 蓋掉了它，
+     工業機櫃的立柱從來沒畫出來過。 */
 }
 
 /* 鍍鉻層架：兩側圓管立柱 + 網狀層板。立柱疊三層背景 ——
@@ -746,11 +1044,12 @@ const cells = computed<Cell[]>(() => {
   background:
     /* 調整孔：一排**圓孔**。用橫向色帶畫會變成一圈一圈的條紋 —— 那是圓管的樣子，
        IVAR 的側架是平板 + 圓孔，所以要用 radial-gradient。 */
-    /* 孔距 32mm、孔徑 7mm（IVAR 實物規格），照圖面比例尺 28px/44.45mm 換算
-       → 間距 20.16px、直徑 4.41px。與後端 rack_svg.py 的 PEG_PITCH_MM 一致。 */
+    /* 孔距 32mm、孔徑 7mm（IVAR 實物規格），照層架的比例尺換算（寬高同一個比例，
+       250px／482.6mm，見後端 rack.v_px_per_mm）→ 間距 16.58px、直徑 3.63px。
+       與後端 rack_svg.py 的 PEG_PITCH_MM 一致。 */
     radial-gradient(circle at 50% 50%,
-      rgba(74, 48, 24, 0.5) 0 2.2px, rgba(255, 245, 230, 0.35) 2.2px 2.8px,
-      transparent 2.9px) 0 0 / 14px 20.16px,
+      rgba(74, 48, 24, 0.5) 0 1.8px, rgba(255, 245, 230, 0.35) 1.8px 2.3px,
+      transparent 2.4px) 0 0 / 14px 16.58px,
     /* 直的木紋（不是橫紋） */
     repeating-linear-gradient(90deg,
       rgba(120, 80, 40, 0.08) 0 1px, transparent 1px 7px),
@@ -782,6 +1081,91 @@ const cells = computed<Cell[]>(() => {
       rgba(150, 156, 162, 0.9) calc(50% - 1.3px) calc(50% + 1.3px), transparent calc(50% + 1.3px));
 }
 
+/* 角鋼層架（台灣最常見的免螺絲角鋼）：兩支 40mm 的 L 型立柱、整排葫蘆孔（孔距 30mm）；
+   每一層是一條鋼橫桿，上面跨放一片 9mm 夾板。橫桿勾在兩支立柱之間，所以立柱畫在前面。
+   顏色（黑／白／鍍鋅）來自 --fin-*，與匯出、嵌入圖同一份配色。 */
+.rack-frame.is-angle {
+  position: relative;
+  border: none; border-radius: 0; background: transparent;
+  padding-left: var(--rd-side); padding-right: var(--rd-side);
+}
+.rack-frame.is-angle::before,
+.rack-frame.is-angle::after {
+  content: ""; position: absolute; width: var(--rd-side);
+  /* +4px：絕對定位從內距框頂端算，列從 4px 內距之下才開始 —— 不補的話立柱比頂板高出一截 */
+  top: calc(var(--rd-post-top, 0px) + 4px); bottom: calc(-1 * var(--rd-floor, 7px));
+  background:
+    var(--rd-keyholes) 0 0 / var(--rd-side) var(--rd-hole-pitch) repeat-y,
+    /* 另一片翼：從正面看是立柱外緣的一條暗邊 */
+    linear-gradient(90deg, var(--fin-edge) 0 2px, var(--fin-post) 2px);
+  z-index: 1;
+}
+.rack-frame.is-angle::before { left: 0; }
+/* 右邊那支左右鏡射：暗邊在外側 */
+.rack-frame.is-angle::after { right: 0; transform: scaleX(-1); }
+/* 每一層：底下那片「板」＝上面一條夾板＋下面的鋼橫桿。用背景畫（背景會鋪到邊框底下）——
+   border-image 的漸層只會取最底下 1px 拉長，畫不出上下兩段。 */
+.rack-frame.is-angle .u-row {
+  border-bottom: var(--rd-board, 6px) solid transparent;
+  /* 漸層要以**含邊框**的整格為準（最後的 border-box）：預設是內距框，100% 會停在邊框之上，
+     橫桿就畫進了格子裡、被裝置蓋住（第一版就是這樣）。寫在簡寫裡 —— 另外寫
+     background-origin 會被後面的 background 簡寫重設回去。 */
+  background: linear-gradient(180deg,
+    transparent calc(100% - var(--rd-board)),
+    var(--ply) calc(100% - var(--rd-board)),
+    var(--ply) calc(100% - var(--rd-board) + min(var(--rd-ply), var(--rd-board) / 2)),
+    var(--fin-beam) calc(100% - var(--rd-board) + min(var(--rd-ply), var(--rd-board) / 2)))
+    border-box;
+}
+
+/* IKEA KALLAX：外框（40mm）比內隔板（15mm）厚，一格一格。沒有背板、沒有腳，直接落地。
+   外框用一片墊在最底下的色塊畫（兩側＋頂板＋底板），格子裡面是更深一點的內側。 */
+.rack-frame.is-kallax {
+  position: relative;
+  isolation: isolate;   /* 讓 .kallax-box 的 z-index:-1 留在框裡，不會掉到卡片背景後面 */
+  border: none; border-radius: 0; background: transparent;
+  padding-left: var(--rd-side); padding-right: var(--rd-side);
+}
+.kallax-box {
+  position: absolute; left: 0; right: 0; bottom: 4px;
+  margin-top: 4px;
+  background: var(--fin-frame);
+  box-shadow: 0 0 0 1px var(--fin-line);
+  z-index: -1; pointer-events: none;
+}
+.rack-frame.is-kallax .u-row { border-bottom: var(--rd-board, 4px) solid var(--fin-frame); }
+.rack-frame.is-kallax .u-row:not(.is-top) { background: var(--fin-cell); }
+.kallax-div {
+  position: absolute; margin-top: 4px;
+  background: var(--fin-frame);
+  z-index: 1; pointer-events: none;
+}
+
+/* LackRack：LACK 邊桌當機櫃。最上面一列是「桌面上方」（可以放東西），它底下那片板是桌面；
+   兩側是 50mm 的桌腳（設備耳朵鎖在桌腳正面），從桌面頂端往下到地面。桌腳與桌面是模板裡
+   的 .lack-leg／.lack-top 方塊。下內距是 0：最下面那一 U 到地面剛好是桌下的 44mm。 */
+.rack-frame.is-lack {
+  position: relative;
+  border: none; border-radius: 0; background: transparent;
+  padding: 4px var(--rd-side) 0;
+}
+.rack-frame.is-lack::after { content: none; }
+.lack-leg, .lack-top {
+  position: absolute; margin-top: 4px;
+  box-sizing: border-box;
+  background: var(--fin-wood);
+  border: 1px solid var(--fin-line);
+  pointer-events: none;
+}
+.lack-leg { width: var(--rd-side); bottom: calc(-1 * var(--rd-floor, 0px)); }
+.lack-leg.is-left { left: 0; }
+.lack-leg.is-right { right: 0; }
+.lack-top { left: 0; right: 0; }
+/* 設備區只有 U 的那一段有底色；桌下的空隙（上面那張的腳下、最下面那張離地）都留白，
+   兩處看起來才一樣 —— 以前上面那段有底色、最下面沒有，最下面那截桌腳就像突出去。 */
+.rack-frame.is-lack .u-row:not(.is-top) { background: rgba(127, 127, 127, 0.04) padding-box; }
+.rack-frame.is-lack .u-row.has-board { border-bottom: var(--rd-board) solid transparent; }
+
 /* 卡片寬度跟著機櫃走：窄機櫃（例如 42 公分的層架）不要再撐滿整欄，旁邊留一大片空白。
    下限是工具列本身的寬度，否則正面／背面、拉桿、匯出會被擠到換行。 */
 .rack-diagram-card {
@@ -790,7 +1174,7 @@ const cells = computed<Cell[]>(() => {
   max-width: 100%;
 }
 /* 有工具列時才需要撐到工具列的寬度，否則按鈕會被擠到換行 */
-.rack-diagram-card:has(.rd-toolbar) { min-width: 320px; }
+.rack-diagram-card:has(.rd-toolbar) { min-width: min(320px, 100%); }
 
 /* 顯示大小拉桿 */
 .zoom-ctl { display: flex; align-items: center; gap: 8px; }
@@ -800,6 +1184,17 @@ const cells = computed<Cell[]>(() => {
    邊框與柱腳往下突出的部分，一裁就把三種機架的「腳」都切掉了（看起來像最下一層之後
    就沒有東西）。讓它溢出即可，反正水平方向沒有東西會跑出去。 */
 .rack-zoom { overflow: visible; }
+/* 機櫃比卡片寬（手機、放大）時的左右捲動層。高度已含離地的腳（.rack-frame 的 margin-bottom），
+   下面再留一點空間給邊框陰影，負 margin 抵掉，桌機上版面不變 */
+.rack-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 6px;
+  margin-bottom: -6px;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+}
 .rack-zoom > .rack-wrap {
   transform-origin: top left;
   /* 寬度必須由**內容**決定，不能跟著外層走：外層的寬度是用這一層量出來的，
@@ -812,6 +1207,8 @@ const cells = computed<Cell[]>(() => {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  /* 要能換行：靠右對齊又不換行時，放不下的部分會往**左邊**溢出卡片（手機上「正面」凸出去） */
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 10px;
 }
@@ -908,9 +1305,12 @@ const cells = computed<Cell[]>(() => {
   content: "";
   position: absolute;
   inset: 0;
-  background: var(--n-card-color, #fff);
+  background: var(--n-card-color, var(--rd-under, #fff));
   z-index: -1;
 }
+/* 不在卡片裡的機櫃圖（裝置詳細頁的小圖）拿不到 --n-card-color，以前一律墊白色：
+   深色主題下半透明的設備色疊在白底上整個變淺、白字看不到（10-23 客戶）。墊跟深色卡片一樣的底 */
+:global(html[data-theme="dark"]) .rack-frame { --rd-under: #0f1825; }
 .u-part.u-occupied { color: #fff; font-size: 12px; }
 .u-part.u-occupied.u-top { border-top: 2px solid rgba(0, 0, 0, 0.32); }
 .u-part.u-occupied.u-bottom { border-bottom: 2px solid rgba(0, 0, 0, 0.32); }
@@ -972,27 +1372,29 @@ const cells = computed<Cell[]>(() => {
   white-space: nowrap;
   max-width: 90px;
 }
-/* bare：去掉卡片外框/底色/標題與內距，純嵌入 */
-.rd-bare { background: transparent; box-shadow: none; border: none; }
+/* bare：去掉卡片外框/底色/標題與內距，純嵌入。
+   選擇器要比 App.vue 的 `html[data-theme="dark"] .n-card`（全站卡片外框）更明確，否則深色主題下
+   外框還在（儀表板機櫃卡片看得出來，2026-10-01） */
+.n-card.rd-bare { background: transparent; box-shadow: none; border: none; }
 .rd-bare :deep(.n-card__content) { padding: 0; }
 .rd-bare :deep(.n-card-header) { display: none; }
-/* 聚焦模式：設了 highlightId 時，其他裝置淡化，只突顯本裝置 */
-/* 同上：`opacity` / `filter` 會建立堆疊環境 → 用疊一層背景色來壓暗 */
-.u-dim { color: rgba(255, 255, 255, 0.55); }
-.u-dim::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: rgba(250, 250, 250, 0.62);
-  pointer-events: none;
-}
-.u-dim .d-name { opacity: 0.75; }
+/* 聚焦模式（裝置詳細頁標示本機）：其他裝置**維持原色**，本機加粗琥珀框。
+   以前是把其他裝置疊一層 62% 白色淡化，結果整櫃變成深淺不一的灰、白字看不到（10-23 客戶）。
+   同上：不用 opacity／filter（會建立堆疊環境、跨 U 的名稱被蓋掉）。 */
+.u-part.u-self { box-shadow: inset 3px 0 0 #f59e0b, inset -3px 0 0 #f59e0b; }
+.u-part.u-self.u-top { box-shadow: inset 3px 0 0 #f59e0b, inset -3px 0 0 #f59e0b, inset 0 3px 0 #f59e0b; }
+.u-part.u-self.u-bottom { box-shadow: inset 3px 0 0 #f59e0b, inset -3px 0 0 #f59e0b, inset 0 -3px 0 #f59e0b; }
+.u-part.u-self.u-top.u-bottom { box-shadow: inset 0 0 0 3px #f59e0b; }
+.u-part.u-self .d-name { font-weight: 800; }
 /* compact：較小列高，給裝置詳細資料側欄用 */
 /* 高度由上面的 rowPx 決定（行內 style），這裡只調字級 —— 兩邊各設一次就會打架 */
 /* 整張是用 transform 等比縮的，字也會跟著縮 —— 先除以縮放倍率，畫出來剛好是想要的字級。
    （--rd-fit 只含「自動縮到放得下」那一段；使用者拉的縮放本來就該讓字一起變小。） */
 .rd-compact .u-row { font-size: calc(10px / var(--rd-fit, 1)); }
-.rd-compact .u-num-out { font-size: calc(9px / var(--rd-fit, 1)); }
+/* 縮圖整張等比縮小、字級用 --rd-fit 補回來；編號欄的寬度與內距也要一起補，否則兩位數擠不下會折成兩行，
+   十位數疊到下一格（42U 縮圖在裝置頁上，客戶 2026-10-12 回報）。 */
+.rd-compact .u-num-out { font-size: calc(9px / var(--rd-fit, 1)); min-width: calc(22px / var(--rd-fit, 1));
+  padding-right: calc(4px / var(--rd-fit, 1)); white-space: nowrap; }
 .rd-compact .d-name { font-size: calc(10px / var(--rd-fit, 1)); max-width: 100%; }
 .rd-compact .d-name-half { font-size: calc(9px / var(--rd-fit, 1)); }
 .rd-compact :deep(.n-card-header) { padding: 10px 14px; }

@@ -7,25 +7,42 @@
  *    連得上就跳一條紅色警告：這套 OCS 對任何能到達它的人都是開放的。
  * 2. **軟體區段預設關** —— 每台會從 ~2 KB 膨脹到 ~80 KB；先看規模再決定要不要開。
  */
-import { computed, h, onMounted, ref } from "vue";
+import { computed, h, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import { trackTask } from "@/composables/useTaskTracker";
 import {
   NCard, NDataTable, NSpace, NButton, NTag, NIcon, NAlert, NModal, NForm,
-  NFormItem, NInput, NInputNumber, NSwitch, NPopconfirm, NTooltip,
+  NFormItem, NInput, NInputNumber, NSwitch, NSelect, NPopconfirm, NTooltip, NTabs, NTabPane,
   useMessage, type DataTableColumns,
 } from "naive-ui";
+import { useRouter } from "vue-router";
 import {
   listOcs, createOcs, updateOcs, deleteOcs, testOcs, syncOcs,
-  type OcsServer, type OcsDiagnosis,
+  listOcsAgents, listOcsMissingAgentsPage,
+  type OcsServer, type OcsDiagnosis, type OcsAgent, type OcsMissingAgent,
 } from "@/api/ocs";
 import {
   PlusIcon, EditIcon, DeleteIcon, RefreshIcon, SyncIcon, TestIcon,
-  SaveIcon, CancelIcon,
+  SaveIcon, CancelIcon, DevicesIcon, MissingIcon, ListIcon, EyeIcon,
 } from "@/icons";
+import { autoSort } from "@/composables/useTableSort";
+import ColumnPicker from "@/components/ColumnPicker.vue";
+import ScopeFilterBar from "@/components/ScopeFilterBar.vue";
+import { useRemoteMissing } from "@/composables/useRemoteMissing";
+import { livenessColumn } from "@/utils/livenessColumn";
+import { withExportValue } from "@/utils/tableExport";
+import ExportButton from "@/components/ExportButton.vue";
+import { useColumnPrefs } from "@/composables/useColumnPrefs";
+import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
+import { useTablePagination } from "@/composables/useTablePagination";
 import { fmtDateTime } from "@/utils/datetime";
+import { shortOcsAgent } from "@/utils/ocsAgent";
+import { deviceKindColumn } from "@/utils/deviceKindCell";
 import { apiErrMsg } from "@/api/client";
+import { listSubnets } from "@/api/subnets";
+import ScopeOverlapWarning from "@/components/ScopeOverlapWarning.vue";
 
-const { t } = useI18n();
+const { t, te } = useI18n();
 const msg = useMessage();
 
 const rows = ref<OcsServer[]>([]);
@@ -43,22 +60,74 @@ function blankForm() {
     enabled: true, verify_tls: true,
     sync_networks: true, sync_bios: true, sync_software: false,
     sync_interval_seconds: 3600, stale_after_days: 30,
+    scope_subnet_ids: [] as string[],
+    timezone: null as string | null,
     clear_credentials: false,
   };
 }
 const form = ref(blankForm());
+// OCS 的 LASTDATE 沒有時區（issue #51）：列出瀏覽器認得的所有 IANA 時區，UTC 放最前面
+const tzOptions = computed(() => {
+  let zones: string[] = [];
+  try {
+    zones = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.("timeZone") ?? [];
+  } catch { zones = []; }
+  if (!zones.length) zones = ["Asia/Taipei", "Asia/Tokyo", "Asia/Shanghai", "Asia/Hong_Kong", "Asia/Singapore",
+    "Europe/London", "Europe/Berlin", "America/New_York", "America/Los_Angeles"];
+  return ["UTC", ...zones.filter((z) => z !== "UTC")].map((z) => ({ label: z, value: z }));
+});
 
+// 限定子網路範圍：選單比照 Wazuh 整合頁
+const subnetOptions = ref<{ label: string; value: string }[]>([]);
+async function loadSubnetOptions() {
+  try {
+    const r = await listSubnets({ page: 1, pageSize: 500 });
+    subnetOptions.value = r.items.map((s) => ({
+      label: s.description ? `${s.cidr} — ${s.description}` : s.cidr, value: s.id }));
+  } catch { /* silent */ }
+}
+// 「未裝 Agent 的 IP」只列啟用中整合的範圍聯集；任一個沒設範圍就是全域（同後端 expected_subnets）
+const missingScoped = computed(() => {
+  const on = rows.value.filter((r) => r.enabled);
+  return on.length > 0 && on.every((r) => (r.scope_subnet_ids ?? []).length > 0);
+});
+
+// 頁籤比照 Wazuh 整合頁：整合主機／代理數／未裝 Agent 的 IP
+const router = useRouter();
+const tab = ref<"instances" | "agents" | "missing">("instances");
+const agents = ref<OcsAgent[]>([]);
+// 缺口清單由後端分頁、篩選、排序（大站台 5 萬筆時整份抓回來要幾十 MB）
+const miss = useRemoteMissing(listOcsMissingAgentsPage);
+const { query: agentFilterQ, filtered: agentsFiltered } = useTableQuickFilter(agents);
+const pg = useTablePagination();
+
+// 缺口清單點進那個頁籤才抓（2026-09-30 大量資料測試：大站台一打開頁面就全抓，要等十幾秒、
+// 回應四十幾 MB）。代理清單一台電腦一筆、量小，照舊一起載入（頁籤上的台數要看得到）
+const loaded = ref({ missing: false });
+async function loadMissing() {
+  await miss.load();
+  loaded.value.missing = true;
+}
 async function load() {
   loading.value = true;
   try {
-    rows.value = (await listOcs()).items;
+    const [i, a] = await Promise.all([listOcs(), listOcsAgents()]);
+    rows.value = i.items;
+    agents.value = a.items;
+    if (tab.value === "missing" || loaded.value.missing) await loadMissing();
   } catch (e) {
     msg.error(apiErrMsg(e));
   } finally {
     loading.value = false;
   }
 }
-onMounted(load);
+watch(tab, async (v) => {
+  if (v === "missing" && !loaded.value.missing) {
+    loading.value = true;
+    try { await loadMissing(); } catch (e) { msg.error(apiErrMsg(e)); } finally { loading.value = false; }
+  }
+});
+onMounted(() => { void load(); void loadSubnetOptions(); });
 
 function openCreate() {
   editing.value = null;
@@ -76,6 +145,8 @@ function openEdit(row: OcsServer) {
     sync_software: row.sync_software,
     sync_interval_seconds: row.sync_interval_seconds,
     stale_after_days: row.stale_after_days,
+    scope_subnet_ids: row.scope_subnet_ids ?? [],
+    timezone: row.timezone ?? "UTC",
   };
   show.value = true;
 }
@@ -95,7 +166,9 @@ async function save() {
       sync_software: f.sync_software,
       sync_interval_seconds: f.sync_interval_seconds,
       stale_after_days: f.stale_after_days,
+      scope_subnet_ids: f.scope_subnet_ids,
     };
+    if (f.timezone) payload.timezone = f.timezone;
     if (f.api_password) payload.api_password = f.api_password;
     if (editing.value) {
       await updateOcs(editing.value.id, payload);
@@ -135,9 +208,8 @@ async function test(row: OcsServer) {
 async function sync(row: OcsServer) {
   busy.value = row.id;
   try {
-    await syncOcs(row.id);
-    msg.success(t("ocs.sync_started"));
-    setTimeout(load, 1500);
+    const r = await syncOcs(row.id);
+    trackTask(r.task_id, { onDone: () => void load() });
   } catch (e) {
     msg.error(apiErrMsg(e));
   } finally {
@@ -163,9 +235,15 @@ const columns = computed<DataTableColumns<OcsServer>>(() => [
   },
   {
     title: t("cols.last_error"), key: "last_error",
-    render: (r) => (r.last_error
-      ? h(NTag, { type: "error", size: "small" }, { default: () => r.last_error })
-      : "—"),
+    render: (r) => {
+      // 換算後最後盤點時間落在未來：整合的時區多半設錯（issue #51）
+      const fut = r.last_cost?.future_lastdate as { count: number; max_hours: number; timezone: string } | undefined;
+      const warn = fut ? h(NTag, { type: "warning", size: "small", "data-testid": "ocs-tz-future",
+                                   style: "white-space: normal; height: auto; line-height: 1.45; padding: 2px 8px" },
+        { default: () => t("ocs.tz_future", { count: fut.count, hours: fut.max_hours, tz: fut.timezone }) }) : null;
+      const err = r.last_error ? h(NTag, { type: "error", size: "small" }, { default: () => r.last_error }) : null;
+      return warn || err ? h(NSpace, { size: 4, vertical: true }, () => [warn, err].filter(Boolean)) : "—";
+    },
   },
   {
     title: t("cols.actions"), key: "actions", className: "col-actions", width: 176,
@@ -191,29 +269,165 @@ function iconAction(icon: any, label: string, onClick: () => void, type?: any) {
   });
 }
 
+const ocsAg = useColumnPrefs("ocs_agents",
+  ["ocs_id", "name", "ips", "os", "agent_version", "tag", "last_inventory"],
+  ["ocs_id", "name", "ips", "os", "agent_version", "tag", "last_inventory"]);
+const ocsAgPicker = computed(() => [
+  { key: "ocs_id", label: t("ocs.col_ocs_id") }, { key: "name", label: t("cols.name") },
+  { key: "ips", label: t("ocs.col_ips") }, { key: "os", label: t("ocs.col_os") },
+  { key: "agent_version", label: t("ocs.col_agent") }, { key: "tag", label: t("ocs.col_tag") },
+  { key: "last_inventory", label: t("ocs.col_last_inventory") },
+]);
+// 設備類型預設顯示：一眼看出缺的是電腦還是印表機／交換器（那些本來就不會裝 OCS agent）
+const ocsMiss = useColumnPrefs("ocs_missing",
+  ["status", "ip", "hostname", "device_kind", "subnet", "section", "customer", "actions"],
+  ["status", "ip", "hostname", "device_kind", "subnet", "section", "customer", "actions"]);
+const ocsMissPicker = computed(() => [
+  { key: "status", label: t("cols.status") },
+  { key: "ip", label: "IP" }, { key: "hostname", label: t("cols.hostname") },
+  { key: "device_kind", label: t("cols.device_kind") },
+  { key: "subnet", label: t("cols.subnet") }, { key: "section", label: t("cols.section") },
+  { key: "customer", label: t("cols.unit") }, { key: "actions", label: t("cols.actions") },
+]);
+
+function gotoIp(ip: string | null | undefined) {
+  if (ip) void router.push({ name: "addresses", query: { q: ip } });
+}
+function ipLink(ip: string) {
+  return h(NButton, { text: true, type: "primary", onClick: () => gotoIp(ip) }, () => ip);
+}
+
+const allAgentCols = computed<DataTableColumns<OcsAgent>>(() => autoSort([
+  { title: t("ocs.col_ocs_id"), key: "ocs_id", width: 90, render: (r) => r.ocs_id ?? "—" },
+  {
+    title: t("cols.name"), key: "name", minWidth: 160, ellipsis: { tooltip: true },
+    render: (r) => r.ips.length
+      ? h(NButton, { text: true, type: "primary", onClick: () => gotoIp(r.ips[0]) }, () => r.name ?? "—")
+      : (r.name ?? "—"),
+  },
+  {
+    // 一台電腦的多個 IP 都列出來（以前清單只能一個 IP 一行，數量看起來多好幾倍）
+    title: t("ocs.col_ips"), key: "ips", minWidth: 160,
+    render: (r) => h(NSpace, { size: [8, 0] }, () => r.ips.map(ipLink)),
+  },
+  { title: t("ocs.col_os"), key: "os", minWidth: 160, ellipsis: { tooltip: true }, render: (r) => r.os ?? "—" },
+  {
+    // 原始字串很長、版本號在最後，一截斷就看不到版本 → 顯示精簡版，完整字串放 title
+    title: t("ocs.col_agent"), key: "agent_version", width: 140,
+    render: (r) => (r.agent_version
+      ? h("span", { title: r.agent_version }, shortOcsAgent(r.agent_version))
+      : "—"),
+  },
+  { title: t("ocs.col_tag"), key: "tag", width: 120, render: (r) => r.tag ?? "—" },
+  {
+    title: t("ocs.col_last_inventory"), key: "last_inventory", width: 170,
+    render: (r) => fmtDateTime(r.last_inventory),
+  },
+]));
+const allMissCols = computed<DataTableColumns<OcsMissingAgent>>(() => autoSort([
+  livenessColumn(t("common.status"), t),
+  { title: "IP", key: "ip", width: 150, render: (r) => (r.ip ? ipLink(r.ip) : "—") },
+  { title: t("cols.hostname"), key: "hostname", minWidth: 180, ellipsis: { tooltip: true }, render: (r) => r.hostname ?? "—" },
+  deviceKindColumn(t, te) as any,
+  withExportValue({ title: t("cols.subnet"), key: "subnet", width: 170, render: (r: any) => r.subnet_cidr ?? "—" },
+    (r) => r.subnet_cidr),
+  withExportValue({ title: t("cols.section"), key: "section", width: 150, ellipsis: { tooltip: true }, render: (r: any) => r.section_name ?? "—" },
+    (r) => r.section_name),
+  withExportValue({ title: t("cols.unit"), key: "customer", width: 150, ellipsis: { tooltip: true }, render: (r: any) => r.customer_name ?? "—" },
+    (r) => r.customer_name),
+  {
+    title: t("common.actions"), key: "actions", className: "col-actions", width: 72, titleAlign: "center", align: "center",
+    render: (r) => h(NSpace, { size: 2, wrapItem: false, wrap: false, justify: "center" }, () => [
+      h(NTooltip, null, {
+        trigger: () => h(NButton, {
+          size: "small", quaternary: true, disabled: !r.ip,
+          onClick: (e: MouseEvent) => { e.stopPropagation(); gotoIp(r.ip); },
+        }, { icon: () => h(NIcon, null, () => h(EyeIcon)) }),
+        default: () => t("ocs.view_ip"),
+      }),
+    ]),
+  },
+]));
+const agentCols = computed<DataTableColumns<OcsAgent>>(() =>
+  ocsAg.orderColumns(allAgentCols.value.filter((c: any) => ocsAg.visibleKeys.value.includes(c.key))));
+const missCols = computed<DataTableColumns<OcsMissingAgent>>(() =>
+  miss.remoteSort(ocsMiss.orderColumns(allMissCols.value.filter((c: any) => ocsMiss.visibleKeys.value.includes(c.key)))));
+
 </script>
 
 <template>
-  <NCard :title="t('ocs.title')">
-    <template #header-extra>
-      <NSpace>
-        <NButton size="small" @click="load">
-          <template #icon><NIcon><RefreshIcon /></NIcon></template>
-          {{ t("common.refresh") }}
-        </NButton>
-        <NButton size="small" type="primary" @click="openCreate">
-          <template #icon><NIcon><PlusIcon /></NIcon></template>
-          {{ t("ocs.add") }}
-        </NButton>
+  <NCard>
+    <template #header>
+      <NSpace align="center" :wrap-item="false">
+        <NIcon :size="22"><DevicesIcon /></NIcon>
+        <span>{{ t("ocs.title") }}</span>
       </NSpace>
     </template>
-
-    <NAlert type="info" :show-icon="true" style="margin-bottom: 12px">
-      {{ t("ocs.intro") }}
-    </NAlert>
-
-    <NDataTable :columns="columns" :data="rows" :loading="loading" :bordered="false"
-                :row-key="(r: OcsServer) => r.id" size="small" />
+    <!-- 頁籤與工具列比照 Wazuh 整合頁 -->
+    <NTabs v-model:value="tab" type="line">
+      <NTabPane name="instances">
+        <template #tab>
+          <span style="display:inline-flex;align-items:center;gap:6px"><NIcon :size="16"><DevicesIcon /></NIcon>{{ t("ocs.title") }}</span>
+        </template>
+        <NSpace style="margin-bottom: 12px">
+          <NButton @click="load" :loading="loading">
+            <template #icon><NIcon><RefreshIcon /></NIcon></template>
+            {{ t("common.refresh") }}
+          </NButton>
+          <NButton type="primary" @click="openCreate">
+            <template #icon><NIcon><PlusIcon /></NIcon></template>
+            {{ t("ocs.add") }}
+          </NButton>
+          <ExportButton :columns="columns" :rows="rows" filename="ocs-servers" :title="t('ocs.title')" />
+        </NSpace>
+        <NAlert type="info" :show-icon="true" style="margin-bottom: 12px">
+          {{ t("ocs.intro") }}
+        </NAlert>
+        <NDataTable :columns="columns" :data="rows" :loading="loading" :bordered="false"
+                    :row-key="(r: OcsServer) => r.id" :scroll-x="820" />
+      </NTabPane>
+      <NTabPane name="agents">
+        <template #tab>
+          <span style="display:inline-flex;align-items:center;gap:6px"><NIcon :size="16"><ListIcon /></NIcon>{{ `${t("ocs.agents_count")} (${agents.length})` }}</span>
+        </template>
+        <NSpace style="margin-bottom: 8px" align="center">
+          <NInput v-model:value="agentFilterQ" :placeholder="t('common.filter')" clearable style="width: 160px" />
+          <ColumnPicker :all="ocsAgPicker" :visible="ocsAg.visibleKeys.value"
+                        @update:visible="ocsAg.setVisible" @reset="ocsAg.reset"
+                        :order="ocsAg.order.value" @update:order="ocsAg.setOrder" />
+          <ExportButton :columns="agentCols" :rows="agents" filename="ocs-agents" :title="t('ocs.agents_count')" />
+          <span style="font-size: 12px; opacity: .65">{{ t("ocs.agents_hint") }}</span>
+        </NSpace>
+        <NDataTable :columns="agentCols" :data="agentsFiltered" :loading="loading" :bordered="false"
+                    :scroll-x="1100" :pagination="pg" />
+      </NTabPane>
+      <NTabPane name="missing">
+        <template #tab>
+          <span style="display:inline-flex;align-items:center;gap:6px"><NIcon :size="16"><MissingIcon /></NIcon>{{ loaded.missing ? `${t("ocs.missing_agents")} (${miss.totalAll.value})` : t("ocs.missing_agents") }}</span>
+        </template>
+        <NAlert v-if="miss.totalAll.value" type="warning" style="margin-bottom: 12px">
+          <template #icon><NIcon><MissingIcon /></NIcon></template>
+          {{ miss.active.value ? `${miss.total.value} / ${miss.totalAll.value}` : miss.totalAll.value }} {{ t("ocs.missing_agents") }}
+          <span v-if="missingScoped" style="opacity: .75">{{ t("ocs.missing_scoped") }}</span>
+        </NAlert>
+        <NSpace style="margin-bottom: 8px" align="center">
+          <NInput v-model:value="miss.q.value" :placeholder="t('common.filter')" clearable style="width: 160px"
+                  data-testid="missing-filter" />
+          <ScopeFilterBar v-model:section="miss.section.value" v-model:subnet="miss.subnet.value"
+                          v-model:customer="miss.customer.value" :section-opts="miss.facets.value.sections"
+                          :subnet-opts="miss.facets.value.subnets" :customer-opts="miss.facets.value.customers"
+                          v-model:status="miss.status.value" :status-opts="miss.facets.value.statuses" />
+          <ColumnPicker :all="ocsMissPicker" :visible="ocsMiss.visibleKeys.value"
+                        @update:visible="ocsMiss.setVisible" @reset="ocsMiss.reset"
+                        :order="ocsMiss.order.value" @update:order="ocsMiss.setOrder" />
+          <ExportButton :columns="missCols" :rows="miss.rows.value" :fetch-all="miss.fetchAll"
+                        filename="ocs-missing-agents" :title="t('ocs.missing_agents')" />
+        </NSpace>
+        <NDataTable :columns="missCols" :data="miss.rows.value" :loading="loading || miss.loading.value"
+                    :bordered="false" :scroll-x="960" remote :pagination="miss.pagination"
+                    @update:sorter="miss.onSorter" />
+      </NTabPane>
+    </NTabs>
   </NCard>
 
   <!-- 新增／編輯 -->
@@ -221,10 +435,10 @@ function iconAction(icon: any, label: string, onClick: () => void, type?: any) {
           :title="editing ? t('ocs.edit_title') : t('ocs.add')">
     <NForm label-placement="left" :label-width="160" size="small">
       <NFormItem :label="t('cols.name')">
-        <NInput v-model:value="form.name" :placeholder="t('ocs.name_ph')" />
+        <NInput v-model:value="form.name" :placeholder="t('ocs.name_ph')" data-testid="ocs-name" />
       </NFormItem>
       <NFormItem label="URL">
-        <NInput v-model:value="form.base_url" placeholder="https://ocs.example.com" />
+        <NInput v-model:value="form.base_url" placeholder="https://ocs.example.com" data-testid="ocs-base-url" />
       </NFormItem>
       <NFormItem :label="t('ocs.username')">
         <NInput v-model:value="form.api_username" :placeholder="t('ocs.auth_optional')" />
@@ -254,6 +468,14 @@ function iconAction(icon: any, label: string, onClick: () => void, type?: any) {
           <span style="font-size: 12px; opacity: .7">{{ t("ocs.sync_software_hint") }}</span>
         </NSpace>
       </NFormItem>
+      <NFormItem :label="t('ocs.scope_subnets')">
+        <div style="width: 100%">
+          <NSelect v-model:value="form.scope_subnet_ids" :options="subnetOptions"
+                   multiple filterable clearable :placeholder="t('ocs.scope_all')" />
+          <ScopeOverlapWarning :scope-empty="!form.scope_subnet_ids?.length" />
+          <div style="font-size: 11px; opacity: .7; margin-top: 2px">{{ t("ocs.scope_hint") }}</div>
+        </div>
+      </NFormItem>
       <NFormItem :label="t('ocs.interval')">
         <NInputNumber v-model:value="form.sync_interval_seconds" :min="300" :max="86400"
                       style="width: 160px" />
@@ -261,6 +483,13 @@ function iconAction(icon: any, label: string, onClick: () => void, type?: any) {
       <NFormItem :label="t('ocs.stale_days')">
         <NInputNumber v-model:value="form.stale_after_days" :min="1" :max="3650"
                       style="width: 160px" />
+      </NFormItem>
+      <NFormItem :label="t('ocs.timezone')">
+        <div style="width: 100%">
+          <NSelect v-model:value="form.timezone" :options="tzOptions" filterable :clearable="!editing"
+                   :placeholder="t('ocs.timezone_ph')" data-testid="ocs-timezone" />
+          <div style="font-size: 11px; opacity: .7; margin-top: 2px">{{ t("ocs.timezone_hint") }}</div>
+        </div>
       </NFormItem>
     </NForm>
     <template #footer>

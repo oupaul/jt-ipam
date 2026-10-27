@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import ipaddress
+import re
 import uuid
 from typing import Annotated, Any
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import (
@@ -18,6 +20,8 @@ from app.api.v1.dependencies import (
 )
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.os_fingerprint import wazuh_os_display
+from app.core.sqlin import in_values
 from app.core.ui_error import detail_of
 from app.models.device import Device
 from app.models.librenms import LibreNMSDevice
@@ -25,6 +29,9 @@ from app.models.vlan import VLAN, DeviceVLAN
 from app.schemas.base import Paginated, StrictModel
 from app.schemas.device import DeviceCreate, DeviceRead, DeviceUpdate
 from app.services.custom_field import CustomFieldError, validate_custom_fields
+
+#: BMC 的主機名稱（同 device_kind_knowledge 的判讀）：關係鏈沒設主要 IP 時排在後面
+_BMC_HOST = re.compile(r"\b(?:idrac|ilo|ipmi|bmc|drac|xcc|imm|cimc|irmc)\b", re.I)
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
@@ -119,16 +126,35 @@ async def get_device_integrations(
         if pr:
             ip_ids.append(pr.id)
             ip_strs.append(str(pr.ip).split("/")[0])
-    out: dict[str, Any] = {"wazuh": None, "vm": None, "ocs": None}
+    out: dict[str, Any] = {"wazuh": None, "vm": None, "ocs": None, "rustdesk": None}
     if not ip_ids:
         return out
+    # RustDesk：這台裝置的某個 IP 對應到 RustDesk 裝置（客戶端裝在這台機器上，跟 Wazuh／OCS 代理同一類）。
+    # 連線按鈕在 IP 頁（逐 IP 開關＋權限），這裡只顯示資訊並連回那個 IP
+    from app.services.rustdesk import for_address as _rustdesk_for_address
+    for _ipid in ip_ids:                      # bounded: IPs of one device
+        _rd = await _rustdesk_for_address(session, _ipid)
+        if _rd is not None:
+            _ip = await session.get(IPAddress, _ipid)
+            _rd.pop("connect_uri", None)
+            out["rustdesk"] = {**_rd, "address_id": str(_ipid),
+                               "ip": str(_ip.ip).split("/")[0] if _ip is not None else None}
+            break
     wa = (await session.execute(
-        select(WazuhAgent).where(WazuhAgent.jt_ipam_address_id.in_(ip_ids)).limit(1)
+        select(WazuhAgent).where(WazuhAgent.jt_ipam_address_id.in_(ip_ids)).limit(1)  # bounded: IPs of one device
     )).scalar_one_or_none()
     if wa is None and ip_strs:
         wa = (await session.execute(
-            select(WazuhAgent).where(WazuhAgent.ip.in_(ip_strs)).limit(1)
+            select(WazuhAgent).where(WazuhAgent.ip.in_(ip_strs)).limit(1)  # bounded: IPs of one device
         )).scalar_one_or_none()
+    if wa is not None:
+        # 位址換給另一台設備之後就沒再回報的 agent 說的是上一台，不放進這台裝置（2026-10-12）。
+        # 只看換手：卡片顯示的是 agent 本身的狀態（含「離線」），「離線後位址又被看到活著」那條
+        # 是 OS／弱點判讀用的（agent_represents_ip），拿來藏卡片會讓離線的 agent 整張消失。
+        from app.services.wazuh import agent_predates_device
+        wa_ip = await session.get(IPAddress, wa.jt_ipam_address_id) if wa.jt_ipam_address_id else None
+        if wa_ip is not None and agent_predates_device(wa, wa_ip):
+            wa = None
     if wa is not None:
         inst = await session.get(WazuhInstance, wa.instance_id)
         # Wazuh 儀表板與 API 是不同服務：API 在 :55000，儀表板在同主機的 443。去掉埠即得。
@@ -138,7 +164,8 @@ async def get_device_integrations(
         out["wazuh"] = {
             "agent_id": wa.agent_id, "name": wa.name, "url": wz_url,
             "ip": str(wa.ip) if wa.ip else None, "status": wa.status,
-            "os_platform": wa.os_platform, "os_version": wa.os_version,
+            "os_platform": wa.os_platform, "os_version": wa.os_version, "os_name": wa.os_name,
+            "os": wazuh_os_display(wa.os_name, wa.os_platform, wa.os_version),
             "agent_version": wa.agent_version, "group": wa.group,
             # 資安組態評估（SCA）—— 目前唯一拿得到的資安體質指標
             "sca_policy": wa.sca_policy, "sca_score": wa.sca_score,
@@ -149,7 +176,7 @@ async def get_device_integrations(
             "last_keep_alive": wa.last_keep_alive.isoformat() if wa.last_keep_alive else None,
         }
     vm = (await session.execute(
-        select(VirtualMachine).where(VirtualMachine.primary_ip_id.in_(ip_ids)).limit(1)
+        select(VirtualMachine).where(VirtualMachine.primary_ip_id.in_(ip_ids)).limit(1)  # bounded: IPs of one device
     )).scalar_one_or_none()
     if vm is not None:
         cl = await session.get(VirtCluster, vm.cluster_id)
@@ -174,8 +201,8 @@ async def get_device_integrations(
     # 以「有 IP 被 OCS 盤點過」（ocs_id / os_ocs / last_seen_ocs 任一非空）當作此裝置有 OCS 資料。
     ocs_row = (await session.execute(
         select(IPAddress.os_ocs, IPAddress.last_seen_ocs, IPAddress.ocs_id,
-               IPAddress.ocs_tag, IPAddress.ocs_agent, IPAddress.ocs_notes)
-        .where(IPAddress.id.in_(ip_ids),
+               IPAddress.ocs_tag, IPAddress.ocs_agent, IPAddress.ocs_notes, IPAddress.ocs_hw)
+        .where(IPAddress.id.in_(ip_ids),  # bounded: IPs of one device
                or_(IPAddress.os_ocs.isnot(None), IPAddress.last_seen_ocs.isnot(None),
                    IPAddress.ocs_id.isnot(None)))
         .order_by(IPAddress.last_seen_ocs.desc().nullslast())
@@ -191,12 +218,23 @@ async def get_device_integrations(
         if srv and srv.base_url and ocs_row.ocs_id is not None:
             ocs_url = (f"{srv.base_url.rstrip('/')}/ocsreports/index.php"
                        f"?function=computer&systemid={ocs_row.ocs_id}")
+        # 製造商／型號／序號顯示 **OCS 自己回報的**（ocs_hw），不是裝置欄位 —— 裝置欄位可能是
+        # 別的來源寫的（LibreNMS 建立 Windows 裝置時填「windows／Intel x64」，2026-09-27 實機）。
+        # 系統序號是出廠佔位時改顯示主機板序號，並標出來。
+        hw = ocs_row.ocs_hw or {}
+        sysd, board = hw.get("system") or {}, hw.get("board") or {}
+        serial, from_board = sysd.get("serial"), False
+        if not serial and board.get("serial"):
+            serial, from_board = board.get("serial"), True
         out["ocs"] = {
             "os": ocs_row.os_ocs,
             "last_inventory": ocs_row.last_seen_ocs.isoformat() if ocs_row.last_seen_ocs else None,
-            "serial": dev.serial, "model": dev.model, "vendor": dev.vendor,
+            "vendor": sysd.get("vendor") or board.get("vendor"),
+            "model": sysd.get("model") or board.get("model"),
+            "serial": serial, "serial_from_board": from_board,
             "tag": ocs_row.ocs_tag, "agent": ocs_row.ocs_agent,
             "notes": ocs_row.ocs_notes or [], "url": ocs_url,
+            "hw": ocs_row.ocs_hw,
         }
     return out
 
@@ -248,7 +286,7 @@ async def _resolve_device_ips(session: AsyncSession, devices: list[Any]) -> dict
     pip_map: dict[Any, Any] = {}
     if pip_ids:
         for pid, ip in (await session.execute(
-            select(IPAddress.id, IPAddress.ip).where(IPAddress.id.in_(pip_ids))
+            select(IPAddress.id, IPAddress.ip).where(in_values(IPAddress.id, pip_ids))
         )).all():
             pip_map[pid] = str(ip).split("/")[0]
     dev_ids = [d.id for d in devices]
@@ -256,7 +294,7 @@ async def _resolve_device_ips(session: AsyncSession, devices: list[Any]) -> dict
     if dev_ids:
         for jid, pip, host in (await session.execute(
             select(LibreNMSDevice.jt_ipam_device_id, LibreNMSDevice.primary_ip,
-                   LibreNMSDevice.hostname).where(LibreNMSDevice.jt_ipam_device_id.in_(dev_ids))
+                   LibreNMSDevice.hostname).where(in_values(LibreNMSDevice.jt_ipam_device_id, dev_ids))
         )).all():
             for cand in (pip, host):
                 if not cand:
@@ -329,7 +367,7 @@ async def list_devices(
     from app.services.permission import visible_ids
     vis = await visible_ids(session, user=_user, object_type="device")
     if vis is not None:
-        stmt = stmt.where(Device.id.in_(vis)); cstmt = cstmt.where(Device.id.in_(vis))
+        stmt = stmt.where(in_values(Device.id, vis)); cstmt = cstmt.where(in_values(Device.id, vis))
     stmt = stmt.order_by(Device.name).offset((page - 1) * page_size).limit(page_size)
     rows = list((await session.execute(stmt)).scalars().all())
     total = int(await session.scalar(cstmt) or 0)
@@ -341,11 +379,13 @@ async def list_devices(
     from app.models.address import IPAddress
     eff_ips = {v for v in ip_map.values() if v}
     addr_by_ip: dict[str, tuple[Any, ...]] = {}
-    if eff_ips:
-        for aid, ahost, adev in (await session.execute(
-            select(IPAddress.id, _func.host(IPAddress.ip), IPAddress.device_id)
-            .where(_func.host(IPAddress.ip).in_(eff_ips))
-        )).all():
+    vis_ip = await visible_ids(session, user=_user, object_type="ip")
+    if eff_ips and (vis_ip is None or vis_ip):
+        q = (select(IPAddress.id, _func.host(IPAddress.ip), IPAddress.device_id)
+             .where(in_values(_func.host(IPAddress.ip), eff_ips, type_=String())))
+        if vis_ip is not None:   # 看不到的 IP 不給 id（不能點進去，也不該知道它存在；2026-10-07 稽核）
+            q = q.where(in_values(IPAddress.id, vis_ip))
+        for aid, ahost, adev in (await session.execute(q)).all():
             addr_by_ip.setdefault(str(ahost), (aid, adev))
     # 虛擬 / 實體：一次撈出所有 VM 名稱，避免逐台查
     from app.models.virt import VirtualMachine as _VM
@@ -411,18 +451,11 @@ async def get_device_relations(
             )).all()]
             if ip_ids:
                 vm = (await session.execute(
-                    select(VirtualMachine).where(VirtualMachine.primary_ip_id.in_(ip_ids)).limit(1)
+                    select(VirtualMachine).where(VirtualMachine.primary_ip_id.in_(ip_ids)).limit(1)  # bounded: IPs of one device
                 )).scalar_one_or_none()
         if vm is not None:
-            node_dev = await session.get(Device, vm.device_id) if vm.device_id else None
-            if node_dev is None and vm.node:
-                node_dev = (await session.execute(
-                    select(Device).where(_func.lower(Device.name) == vm.node.lower()).limit(1)
-                )).scalar_one_or_none()
-                if node_dev is None:
-                    node_dev = (await session.execute(
-                        select(Device).where(_func.lower(Device.fqdn) == vm.node.lower()).limit(1)
-                    )).scalar_one_or_none()
+            from app.services.relation_chain import vm_host_device
+            node_dev, _how = await vm_host_device(session, vm)
             cluster = await session.get(VirtCluster, vm.cluster_id) if vm.cluster_id else None
             csub = cluster.name if cluster is not None else None
             # 平台要跟著節點走：關係圖原本一律標成「PVE 節點」並連到 PVE 那一頁，
@@ -450,15 +483,21 @@ async def get_device_relations(
     chain.append({"type": "device", "id": str(dev.id), "label": dev.name})
     # 主要 IP（沒設就抓任一連到本裝置的 IP）→ 子網路 → 區段
     ip = None
+    linked = list((await session.execute(
+        select(IPAddress).where(IPAddress.device_id == dev.id)
+    )).scalars().all())
     if dev.primary_ip_id:
         ip = await session.get(IPAddress, dev.primary_ip_id)
-    if ip is None:
-        ip = (await session.execute(
-            select(IPAddress).where(IPAddress.device_id == dev.id).limit(1)
-        )).scalar_one_or_none()
+    if ip is None and linked:
+        # 沒設主要 IP：主機名稱像 BMC（iDRAC／iLO／IPMI…）的排後面，其餘照位址排（10-23 客戶：
+        # 伺服器的作業系統 IP 與 iDRAC 都連到同一台，以前 limit(1) 沒排序，關係圖抓到 iDRAC）
+        ip = min(linked, key=lambda a: (bool(_BMC_HOST.search(re.sub(r"[-_.]", " ", a.hostname or ""))),
+                                        ipaddress.ip_address(str(a.ip).split("/")[0])))
     if ip is not None:
+        more = sum(1 for a in linked if a.id != ip.id)
         chain.append({"type": "ip", "id": str(ip.id),
-                      "label": str(ip.ip).split("/")[0], "sub": ip.hostname})
+                      "label": str(ip.ip).split("/")[0], "sub": ip.hostname,
+                      **({"more": more} if more else {})})
         if ip.subnet_id:
             sn = await session.get(Subnet, ip.subnet_id)
             if sn is not None:
@@ -468,7 +507,8 @@ async def get_device_relations(
                     sec = await session.get(Section, sn.section_id)
                     if sec is not None:
                         chain.append({"type": "section", "id": str(sec.id), "label": sec.name})
-    return {"chain": chain}
+    from app.services.permission import visible_chain
+    return {"chain": await visible_chain(session, _user, chain)}
 
 
 @router.get(
@@ -513,29 +553,14 @@ async def create_device(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> DeviceRead:
+    # 自訂欄位、類型來源、機櫃 U 位防呆、主要 IP 雙向連結：與 AI 工具 create_device 共用（services/device_write）
+    from app.services.device_write import PlacementError, create_device_checked
     try:
-        cf = await validate_custom_fields(
-            session, object_type="device", payload=payload.custom_fields
-        )
+        obj = await create_device_checked(session, payload)
     except CustomFieldError as exc:
         raise HTTPException(status_code=400, detail=detail_of(exc, "custom_field_error")) from exc
-    data = payload.model_dump()
-    data["custom_fields"] = cf or None
-    obj = Device(**data)
-    # 放進機櫃時先防呆：U 位不可越界或與其他裝置重疊
-    if obj.rack_id is not None and obj.u_position is not None and obj.u_size is not None:
-        from app.services.rack import RackPlacementError, assert_placement_ok
-        try:
-            await assert_placement_ok(
-                session, rack_id=obj.rack_id, u_position=obj.u_position,
-                u_size=obj.u_size, rack_face=obj.rack_face, rack_slot=obj.rack_slot,
-                rack_slot_span=obj.rack_slot_span,
-                rack_vslot=obj.rack_vslot, rack_vslot_span=obj.rack_vslot_span,
-            )
-        except RackPlacementError as exc:
-            raise HTTPException(status_code=409, detail=detail_of(exc, "rack_placement_error")) from exc
-    session.add(obj)
-    await session.flush()
+    except PlacementError as exc:
+        raise HTTPException(status_code=409, detail=detail_of(exc, "rack_placement_error")) from exc
     await append_audit(
         session,
         actor_user_id=str(user.id),
@@ -573,25 +598,18 @@ async def update_device(
             raise HTTPException(status_code=400, detail=detail_of(exc, "custom_field_error")) from exc
     for k, v in changes.items():
         setattr(obj, k, v)
-    # 放進機櫃時先防呆：U 位不可越界或與其他裝置（同安裝方向）重疊
-    if obj.rack_id is not None and obj.u_position is not None and obj.u_size is not None:
-        from app.services.rack import RackPlacementError, assert_placement_ok
-        try:
-            await assert_placement_ok(
-                session, rack_id=obj.rack_id, u_position=obj.u_position,
-                u_size=obj.u_size, rack_face=obj.rack_face, rack_slot=obj.rack_slot,
-                rack_slot_span=obj.rack_slot_span,
-                rack_vslot=obj.rack_vslot, rack_vslot_span=obj.rack_vslot_span,
-                exclude_device_id=obj.id,
-            )
-        except RackPlacementError as exc:
-            raise HTTPException(status_code=409, detail=detail_of(exc, "rack_placement_error")) from exc
+    # 人改過類型 → 之後的自動判斷（services/device_type_auto）不再碰它。編輯表單每次都會送 type，所以要比對有沒有真的改
+    if "type" in changes and changes["type"] != before["type"]:
+        obj.type_source = "manual"
+    # 放進機櫃時先防呆：U 位不可越界或與其他裝置（同安裝方向）重疊（與裝置匯入共用 services/device_write）
+    from app.services.device_write import PlacementError, check_placement, link_primary_ip
+    try:
+        await check_placement(session, obj, exclude_device_id=obj.id)
+    except PlacementError as exc:
+        raise HTTPException(status_code=409, detail=detail_of(exc, "rack_placement_error")) from exc
     # 設了主要 IP → 同時把該 IP 的 device_id 指回本裝置（雙向連結，IP 清單/拓樸才接得起來）
     if changes.get("primary_ip_id"):
-        from app.models.address import IPAddress
-        pip = await session.get(IPAddress, changes["primary_ip_id"])
-        if pip is not None and pip.device_id != obj.id:
-            pip.device_id = obj.id
+        await link_primary_ip(session, obj)
     await append_audit(
         session,
         actor_user_id=str(user.id),

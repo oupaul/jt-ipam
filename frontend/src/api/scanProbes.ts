@@ -12,7 +12,7 @@ export interface ProbeDef {
   min_interval_seconds: number;
   needs: string;
 }
-export interface OsFamily { key: string; label_en: string; label_zh: string; }
+export interface OsFamily { key: string; label_en: string; label_zh: string; label_ja?: string; }
 
 interface ProbeCatalog { probes: ProbeDef[]; os_families: OsFamily[]; }
 
@@ -42,8 +42,21 @@ export function useScanProbes() {
 export function probeLabel(p: ProbeDef, locale: string): string {
   return locale.startsWith("zh") ? p.label_zh : p.label_en;
 }
+/**
+ * 畫面上 OS 欄要寫的字：家族對不到（unknown）但來源有給原文時，寫原文 —— 對照表還不認得的發行版
+ * （例如 Bazzite）顯示「未知」比原文沒用得多（2026-10-16）。其他情況照家族名稱。
+ */
+export function osDisplayLabel(fams: OsFamily[], key: string | null | undefined, guess: string | null | undefined,
+                               locale: string): string {
+  if ((key || "unknown") === "unknown" && guess && guess.trim()) return guess.trim();
+  return osFamilyLabel(fams, key, locale);
+}
+
 export function osFamilyLabel(fams: OsFamily[], key: string | null | undefined, locale: string): string {
   const f = fams.find((x) => x.key === (key || "unknown"));
   if (!f) return key || "";
-  return locale.startsWith("zh") ? f.label_zh : f.label_en;
+  if (locale.startsWith("zh")) return f.label_zh;
+  // 日文：後端有給就用（以前一律退回英文，例如「Network device」）
+  if (locale.startsWith("ja") && f.label_ja) return f.label_ja;
+  return f.label_en;
 }

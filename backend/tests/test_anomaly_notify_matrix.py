@@ -41,9 +41,12 @@ async def test_existing_setting_carries_over(db_session):
     ))
     await db_session.flush()
 
+    from app.services.system_config import INFO_ANOMALY_EVENTS
     m = await get_notification_matrix(db_session)
     for ev in ANOMALY_EVENTS:
-        assert m[ev] == {"in_app": False, "email": True}, f"{ev} 沒有沿用舊設定"
+        if ev in INFO_ANOMALY_EVENTS:        # 只是參考的類別刻意不帶（見 test_arp_flux_is_informational…）
+            continue
+        assert {k: m[ev][k] for k in ("in_app", "email")} == {"in_app": False, "email": True}, f"{ev} 沒有沿用舊設定"
 
 
 async def test_per_category_setting_wins_over_the_legacy_value(db_session):
@@ -59,8 +62,8 @@ async def test_per_category_setting_wins_over_the_legacy_value(db_session):
     ))
     await db_session.flush()
     m = await get_notification_matrix(db_session)
-    assert m["anomaly.ghost_ips"] == {"in_app": False, "email": False}
-    assert m["anomaly.ip_conflicts"] == {"in_app": True, "email": True}
+    assert {k: m["anomaly.ghost_ips"][k] for k in ("in_app", "email")} == {"in_app": False, "email": False}
+    assert {k: m["anomaly.ip_conflicts"][k] for k in ("in_app", "email")} == {"in_app": True, "email": True}
 
 
 async def test_notifications_respect_the_per_category_switch(db_session, admin_user):
@@ -174,3 +177,41 @@ async def test_legacy_notification_keys_stay_translatable():
                 assert isinstance(node, dict) and part in node, f"{loc} 少了舊鍵 {key}"
                 node = node[part]
             assert isinstance(node, str) and node
+
+
+async def test_one_channel_message_per_run(db_session, admin_user, monkeypatch):
+    """一次偵測對外部管道只發一則、每類一列（使用者 2026-10-20：一次洗出四則太亂）。"""
+    from app.services import notify_channels
+    from app.services.anomaly import notify_new_findings
+    calls: list[dict] = []
+
+    async def capture(session, **kw):
+        calls.append(kw)
+    monkeypatch.setattr(notify_channels, "broadcast_channels", capture)
+    sent = await notify_new_findings(db_session, {
+        "ip_conflicts": [{"ip": "198.51.100.20"}],
+        "rogue_dhcp": [{"server_ip": "198.51.100.30"}, {"server_ip": "198.51.100.31"}],
+    })
+    assert sent == 2
+    assert len(calls) == 1
+    rows = calls[0]["rows"]
+    assert [r.codes for r in rows] == [["198.51.100.20"], ["198.51.100.30", "198.51.100.31"]]
+    assert calls[0]["link"] == "/anomaly"
+    assert "2 類" in calls[0]["subject"]
+
+
+async def test_arp_flux_is_informational_and_off_by_default(db_session):
+    """使用者 2026-10-20：雙網卡 ARP flux 是 Linux 預設行為，不是故障 —— 列在頁籤上供參考，預設不通知。
+    舊的總開關（anomaly.detected）打開過也不帶過來；想收的人可以在通知設定自己打開。"""
+    from app.models.system_setting import SystemSetting
+    from app.services.system_config import NOTIFY_MATRIX_KEY, get_notification_matrix
+
+    m = await get_notification_matrix(db_session)
+    assert {k: m["anomaly.arp_flux"][k] for k in ("in_app", "email")} == {"in_app": False, "email": False}
+    assert m["anomaly.ip_conflicts"]["in_app"] is True
+    db_session.add(SystemSetting(key=NOTIFY_MATRIX_KEY,
+                                 value={"anomaly.detected": {"in_app": True, "email": True}}))
+    await db_session.flush()
+    m = await get_notification_matrix(db_session)
+    assert {k: m["anomaly.arp_flux"][k] for k in ("in_app", "email")} == {"in_app": False, "email": False}
+    assert m["anomaly.ip_conflicts"]["email"] is True

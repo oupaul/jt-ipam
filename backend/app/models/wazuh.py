@@ -66,6 +66,8 @@ class WazuhAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     status: Mapped[str | None] = mapped_column(String(32))   # active / disconnected / pending / never_connected
     os_platform: Mapped[str | None] = mapped_column(String(64))
     os_version: Mapped[str | None] = mapped_column(String(64))
+    # 產品名稱（os.name，如「Microsoft Windows 11 Pro」）；顯示優先用它，見 os_fingerprint.wazuh_os_display
+    os_name: Mapped[str | None] = mapped_column(String(160))
     agent_version: Mapped[str | None] = mapped_column(String(64))
     group: Mapped[str | None] = mapped_column(Text)
     node_name: Mapped[str | None] = mapped_column(String(64))
@@ -94,6 +96,8 @@ class WazuhAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     sca_fail: Mapped[int | None] = mapped_column(Integer)
     sca_policy_count: Mapped[int | None] = mapped_column(Integer)
     sca_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 最後一次去查 SCA 的時間（有沒有結果都記）：決定下一輪輪到誰。見 services/wazuh.sync_sca
+    sca_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         UniqueConstraint("instance_id", "agent_id", name="wazuh_agent_unique"),

@@ -26,9 +26,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
 from app.core.security import decrypt_secret, encrypt_secret
+from app.core.sqlin import in_values
 from app.core.ui_error import UiError
 from app.models.address import IPAddress
 from app.models.zabbix import ZabbixHost, ZabbixInstance
+from app.services.ip_autocreate import match_existing_many
 
 
 class ZabbixError(UiError, RuntimeError):
@@ -210,7 +212,8 @@ async def sync_instance(session: AsyncSession, inst: ZabbixInstance) -> dict[str
     major = _major(version)
     token = await _auth_token(inst, major=major)
 
-    output = ["hostid", "host", "name", "status", "maintenance_status"]
+    # maintenance_type：0＝維護中照收資料、1＝不收資料（可用性停在進維護前的值）
+    output = ["hostid", "host", "name", "status", "maintenance_status", "maintenance_type"]
     iface = ["ip", "dns", "useip", "type", "main"]
     params: dict[str, Any] = {
         "selectTags": ["tag", "value"],
@@ -234,40 +237,45 @@ async def sync_instance(session: AsyncSession, inst: ZabbixInstance) -> dict[str
     seen: set[str] = set()
     linked = 0
 
+    from app.models.zabbix import ZabbixInstance as _Inst
+    from app.services.hostname_reports import HostnameRun, enabled_peers
+    hn_run = HostnameRun(session, source="zabbix", origin=f"zabbix:{inst.id}",
+                         peers=await enabled_peers(session, _Inst))
+    # 整批（2026-09-30 大量資料測試：以前每台主機各比對一次 IP、各查一次鏡像列）
+    existing_by_id = {row.hostid: row for row in (await session.execute(
+        select(ZabbixHost).where(ZabbixHost.instance_id == inst.id))).scalars()}
+    first_ips = {str(h.get("hostid") or ""): _first_ip(h.get("interfaces") or []) for h in hosts}
+    matches = await match_existing_many(session, {ip for ip, _d in first_ips.values() if ip}, scope)
     for h in hosts:
         hostid = str(h.get("hostid") or "")
-        if not hostid:
-            continue
+        if not hostid or hostid in seen:
+            continue            # 同一台主機回了兩次：以前會再新增一筆、撞唯一鍵
         seen.add(hostid)
-        ip, dns = _first_ip(h.get("interfaces") or [])
+        ip, dns = first_ips[hostid]
+        # 不監控的主機（使用者 2026-10-13：「停用的不要抓」）：不命名 IP、不當上線證據、不關聯 IP ——
+        # 它的位址可能早就給別台用了。鏡像照樣留著（畫面看得到「不監控」）
+        monitored = str(h.get("status")) == "0"
+        # 維護中且不收資料：可用性停在進維護前的值，不能當成「此刻可達」
+        frozen = str(h.get("maintenance_status") or "0") == "1" and str(h.get("maintenance_type") or "0") == "1"
 
-        # 重疊網段：一定要 scope + limit(1)，否則 MultipleResultsFound 會炸掉整批
         addr_id = None
-        if ip:
-            stmt = select(IPAddress).where(IPAddress.ip == ip)
-            if scope:
-                stmt = stmt.where(IPAddress.subnet_id.in_(scope))
-            ipa = (await session.execute(stmt.limit(1))).scalars().first()
+        if ip and monitored:
+            # 唯一才算（重疊網段又沒設範圍時不猜）
+            ipa, _amb = matches.get(ip, (None, False))
             if ipa is not None:
                 addr_id = ipa.id
                 linked += 1
                 # 上線判定：Zabbix server 自己在輪詢，說 up 就是此刻可達（與 LibreNMS
                 # 裝置狀態同一層）。**只有 up 才蓋時間** —— down 是「不活著」的證據、
                 # unknown 是沒有證據，兩者寫進去都會變成「看到過」。
-                if _availability(h) == "up":
+                if _availability(h) == "up" and not frozen:
                     ipa.last_seen_zabbix = now
-                # 主機名稱觀測（來源 zabbix，依全域優先序決定是否採用）
-                from app.services.hostname import apply_observation
-                name = (h.get("name") or h.get("host") or "").strip()
-                if name:
-                    # 多台 Zabbix 主機可能指向同一 IP → tiebreak 穩定收斂
-                    # （Wazuh 就是漏了這個，十天洗出 620 筆翻動）
-                    await apply_observation(session, ip=ipa, source="zabbix",
-                                            hostname=name, tiebreak_min=True)
+                # 主機名稱觀測（來源 zabbix，依全域優先序決定是否採用）。
+                # 多台 Zabbix 主機可能指向同一 IP → HostnameRun 同一輪內取固定的一個
+                # （Wazuh 就是漏了這個，十天洗出 620 筆翻動）
+                hn_run.report(ipa, (h.get("name") or h.get("host") or "").strip() or None)
 
-        existing = (await session.execute(
-            select(ZabbixHost).where(ZabbixHost.instance_id == inst.id,
-                                     ZabbixHost.hostid == hostid))).scalars().first()
+        existing = existing_by_id.get(hostid)
         values = {
             "host": str(h.get("host") or "")[:255],
             "name": str(h.get("name") or "")[:255] or None,
@@ -288,12 +296,13 @@ async def sync_instance(session: AsyncSession, inst: ZabbixInstance) -> dict[str
             for k, v in values.items():
                 setattr(existing, k, v)
 
+    # host.get 是單一呼叫、失敗會往外拋 → 走到這裡就是完整的主機清單
+    await hn_run.finish(complete=True)
+
     # 移除已不存在於 Zabbix 的主機（鏡像資料，不保留幽靈）
-    stale = (await session.execute(
-        select(ZabbixHost).where(ZabbixHost.instance_id == inst.id))).scalars().all()
     removed = 0
-    for row in stale:
-        if row.hostid not in seen:
+    for hostid, row in existing_by_id.items():
+        if hostid not in seen:
             await session.delete(row)
             removed += 1
 
@@ -321,7 +330,7 @@ async def coverage_gap(
     if subnet_ids is not None:
         if not subnet_ids:
             return []
-        stmt = stmt.where(IPAddress.subnet_id.in_(subnet_ids))
+        stmt = stmt.where(in_values(IPAddress.subnet_id, subnet_ids))
     rows = (await session.execute(stmt)).all()
     return [{"ip_address_id": str(i), "ip": str(ip).split("/", 1)[0] if ip else None,
              "hostname": hn} for i, ip, hn in rows]

@@ -1,9 +1,12 @@
 <script setup lang="ts">
+import { credSuffix, defaultCredId } from "@/utils/savedCreds";
+import { useTerminalFontSize } from "@/composables/useTerminalFontSize";
 /**
  * PVE 主控台（noVNC / xterm）。版面與工具列比照 SSH/RDP/VNC。
  * 連線時要求輸入 PVE 帳密（可選擇存進金庫）；kind=vm → @novnc/novnc 圖形 RFB（可送出按鍵、縮放切換）；
  * kind=ct → xterm.js + PVE term 協定。WS 走同站後端代理到 PVE。
  */
+import { revokedCloseText } from "@/utils/wsError";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useTerminalLinks } from "@/composables/useTerminalLinks";
 import { useI18n } from "vue-i18n";
@@ -14,6 +17,7 @@ import {
 import {
   NoVncIcon, TerminalIcon, DeleteIcon, CancelIcon, RefreshIcon, KeyIcon, ExpandIcon, ReduceIcon, ChevronDownIcon, InfoIcon,
 } from "@/icons";
+import ConnElapsed from "@/components/ConnElapsed.vue";
 import ConsoleDisconnectedOverlay from "@/components/ConsoleDisconnectedOverlay.vue";
 import { buildSendKeysMenu } from "@/composables/useSendKeys";
 import { apiErrMsg } from "@/api/client";
@@ -67,7 +71,7 @@ const credOptions = computed(() => [
   // 「用別組帳密」必須在**下拉裡**看得到 —— 只靠 hover 才出現的 ✕ 不算可發現
   { label: t("ssh.cred_manual"), value: null as unknown as string },
   ...savedCreds.value.map((c) => ({
-    label: `${c.label}（${c.username}）`, value: c.id,
+    label: `${c.label}（${c.username}）${credSuffix(t, c)}`, value: c.id,
   })),
 ]);
 
@@ -75,7 +79,8 @@ async function loadCreds() {
   try {
     savedCreds.value = await listPveCredentials(props.addressId);
     // 有已存帳密就預設選最近一筆 → 不必再輸入直接連線（比照 SSH）
-    if (!selectedCredId.value && savedCreds.value.length) selectedCredId.value = savedCreds.value[0].id;
+    // 位址換手前存的不自動帶入（utils/savedCreds）
+    if (!selectedCredId.value) selectedCredId.value = defaultCredId(savedCreds.value);
   } catch { savedCreds.value = []; }
 }
 onMounted(loadCreds);
@@ -113,6 +118,9 @@ async function connect() {
       credId = saved.id;
       // 記進本地狀態 → 同一分頁「重新連線」直接沿用剛存的憑證，不再跳帳密輸入
       selectedCredId.value = saved.id;
+      // 同時重新載入清單（比照 SSH／RDP）：只設選取值的話，下拉找不到這個 id 的選項，
+      // 連線失敗回到表單時就只看到一串 UUID（使用者回報，2026-09-24）
+      void loadCreds();
     } catch (e: any) {
       phase.value = "error";
       errorMsg.value = e?.response?.data?.detail || t("novnc.err_save_cred");
@@ -184,7 +192,7 @@ async function connectXterm(wsUrl: string, pveUser: string, vncticket: string) {
       import("@xterm/xterm"), import("@xterm/addon-fit"),
     ]);
     await import("@xterm/xterm/css/xterm.css");
-    term = new Terminal({ cursorBlink: true, fontSize: 13, allowProposedApi: true,
+    term = new Terminal({ cursorBlink: true, fontSize: fontSize.value, allowProposedApi: true,
       theme: { background: "#000000" } });
     fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
@@ -212,12 +220,22 @@ async function connectXterm(wsUrl: string, pveUser: string, vncticket: string) {
       term.write(buf);
     };
     ws.onerror = () => { if (phase.value !== "connected") { phase.value = "error"; errorMsg.value = t("novnc.err_connect"); } };
-    ws.onclose = () => { if (phase.value === "connected") phase.value = "closed"; stopConnection(); };
+    ws.onclose = (ev) => {
+      const revoked = revokedCloseText(ev);
+      if (revoked) { phase.value = "error"; errorMsg.value = revoked; }
+      else if (phase.value === "connected") phase.value = "closed";
+      stopConnection();
+    };
     window.addEventListener("resize", onResize);
   } catch (e: any) {
     phase.value = "error"; errorMsg.value = e?.message || t("novnc.err_connect");
   }
 }
+
+// xterm（CT）的字級：與 SSH 主控台共用一份（composables/useTerminalFontSize）
+const { fontSize, step: stepFont, atMin: fontAtMin, atMax: fontAtMax } = useTerminalFontSize((px) => {
+  if (term) { term.options.fontSize = px; onResize(); }
+});
 
 function onResize() {
   if (fitAddon && term && ws && ws.readyState === 1) {
@@ -272,7 +290,7 @@ async function removeCred() {
   <div class="vnc-wrap" :class="{ 'vnc-full': fullHeight, 'vnc-center': fullHeight && (phase === 'form' || phase === 'error') }">
     <!-- 連線設定表單（版面比照 SSH/RDP/VNC）-->
     <div v-if="phase === 'form' || phase === 'error'" class="vnc-form">
-      <n-card size="small" :bordered="true">
+      <n-card size="small" :bordered="true" class="console-connect-card">
         <template #header>
           <span style="display:flex;align-items:center;gap:8px">
             <n-icon :component="headIcon" :size="18" />
@@ -286,7 +304,7 @@ async function removeCred() {
         </n-alert>
 
         <!-- 已存 PVE 帳密 -->
-        <div v-if="credOptions.length" class="vnc-saved-row">
+        <div v-if="savedCreds.length" class="vnc-saved-row">
           <span class="vnc-saved-label">{{ t("novnc.saved_cred") }}</span>
           <n-select v-model:value="selectedCredId" :options="credOptions" clearable size="small"
                     :placeholder="t('novnc.use_typed')" style="flex:1" />
@@ -350,6 +368,7 @@ async function removeCred() {
           <n-tag size="small" type="warning" :bordered="false" round>PVE</n-tag>
           <n-tag size="small" :bordered="false" round>{{ protoLabel }}</n-tag>
           <n-tag v-if="deviceName" size="small" type="info" :bordered="false" round>{{ deviceName }}</n-tag>
+          <ConnElapsed :active="phase === 'connected'" />
         </span>
         <!-- LXC（xterm）提示：放在狀態列右側、單行，太長以 … 截斷 -->
         <span v-if="phase === 'connected' && !isVm && !ctHintDismissed" class="vnc-hint"
@@ -375,6 +394,10 @@ async function removeCred() {
             <n-button :type="scaleMode === 'native' ? 'primary' : 'default'" @click="setScale('native')">
               <template #icon><n-icon :component="ReduceIcon" /></template>{{ t("vnc.scale_native") }}
             </n-button>
+          </n-button-group>
+          <n-button-group v-if="phase === 'connected' && !isVm" size="tiny" data-testid="xterm-font">
+            <n-button :disabled="fontAtMin" :title="t('ssh.font_smaller')" @click="stepFont(-1)">A−</n-button>
+            <n-button :disabled="fontAtMax" :title="t('ssh.font_larger')" @click="stepFont(1)">A+</n-button>
           </n-button-group>
           <n-button v-if="phase === 'connected'" size="tiny" type="error" ghost @click="disconnect">
             <template #icon><n-icon :component="CancelIcon" /></template>{{ t("vnc.disconnect") }}
@@ -406,10 +429,14 @@ async function removeCred() {
 .novnc-disp { position: relative; }
 .novnc-disp.vnc-full { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .vnc-screen-area.vnc-full { flex: 1; min-height: 0; }
-.vnc-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 2px; gap: 8px; }
+.vnc-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 4px 2px; gap: 8px; }
 .vnc-status { font-size: 13px; display: inline-flex; align-items: center; gap: 7px;
   padding: 3px 11px; border-radius: 999px; font-weight: 500;
   background: rgba(128, 128, 128, .12); color: #888; }
+/* 手機：內容放不下時整顆標籤換到下一行，不要把「連線錯誤」擠成直排、也不要超出畫面 */
+.vnc-status { flex-wrap: wrap; row-gap: 4px; max-width: 100%; min-width: 0; }
+.vnc-status > * { flex: none; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 640px) { .vnc-status { border-radius: 14px; } }
 .vnc-status[data-state="connected"] { color: #18a058; background: rgba(24,160,88,.12); }
 .vnc-status[data-state="connecting"] { color: #f0a020; background: rgba(240,160,32,.12); }
 .vnc-status[data-state="closed"] { color: #888; background: rgba(128,128,128,.14); }

@@ -24,7 +24,8 @@ import { useTablePagination } from "@/composables/useTablePagination";
 const pg = useTablePagination();
 const { t } = useI18n();
 
-const { visibleKeys: snVis, setVisible: snSet, reset: snReset } = useColumnPrefs(
+const { visibleKeys: snVis, setVisible: snSet, reset: snReset,
+  order: snOrder, setOrder: snSetOrder, orderColumns: snOrderCols } = useColumnPrefs(
   "section_detail_subnets",
   ["cidr", "description", "usage"],
   ["cidr", "description", "usage"],
@@ -139,7 +140,7 @@ const allColumns: DataTableColumns<Subnet> = autoSort([
 ]);
 
 const columns = computed<DataTableColumns<Subnet>>(() =>
-  allColumns.filter((c: any) => snVis.value.includes(c.key)),
+  snOrderCols(allColumns.filter((c: any) => snVis.value.includes(c.key))),
 );
 
 watch(() => route.params.id, (id) => {
@@ -178,6 +179,11 @@ onMounted(() => {
           <n-descriptions-item :label="t('common.subnet_count')">{{ section.subnet_count ?? 0 }}</n-descriptions-item>
           <n-descriptions-item :label="t('sections.strict_mode')">{{ section.strict_mode ? "✓" : "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('custom_fields.display_order')">{{ section.display_order }}</n-descriptions-item>
+          <!-- phpIPAM 相容 ID：Proxmox VE SDN 的 phpIPAM 外掛「區段」欄位只收整數，填這個（10-24） -->
+          <n-descriptions-item :label="t('sections.compat_id')">
+            <span data-testid="section-compat-id">{{ section.compat_id ?? "—" }}</span>
+            <span style="margin-left: 10px; font-size: 12px; opacity: .65">{{ t("sections.compat_id_hint") }}</span>
+          </n-descriptions-item>
           <n-descriptions-item :label="t('common.description')" :span="2">
             {{ section.description ?? "—" }}
           </n-descriptions-item>
@@ -194,7 +200,8 @@ onMounted(() => {
 <!-- 控制元件移到卡片內文最上方（標題列不放控制元件） -->
         <n-space align="center" justify="end" style="margin-bottom: 10px">
           <ColumnPicker :all="snPicker" :visible="snVis"
-                        @update:visible="snSet" @reset="snReset" />
+                        @update:visible="snSet" @reset="snReset"
+                        :order="snOrder" @update:order="snSetOrder" />
           <n-button
             v-if="section"
             @click="load(section.id)"

@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { wsErrorText } from "@/utils/wsError";
+import { credSuffix, defaultCredId } from "@/utils/savedCreds";
+import { wsErrorText, revokedCloseText } from "@/utils/wsError";
+import ConnElapsed from "@/components/ConnElapsed.vue";
+import ConsoleRouteNote from "@/components/ConsoleRouteNote.vue";
 /**
  * SSH 終端機（xterm.js）。先換 ticket → 開 WebSocket → 橋接後端 asyncssh。
  * 憑證（密碼/私鑰）只在連線時送出，前端不保存。Host key 採 TOFU：首次顯示指紋確認後由後端釘選。
  */
-import { nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NForm, NFormItem, NInput, NInputNumber, NRadioGroup, NRadio, NButton,
@@ -16,11 +19,15 @@ import { FitAddon } from "@xterm/addon-fit";
 import { useTerminalLinks } from "@/composables/useTerminalLinks";
 import "@xterm/xterm/css/xterm.css";
 import {
-  requestSshTicket, buildSshWsUrl,
+  requestSshTicket, buildSshWsUrl, resetSshHostKey,
   listSshCredentials, createSshCredential, deleteSshCredential, type SshCredential,
 } from "@/api/ssh";
 import { TerminalIcon, CancelIcon, RefreshIcon, DeleteIcon } from "@/icons";
 import ConsoleDisconnectedOverlay from "@/components/ConsoleDisconnectedOverlay.vue";
+import GuacView from "@/components/GuacView.vue";
+import { consoleEngineLabel } from "@/utils/consoleEngine";
+import { isLinuxTarget } from "@/utils/sshHints";
+import { useTerminalFontSize } from "@/composables/useTerminalFontSize";
 
 const props = withDefaults(defineProps<{
   addressId: string;
@@ -29,11 +36,28 @@ const props = withDefaults(defineProps<{
   deviceName?: string | null;
   defaultPort?: number;
   fullHeight?: boolean;
-}>(), { defaultPort: 22, fullHeight: false, hostname: null, deviceName: null });
+  osFamily?: string | null;
+  osGuess?: string | null;
+}>(), { defaultPort: 22, fullHeight: false, hostname: null, deviceName: null, osFamily: null, osGuess: null });
 
-const FONT_MIN = 9;
-const FONT_MAX = 24;
-const fontSize = ref(13);
+/** 連到 Linux 時提示搭配 tmux／screen（10-22 使用者要求）：瀏覽器斷線或關掉分頁時 SSH 工作階段結束，
+ *  裡面跑的程式會跟著被結束。可以按「不再顯示」，記在這個瀏覽器（讀寫失敗就照常顯示）。 */
+const TMUX_HINT_KEY = "jtipam.ssh.tmuxHintDismissed";
+const tmuxHintOff = ref((() => { try { return localStorage.getItem(TMUX_HINT_KEY) === "1"; } catch { return false; } })());
+const showTmuxHint = computed(() => !tmuxHintOff.value && isLinuxTarget(props.osFamily, props.osGuess));
+function dismissTmuxHint() {
+  tmuxHintOff.value = true;
+  try { localStorage.setItem(TMUX_HINT_KEY, "1"); } catch { /* 無痕模式等：這次關掉就好 */ }
+}
+
+// 字級（px）與 PVE xterm 共用一份（composables/useTerminalFontSize）：換頁、重連、換引擎都沿用
+const { fontSize, step: stepFont, atMin: fontAtMin, atMax: fontAtMax } = useTerminalFontSize((px) => {
+  if (term) { term.options.fontSize = px; doFit(); }
+  // guacd 引擎：連線中改字級（argv 串流），工作階段不中斷
+  if (guacSession.value) guacRef.value?.setArgument("font-size", String(fontPt()));
+});
+/** guacd 的字級單位是 pt（96 DPI 下 1pt＝4/3 px） */
+const fontPt = () => Math.round(fontSize.value * 0.75);
 
 const { t } = useI18n();
 const msg = useMessage();
@@ -51,13 +75,12 @@ async function loadCreds() {
     credOptions.value = [
     { label: t('ssh.cred_manual'), value: null as unknown as string },
     ...savedCreds.value.map((c) => ({
-      label: `${c.label}（${c.username}・${c.auth_type === "key" ? t("ssh.auth_key") : t("ssh.auth_password")}）`,
+      label: `${c.label}（${c.username}・${c.auth_type === "key" ? t("ssh.auth_key") : t("ssh.auth_password")}）${credSuffix(t, c)}`,
       value: c.id,
     }))];
-    // 有已存帳密就預設選最近一筆 → 不必再輸入，直接按連線（要改用其他帳密可清空下拉）
-    if (!selectedCredId.value && savedCreds.value.length) {
-      selectedCredId.value = savedCreds.value[0].id;
-    }
+    // 有已存帳密就預設選最近一筆 → 不必再輸入，直接按連線（要改用其他帳密可清空下拉）；
+    // 位址換手前存的不自動帶入（utils/savedCreds）
+    if (!selectedCredId.value) selectedCredId.value = defaultCredId(savedCreds.value);
   } catch { /* 靜默：沒有已存帳密不影響手動連線 */ }
 }
 async function delSelectedCred() {
@@ -74,6 +97,8 @@ onMounted(loadCreds);
 type Phase = "form" | "connecting" | "connected" | "closed" | "error";
 const phase = ref<Phase>("form");
 const errorMsg = ref("");
+// 錯誤代碼：主機金鑰不符時要多給一個「清除記住的金鑰」
+const errorCode = ref("");
 
 const form = reactive({
   username: "",
@@ -103,6 +128,12 @@ const hostKeyAsk = ref(false);
 const hostKeyFp = ref("");
 // 這條連線是否經由跳板（後端在連線前送 status/via_jump）
 const viaJump = ref("");
+const viaKind = ref("jump");   // "jump"／"agent"（經由掃描代理中繼，issue #24 階段二）
+// guacd 引擎（系統設定選的）：終端機由 guacd 在伺服器端畫，這個元件只留表單、工具列與金鑰確認
+const guacRef = ref<InstanceType<typeof GuacView> | null>(null);
+// 狀態列的「引擎」標示（這次連線實際用的引擎，來自票證）
+const engineLabel = ref("");
+const guacSession = ref<{ key: number; url: string; config: Record<string, unknown> } | null>(null);
 
 function clearCreds() {
   form.password = "";
@@ -150,6 +181,7 @@ function startHeartbeat() {
 function teardown() {
   if (detachLinks) { detachLinks(); detachLinks = null; }
   stopHeartbeat();
+  guacRef.value?.disconnect();
   try { ws?.close(); } catch { /* noop */ }
   ws = null;
   disposeTerm();
@@ -162,14 +194,10 @@ function doFit() {
   } catch { /* noop */ }
 }
 
-// 文字大小快速調整
-function setFont(delta: number) {
-  fontSize.value = Math.min(FONT_MAX, Math.max(FONT_MIN, fontSize.value + delta));
-  if (term) { term.options.fontSize = fontSize.value; doFit(); }
-}
 
 async function connect() {
   errorMsg.value = "";
+  errorCode.value = "";
   if (!selectedCredId.value && !form.username.trim()) { errorMsg.value = t("ssh.err_username"); return; }
   phase.value = "connecting";
 
@@ -208,6 +236,21 @@ async function connect() {
     return;
   }
 
+  engineLabel.value = consoleEngineLabel(ticket.engine || "builtin");
+  if (ticket.engine === "guacd") {
+    guacSession.value = {
+      key: Date.now(), url: buildSshWsUrl(ticket.ws_path, ticket.ticket),
+      config: credId
+        ? { credential_id: credId, port: form.port, font_size: fontPt() }
+        : { username: form.username.trim(), port: form.port, auth: form.auth, font_size: fontPt(),
+            password: form.auth === "password" ? form.password : undefined,
+            private_key: form.auth === "key" ? form.privateKey : undefined,
+            passphrase: form.auth === "key" ? form.passphrase : undefined },
+    };
+    clearCreds();
+    return;
+  }
+  guacSession.value = null;
   await nextTick();
   if (!termEl.value) { phase.value = "error"; errorMsg.value = t("ssh.err_ticket"); return; }
   term = new Terminal({ cursorBlink: true, fontSize: fontSize.value, scrollback: 5000,
@@ -256,7 +299,7 @@ async function connect() {
         else if (payload.state === "disconnected") phase.value = "closed";
         // 經跳板時要講出來：使用者看到的位址是目標，實際路徑卻多了一跳，
         // 出問題時（例如跳板掛了）知道這件事才查得下去
-        else if (payload.state === "via_jump") viaJump.value = payload.via || "";
+        else if (payload.state === "via_jump") { viaJump.value = payload.via || ""; viaKind.value = payload.via_kind || "jump"; }
         break;
       case "hostkey":
         hostKeyFp.value = payload.fingerprint;
@@ -264,11 +307,19 @@ async function connect() {
         break;
       case "error":
         phase.value = "error";
+        errorCode.value = payload.code || "";
         errorMsg.value = wsErrorText(payload, t("ssh.err_generic"));
         break;
     }
   };
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
+    const revoked = revokedCloseText(ev);
+    if (revoked) {
+      phase.value = "error";
+      errorMsg.value = revoked;
+      term?.write(`\r\n\x1b[31m${revoked}\x1b[0m\r\n`);
+      return;
+    }
     if (phase.value !== "error") {
       phase.value = "closed";
       term?.write(`\r\n\x1b[33m${t("ssh.disconnected")}\x1b[0m\r\n`);
@@ -284,14 +335,34 @@ async function connect() {
 
 function acceptHostKey() {
   hostKeyAsk.value = false;
+  if (guacSession.value) { guacRef.value?.acceptHostKey(); return; }
   wsSend({ type: "hostkey_accept" });
 }
 function rejectHostKey() {
   hostKeyAsk.value = false;
-  wsSend({ type: "hostkey_reject" });
+  if (guacSession.value) guacRef.value?.rejectHostKey();
+  else wsSend({ type: "hostkey_reject" });
   teardown();
+  guacSession.value = null;
   phase.value = "form";
 }
+// 金鑰不符：位址換給別台設備、對方重灌都會這樣。清掉後重連會再跳出新指紋讓人核對，不是直接信任
+const resettingKey = ref(false);
+async function resetHostKey() {
+  resettingKey.value = true;
+  try {
+    await resetSshHostKey(props.addressId);
+    msg.success(t("ssh.hostkey_reset_done"));
+    errorCode.value = "";
+    backToForm();
+  } catch (e: any) {
+    msg.error(e?.response?.data?.detail || t("ssh.hostkey_reset_failed"));
+  } finally {
+    resettingKey.value = false;
+  }
+}
+function onGuacHostKey(fp: string) { hostKeyFp.value = fp; hostKeyAsk.value = true; }
+function onGuacError(text: string) { phase.value = "error"; errorMsg.value = text; }
 
 function disconnect() {
   wsSend({ type: "close" });
@@ -300,6 +371,7 @@ function disconnect() {
 }
 function backToForm() {
   teardown();
+  guacSession.value = null;
   phase.value = "form";
 }
 
@@ -310,7 +382,7 @@ onBeforeUnmount(teardown);
   <div class="ssh-wrap" :class="{ 'ssh-full': fullHeight, 'ssh-center': fullHeight && phase === 'form' }">
     <!-- 連線設定表單 -->
     <div v-if="phase === 'form'" class="ssh-form">
-      <n-card size="small" :bordered="true">
+      <n-card size="small" :bordered="true" class="console-connect-card">
         <template #header>
           <span style="display:flex;align-items:center;gap:8px">
             <n-icon :component="TerminalIcon" :size="18" />
@@ -318,7 +390,7 @@ onBeforeUnmount(teardown);
           </span>
         </template>
       <!-- 已存帳密（個人保管）：選一筆即以 reference 連線。獨立 flex 列確保 label 與下拉垂直置中 -->
-      <div v-if="credOptions.length" class="ssh-saved-row">
+      <div v-if="savedCreds.length" class="ssh-saved-row">
         <span class="ssh-saved-label">{{ t("ssh.saved_cred") }}</span>
         <n-select v-model:value="selectedCredId" :options="credOptions" clearable size="small"
                   :placeholder="t('ssh.saved_cred_ph')" style="flex:1" />
@@ -374,6 +446,15 @@ onBeforeUnmount(teardown);
           </n-space>
         </n-form-item>
 
+        <!-- 按連線之前就看得到會走哪條路（直連／跳板／掃描代理）、走不通的話原因 -->
+
+        <ConsoleRouteNote :address-id="props.addressId" />
+
+        <n-alert v-if="showTmuxHint" type="info" :show-icon="true" closable style="margin-bottom:10px"
+                 data-testid="ssh-tmux-hint" @close="dismissTmuxHint">
+          {{ t("ssh.tmux_hint") }}
+        </n-alert>
+
         <n-alert :show-icon="false" type="info" style="margin-bottom:10px">
           {{ selectedCredId ? t("ssh.use_saved_hint") : (remember ? t("ssh.store_hint") : t("ssh.no_store_hint")) }}
         </n-alert>
@@ -399,15 +480,18 @@ onBeforeUnmount(teardown);
           <span class="conn-proto conn-proto--ssh">SSH</span>
           <!-- 位址顯示的是目標，但實際路徑多了一跳 —— 不講出來，跳板掛掉時會查錯方向 -->
           <n-tag v-if="viaJump" size="small" type="warning" :bordered="false" round>
-            {{ t("jump_hosts.via") }}：{{ viaJump }}
+            {{ viaKind === "agent" ? t("relay.via_agent") : t("jump_hosts.via") }}：{{ viaJump }}
           </n-tag>
           <n-tag v-if="deviceName" size="small" type="info" :bordered="false" round>{{ deviceName }}</n-tag>
+          <n-tag v-if="engineLabel" size="small" :bordered="false" round class="conn-engine"
+                 :title="t('common.console_engine_title')">{{ engineLabel }}</n-tag>
+          <ConnElapsed :active="phase === 'connected'" />
         </span>
         <n-space :size="8" align="center">
           <!-- 文字大小快速調整 -->
           <n-button-group v-if="phase === 'connected'" size="tiny">
-            <n-button :disabled="fontSize <= FONT_MIN" :title="t('ssh.font_smaller')" @click="setFont(-1)">A−</n-button>
-            <n-button :disabled="fontSize >= FONT_MAX" :title="t('ssh.font_larger')" @click="setFont(1)">A+</n-button>
+            <n-button :disabled="fontAtMin" :title="t('ssh.font_smaller')" @click="stepFont(-1)">A−</n-button>
+            <n-button :disabled="fontAtMax" :title="t('ssh.font_larger')" @click="stepFont(1)">A+</n-button>
           </n-button-group>
           <n-button v-if="phase === 'connected'" size="tiny" type="error" ghost @click="disconnect">
             <template #icon><n-icon :component="CancelIcon" /></template>{{ t("ssh.disconnect") }}
@@ -417,12 +501,33 @@ onBeforeUnmount(teardown);
           </n-button>
         </n-space>
       </div>
+      <n-alert v-if="showTmuxHint && phase !== 'error' && phase !== 'form'" type="info" :show-icon="true" closable
+               style="margin:6px 0" data-testid="ssh-tmux-hint" @close="dismissTmuxHint">
+        {{ t("ssh.tmux_hint") }}
+      </n-alert>
       <n-alert v-if="phase === 'error'" type="error" :show-icon="true" style="margin:8px 0">
         {{ errorMsg }}
+        <div v-if="errorCode === 'console_host_key_mismatch'" class="hostkey-reset" data-testid="ssh-hostkey-reset">
+          <div class="hostkey-reset-hint">{{ t("ssh.hostkey_reset_hint") }}</div>
+          <n-popconfirm @positive-click="resetHostKey">
+            <template #trigger>
+              <n-button size="small" type="error" ghost :loading="resettingKey" :disabled="resettingKey">
+                <template #icon><n-icon :component="DeleteIcon" /></template>{{ t("ssh.hostkey_reset") }}
+              </n-button>
+            </template>
+            {{ t("ssh.hostkey_reset_confirm") }}
+          </n-popconfirm>
+        </div>
       </n-alert>
       <div class="ssh-disp" :class="{ 'ssh-full': fullHeight }">
         <div class="term-host">
-          <div ref="termEl" class="ssh-term" :class="{ 'ssh-full': fullHeight, 'term-dim': phase === 'closed' }" />
+          <GuacView v-if="guacSession" :key="guacSession.key" ref="guacRef" class="ssh-term ssh-guac"
+                    :class="{ 'ssh-full': fullHeight, 'term-dim': phase === 'closed' }"
+                    :ws-url="guacSession.url" :config="guacSession.config" protocol="ssh"
+                    scale-mode="native" :resize-remote="true" :sync-clipboard="true"
+                    @connected="phase = 'connected'" @closed="phase = 'closed'" @error="onGuacError"
+                    @hostkey="onGuacHostKey" @via-jump="(v: string, k: string) => { viaJump = v; viaKind = k || 'jump'; }" />
+          <div v-else ref="termEl" class="ssh-term" :class="{ 'ssh-full': fullHeight, 'term-dim': phase === 'closed' }" />
           <div v-if="hoveredUrl" class="term-linkbar" :title="hoveredUrl">{{ hoveredUrl }}</div>
         </div>
         <ConsoleDisconnectedOverlay :show="phase === 'closed' || phase === 'error'" :error="phase === 'error'" />
@@ -444,6 +549,8 @@ onBeforeUnmount(teardown);
 </template>
 
 <style scoped>
+.hostkey-reset { margin-top: 8px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.hostkey-reset-hint { font-size: 12px; opacity: .85; }
 .ssh-wrap { width: 100%; }
 .ssh-wrap.ssh-full { height: 100%; display: flex; flex-direction: column; }
 /* 全頁模式且尚未連線：把連線表單置中（頁面很大時不要黏左上角） */
@@ -455,10 +562,14 @@ onBeforeUnmount(teardown);
 .ssh-disp { position: relative; }
 .ssh-disp.ssh-full { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .ssh-term-area.ssh-full { flex: 1; min-height: 0; }
-.ssh-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 2px; gap: 8px; }
+.ssh-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 4px 2px; gap: 8px; }
 .ssh-status { font-size: 13px; display: inline-flex; align-items: center; gap: 7px;
   padding: 3px 11px; border-radius: 999px; font-weight: 500;
   background: rgba(128, 128, 128, .12); color: #888; }
+/* 手機：內容放不下時整顆標籤換到下一行，不要把「連線錯誤」擠成直排、也不要超出畫面 */
+.ssh-status { flex-wrap: wrap; row-gap: 4px; max-width: 100%; min-width: 0; }
+.ssh-status > * { flex: none; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 640px) { .ssh-status { border-radius: 14px; } }
 .ssh-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
 .ssh-ip { opacity: .7; font-variant-numeric: tabular-nums; }
 .ssh-status[data-state="connected"] { color: #18a058; background: rgba(24, 160, 88, .14); }
@@ -474,6 +585,8 @@ onBeforeUnmount(teardown);
 .ssh-term { height: 420px; background: #1e1e1e; padding: 8px; border-radius: 8px;
   border: 1px solid #2b2b30; box-shadow: 0 1px 3px rgba(0,0,0,.18); overflow: hidden; }
 .ssh-term.ssh-full { flex: 1; height: auto; min-height: 0; }
+/* guacd：終端機由伺服器端畫成圖，不要 padding（尺寸要跟 guacd 算的欄列數對齊） */
+.ssh-term.ssh-guac { padding: 0; }
 /* 卡片標題 icon+文字垂直置中（覆蓋主題預設，避免內容偏上） */
 :deep(.n-card > .n-card-header) { display: flex; align-items: center; padding-top: 12px; padding-bottom: 12px; }
 /* 「已存帳密」列：flex 列，label 與下拉/刪除鈕保證垂直置中；label 寬度對齊表單 92px 欄 */

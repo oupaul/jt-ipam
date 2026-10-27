@@ -76,19 +76,28 @@ on_exit_hint() {
 }
 trap on_exit_hint EXIT
 
-# Best-effort install of the optional RDP dependency (aardwolf, pinned to a wheel-having
-# version). --only-binary=:all: means: if there is no prebuilt wheel for this platform/Python,
-# fail FAST instead of pulling an sdist and triggering a Rust toolchain build. Failure is
-# non-fatal: RDP features are simply disabled, the core install is unaffected.
+# Best-effort install of aardwolf, the OPTIONAL fallback engine for the RDP / VNC consoles (guacd
+# is the required, default one since 2026-09-27). Pinned to a wheel-having version;
+# --only-binary=:all: means: if there is no prebuilt wheel for this platform/Python, fail FAST
+# instead of pulling an sdist and triggering a Rust toolchain build. Failure is harmless.
 install_rdp_optional() {
     local bd="${REPO_ROOT}/backend"
     local u; u="$(stat -c '%U' "$bd/.venv" 2>/dev/null || echo jtipam)"
     [ -x "$bd/.venv/bin/pip" ] || return 0
-    log "Installing optional RDP dependency (aardwolf, prebuilt wheel only)…"
-    if ( cd "$bd" && sudo -u "$u" "$bd/.venv/bin/pip" install --quiet --only-binary=:all: -e ".[rdp]" ); then
-        log "RDP support installed."
+    log "Installing optional fallback console engine (aardwolf, prebuilt wheel only)…"
+    # pip 找不到合適的 wheel 時會印兩行紅色 ERROR（Python 3.14 必然如此）。這是選用的備援引擎，
+    # 紅字只會讓人以為升級失敗（客戶 2026-10-08，Ubuntu 26.04）→ pip 的輸出收進暫存檔，下面一行講清楚。
+    local pip_log; pip_log="$(mktemp /tmp/jt-ipam-aardwolf.XXXXXX.log)"
+    chmod 0644 "$pip_log"
+    if ( cd "$bd" && sudo -u "$u" "$bd/.venv/bin/pip" install --quiet --only-binary=:all: -e ".[rdp]" ) >"$pip_log" 2>&1; then
+        log "aardwolf installed (optional fallback engine)."
+        rm -f "$pip_log"
     else
-        warn "Optional RDP dependency not installed (no prebuilt wheel for this platform/Python, or offline). RDP features disabled; core install unaffected."
+        # Usual cause: a Python newer than the wheels aardwolf publishes (GitHub issues #39, #42).
+        # Nothing depends on it any more -- guacd serves RDP and VNC.
+        local pyver
+        pyver="$("$bd/.venv/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "?")"
+        log "aardwolf (optional fallback engine) not installed: its prebuilt wheels cover CPython 3.9-3.13 and this host runs Python ${pyver} (or is offline). RDP / VNC use guacd; nothing else is affected. (pip output: ${pip_log})"
     fi
     # Python side of the FreeRDP engine (screen capture + input injection). These are small,
     # pure-Python packages, so they go on every host -- the heavy part is the apt side
@@ -101,14 +110,81 @@ install_rdp_optional() {
     fi
 }
 
+# Kerberos for WinRM (Hyper-V integration; some customers' domains only allow Kerberos, 2026-10-20).
+# krb5-user gives kinit (the backend trades the account's password for a ticket in a private cache);
+# libkrb5-dev lets pip compile pykerberos, which has no Linux wheels. Best-effort on install AND upgrade:
+# without it the Kerberos option shows as unavailable in the Hyper-V form, NTLM keeps working.
+ensure_kerberos_support() {
+    local bd="${REPO_ROOT}/backend"
+    local u; u="$(stat -c '%U' "$bd/.venv" 2>/dev/null || echo jtipam)"
+    [ -x "$bd/.venv/bin/pip" ] || return 0
+    if ! command -v kinit >/dev/null 2>&1 || ! command -v krb5-config >/dev/null 2>&1; then
+        log "Installing Kerberos client tools for WinRM (krb5-user, libkrb5-dev)…"
+        if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq krb5-user libkrb5-dev >/dev/null 2>&1; then
+            warn "could not install krb5-user / libkrb5-dev: Hyper-V can still use NTLM; Kerberos stays unavailable"
+            return 0
+        fi
+    fi
+    if "$bd/.venv/bin/python" -c 'import kerberos' >/dev/null 2>&1; then
+        log "Kerberos for WinRM present (kinit, pykerberos)"
+        return 0
+    fi
+    local pip_log; pip_log="$(mktemp /tmp/jt-ipam-kerberos.XXXXXX.log)"
+    chmod 0644 "$pip_log"
+    if ( cd "$bd" && sudo -u "$u" "$bd/.venv/bin/pip" install --quiet -e ".[kerberos]" ) >"$pip_log" 2>&1; then
+        log "Kerberos for WinRM installed (pykerberos)."
+        rm -f "$pip_log"
+    else
+        warn "pykerberos could not be built (pip output: ${pip_log}): Hyper-V can still use NTLM; Kerberos stays unavailable"
+    fi
+}
+
 # apt packages the FreeRDP engine needs. ffmpeg is in the list for screen capture, not for video:
 # reading the framebuffer through python-xlib costs 334 ms per 1280x800 frame (it parses 4 MB of
 # pixels in pure Python), which caps the console at 2.8 fps. ffmpeg's x11grab uses MIT-SHM and
 # measured 47 fps on the same host. ~150 MB of X libraries in total, so this is NOT installed by
-# default: the default engine is aardwolf and most sites never switch. Two ways in:
+# default: the default engine is guacd and most sites never switch. Two ways in:
 #   - install --with-freerdp
 #   - upgrade, when the site has already selected the FreeRDP engine (see ensure_freerdp_if_selected)
-FREERDP_APT_PACKAGES=(freerdp2-x11 xvfb xclip ffmpeg)
+# FreeRDP 2 (xfreerdp) where the distro still ships it, otherwise FreeRDP 3 (xfreerdp3):
+# Ubuntu 25.10 / 26.04 only have freerdp3-x11 (GitHub issue #39). The engine accepts either and
+# passes the same command-line options (checked against an xrdp target).
+freerdp_client_pkg() {
+    if apt-cache policy freerdp2-x11 2>/dev/null | grep -q 'Candidate: [0-9]'; then
+        echo freerdp2-x11
+    else
+        echo freerdp3-x11
+    fi
+}
+FREERDP_APT_PACKAGES=("$(freerdp_client_pkg)" xvfb xclip ffmpeg)
+
+# NUMA memory-policy calls (mbind / set_mempolicy / get_mempolicy) for the backend.
+# The unit's SystemCallFilter drops @resources, and the filter's default action is to KILL. fpdf2 (PDF
+# reports) imports numpy, and numpy's OpenBLAS calls mbind for its thread buffers the moment it loads --
+# so the first PDF export killed the uvicorn worker with SIGSYS, silently, taking any other request on
+# that worker with it (prod 2026-10-08). These calls only set the NUMA placement of the process's own
+# memory: no privilege, no effect on other processes.
+# A drop-in rather than an edit to the unit: upgrades do not reinstall jt-ipam-backend.service, so this
+# is the only way existing sites get it. Called from BOTH install and upgrade.
+BACKEND_NUMA_DROPIN=/etc/systemd/system/jt-ipam-backend.service.d/20-numa-syscalls.conf
+
+ensure_backend_syscall_dropin() {
+    mkdir -p "$(dirname "$BACKEND_NUMA_DROPIN")"
+    local want
+    want="$(cat <<'NUMA'
+# Installed by jt-ipam.sh. numpy's OpenBLAS (pulled in by fpdf2 for PDF reports) calls mbind when it loads;
+# without this the unit's SystemCallFilter kills the worker with SIGSYS. Own-memory NUMA policy only.
+[Service]
+SystemCallFilter=mbind set_mempolicy get_mempolicy
+NUMA
+)"
+    if [ -f "$BACKEND_NUMA_DROPIN" ] && [ "$(cat "$BACKEND_NUMA_DROPIN")" = "$want" ]; then
+        return 0
+    fi
+    printf '%s\n' "$want" > "$BACKEND_NUMA_DROPIN"
+    systemctl daemon-reload 2>/dev/null || true
+    log "Installed systemd drop-in for NUMA memory-policy calls ($BACKEND_NUMA_DROPIN)."
+}
 
 # The backend's systemd unit carries a SystemCallFilter allowlist. Xvfb needs four calls the
 # backend itself never makes, and the filter's default action is to KILL -- so Xvfb dies with
@@ -149,7 +225,8 @@ install_freerdp_apt() {
 
 # Does this host already have every FreeRDP package?
 freerdp_apt_present() {
-    command -v xfreerdp >/dev/null 2>&1 && command -v Xvfb >/dev/null 2>&1 \
+    { command -v xfreerdp >/dev/null 2>&1 || command -v xfreerdp3 >/dev/null 2>&1; } \
+        && command -v Xvfb >/dev/null 2>&1 \
         && command -v ffmpeg >/dev/null 2>&1
 }
 
@@ -180,18 +257,194 @@ ensure_freerdp_if_selected() {
     install_freerdp_apt || warn "RDP consoles will fail until these are installed."
 }
 
-# Ensure a modern Node.js (>=18) is available to root. Three cases this handles:
-#  - distro 'nodejs' on Ubuntu 22.04 is v12 (too old for pnpm/vite)
-#  - invoked via sudo: an nvm-managed node in the caller's home is not on root's PATH
-#  - no node at all
-ensure_node() {
-    local ver
-    if command -v node >/dev/null 2>&1; then
-        ver=$(node -v 2>/dev/null | sed 's/^v//; s/\..*//')
-        if [[ "${ver:-0}" -ge 18 ]]; then return 0; fi
+# ───────────────────────── guacd（必要元件：RDP／VNC 主控台的預設引擎，SSH 可選）─────────────────────────
+# Distributions no longer ship a usable guacd (Debian removed it; Ubuntu only has 1.3.0 with
+# known remote-code-execution bugs), so jt-ipam provides its own build per OS version:
+# scripts/guacd/ builds them, GitHub releases carry them, scripts/guacd/SHA256SUMS pins them.
+# The builds link against the distribution's own libraries (FreeRDP, libvncclient, cairo...),
+# so security fixes for those still come from apt.
+#
+# guacd is a REQUIRED component (since 2026-09-27, GitHub issue #42): the default RDP / VNC console
+# engine. The old engine, aardwolf, is optional (a fallback) -- it has no wheels for new Pythons
+# and crashes on 3.14. install stops if guacd cannot be installed; upgrade installs it when
+# missing and, if that fails, warns loudly but still finishes (stopping after the code update
+# and before the migrations would leave the site broken) -- doctor then reports it as a problem.
+#
+#   install / upgrade                        install it, or keep it current
+#   --guacd-tarball <file>                   offline hosts / builds that are not published yet:
+#                                            use this file (its .deps must sit next to it)
+GUACD_PREFIX=/opt/jt-ipam-guacd
+GUACD_UNIT=jt-ipam-guacd.service
+GUACD_RELEASE_BASE="https://github.com/jasoncheng7115/jt-ipam/releases/download"
+
+# 要裝哪個 build：以 scripts/guacd/SHA256SUMS 實際列出的為準（這個 OS 最新的 rev），沒有才退回 source.env。
+# source.env 的 GUACD_BUILD_REV 是「下一次要編」的版本：先升上去推到 GitHub 才能觸發 workflow 編出新 release，
+# release 與新的 SHA256SUMS 進來之前不可以去抓還不存在的檔案（那段空窗期客戶安裝會失敗；2026-10-23 為了 Ubuntu 26.10）
+guacd_published_rev() {
+    local ver os_tag arch rev
+    ver="$(grep -oP '^GUACD_VERSION=\K\S+' "$REPO_ROOT/scripts/guacd/source.env")"
+    # shellcheck disable=SC1091
+    os_tag="$(. /etc/os-release && echo "${ID}${VERSION_ID}")"
+    arch="$(dpkg --print-architecture)"
+    rev="$(grep -oP "jt-ipam-guacd-\Q${ver}\E-\K[0-9]+(?=-\Q${os_tag}-${arch}\E\.tar\.gz$)" \
+             "$REPO_ROOT/scripts/guacd/SHA256SUMS" 2>/dev/null | sort -n | tail -1 || true)"
+    [[ -n "$rev" ]] || rev="$(grep -oP '^GUACD_BUILD_REV=\K\S+' "$REPO_ROOT/scripts/guacd/source.env")"
+    echo "$rev"
+}
+
+# jt-ipam-guacd-<version>-<rev>-<os><ver>-<arch>, e.g. ...-ubuntu24.04-amd64
+guacd_package_name() {
+    local ver rev
+    ver="$(grep -oP '^GUACD_VERSION=\K\S+' "$REPO_ROOT/scripts/guacd/source.env")"
+    rev="$(guacd_published_rev)"
+    # shellcheck disable=SC1091
+    local os_tag; os_tag="$(. /etc/os-release && echo "${ID}${VERSION_ID}")"
+    echo "jt-ipam-guacd-${ver}-${rev}-${os_tag}-$(dpkg --print-architecture)"
+}
+
+guacd_installed_version() {
+    grep -oP '^version:\s*\K.*' "$GUACD_PREFIX/share/doc/jt-ipam-guacd/SOURCE" 2>/dev/null | head -1
+}
+
+# install_guacd [tarball]
+install_guacd() {
+    command -v apt-get >/dev/null 2>&1 || { warn "guacd needs apt (Debian / Ubuntu); skipped."; return 1; }
+    local name tmp tarball deps sums want got
+    name="$(guacd_package_name)"
+    tmp="$(mktemp -d)"
+    if [[ -n "${1:-}" ]]; then
+        tarball="$1"
+        deps="${tarball%.tar.gz}.deps"
+        [[ -f "$tarball" && -f "$deps" ]] || { warn "guacd: $tarball or its .deps file is missing."; rm -rf "$tmp"; return 1; }
+    else
+        local tag="guacd-${name#jt-ipam-guacd-}"; tag="${tag%-*-*}"   # guacd-<version>-<rev>
+        log "Downloading guacd for this OS ($name)…"
+        if ! curl -fsSL --retry 2 -o "$tmp/$name.tar.gz" "$GUACD_RELEASE_BASE/$tag/$name.tar.gz" \
+           || ! curl -fsSL --retry 2 -o "$tmp/$name.deps" "$GUACD_RELEASE_BASE/$tag/$name.deps"; then
+            warn "guacd: no prebuilt package for this OS at $GUACD_RELEASE_BASE/$tag/ ($name)."
+            warn "  Offline, or a new OS version not built yet: pass --guacd-tarball <file>."
+            rm -rf "$tmp"; return 1
+        fi
+        tarball="$tmp/$name.tar.gz"; deps="$tmp/$name.deps"
     fi
+    # Integrity: a published build must match scripts/guacd/SHA256SUMS. A local file that is not
+    # listed (a build that has not been published yet) is allowed, but said out loud.
+    sums="$REPO_ROOT/scripts/guacd/SHA256SUMS"
+    got="$(sha256sum "$tarball" | cut -d' ' -f1)"
+    # `|| true`：還沒有 SHA256SUMS（從未發佈過）時 awk 讀不到檔案，set -e 會讓整支腳本安靜地結束
+    want="$(awk -v f="$(basename "$tarball")" '$2==f {print $1}' "$sums" 2>/dev/null || true)"
+    if [[ -n "$want" && "$want" != "$got" ]]; then
+        warn "guacd: checksum mismatch for $(basename "$tarball") (expected $want, got $got) -- NOT installing."
+        rm -rf "$tmp"; return 1
+    elif [[ -z "$want" ]]; then
+        if [[ -z "${1:-}" ]]; then
+            warn "guacd: $(basename "$tarball") is not listed in scripts/guacd/SHA256SUMS -- NOT installing."
+            rm -rf "$tmp"; return 1
+        fi
+        warn "guacd: $(basename "$tarball") is not a published build (not in SHA256SUMS); installing the local file as given."
+    fi
+    log "Installing guacd runtime packages ($(tr '\n' ' ' < "$deps"))…"
+    # shellcheck disable=SC2046
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $(cat "$deps"); then
+        warn "guacd: could not install its runtime packages."; rm -rf "$tmp"; return 1
+    fi
+    systemctl stop "$GUACD_UNIT" 2>/dev/null || true
+    rm -rf "$GUACD_PREFIX"
+    tar -C / -xzf "$tarball" || { warn "guacd: could not unpack $tarball."; rm -rf "$tmp"; return 1; }
+    rm -rf "$tmp"
+    install -m 0644 "$REPO_ROOT/deploy/systemd/$GUACD_UNIT" "/etc/systemd/system/$GUACD_UNIT"
+    systemctl daemon-reload
+    systemctl enable --now "$GUACD_UNIT" >/dev/null 2>&1 || true
+    local i
+    for i in $(seq 1 20); do
+        # 用連的：精簡映像常常沒有 iproute2（ss），用 ss 看的話在那種機器上永遠等滿 10 秒
+        (exec 3<>/dev/tcp/127.0.0.1/4822) 2>/dev/null && break
+        sleep 0.5
+    done
+    if ! systemctl is-active --quiet "$GUACD_UNIT"; then
+        warn "guacd installed but not running -- journalctl -u jt-ipam-guacd -n 50"
+        return 1
+    fi
+    log "guacd $(guacd_installed_version) running on 127.0.0.1:4822 (default RDP / VNC console engine)."
+    return 0
+}
+
+# On upgrade: install guacd (required) when missing, or keep it on the build for this version.
+ensure_guacd_current() {
+    local tarball="${1:-}"
+    command -v apt-get >/dev/null 2>&1 || return 0
+    local installed=0
+    [[ -x "$GUACD_PREFIX/sbin/guacd" ]] && installed=1
+    [[ "$installed" == "0" ]] && log "Installing guacd (required: the RDP / VNC console engine)…"
+    local name want_ver
+    name="$(guacd_package_name)"
+    want_ver="$(grep -oP '^GUACD_VERSION=\K\S+' "$REPO_ROOT/scripts/guacd/source.env") (build $(guacd_published_rev))"
+    if [[ "$installed" == "1" && -z "$tarball" && "$(guacd_installed_version)" == "$want_ver"* ]]; then
+        # Same build: just make sure the unit is current and running
+        install -m 0644 "$REPO_ROOT/deploy/systemd/$GUACD_UNIT" "/etc/systemd/system/$GUACD_UNIT"
+        systemctl daemon-reload
+        systemctl enable --now "$GUACD_UNIT" >/dev/null 2>&1 || true
+        systemctl restart "$GUACD_UNIT" 2>/dev/null || true
+        return 0
+    fi
+    if ! install_guacd "$tarball"; then
+        warn "================================================================================"
+        warn "guacd (REQUIRED) was not installed/updated -- see above. The upgrade continues so the"
+        warn "site keeps working, but RDP / VNC consoles only work through the optional built-in"
+        warn "engine until guacd is in place. Fix, then re-run: sudo $0 upgrade"
+        warn "  (offline host / OS without a prebuilt package: sudo $0 upgrade --guacd-tarball <file>)"
+        warn "================================================================================"
+    fi
+}
+
+# Node.js only builds the frontend; nothing runs on it once the site is up.
+NODE_REQUIRED_MAJOR=22          # same as frontend/package.json "engines", .nvmrc and CI
+NODE_FALLBACK_MAJOR=20          # upgrade only: the oldest node kept when installing 22 fails
+# Test hooks (like JT_IPAM_MEMINFO): where links for root go, and where NodeSource puts node.
+NODE_LINK_DIR="${JT_IPAM_NODE_LINK_DIR:-/usr/local/bin}"
+NODE_SYSTEM_BIN="${JT_IPAM_NODE_SYSTEM_BIN:-/usr/bin/node}"
+NODE_READY=0                    # settled for this run (upgrade checks early, then builds)
+
+# Major version of a node binary; 0 when it is missing or does not run.
+node_major() {
+    local v
+    v="$("${1:-node}" -v 2>/dev/null || true)"
+    v="${v#v}"; v="${v%%.*}"
+    if [[ "$v" =~ ^[0-9]+$ ]]; then echo "$v"; else echo 0; fi
+}
+
+# Ensure Node.js >= $NODE_REQUIRED_MAJOR is available to root for the frontend build.
+#   $1 = install | upgrade
+# In this order:
+#  - the node on PATH is already new enough (NodeSource 22, a distro 22, an earlier link): use it
+#  - invoked via sudo and the caller has an nvm node >= 22: link it for root (nvm's node is not
+#    on root's PATH). An nvm node OLDER than 22 is not reused: NodeSource 22 is installed for
+#    root instead, so the build does not depend on what a developer left in their home.
+#  - otherwise install NodeSource 22. On a site that already has NodeSource 20 (every install
+#    up to v0.6.61) this rewrites the apt source and upgrades the same 'nodejs' package in place.
+#
+# Why upgrade falls back and install does not: node is only the build toolchain, and the build
+# still works on Node 20 today. A site that cannot reach deb.nodesource.com during an upgrade
+# (proxy, local mirror, outage) is better off upgraded with a loud warning than stuck on the old
+# version over a toolchain download; the next upgrade tries 22 again, and doctor keeps saying so.
+# A fresh install has no site to keep running and no toolchain known to work, so there a node
+# that is not 22 stops the install with a clear message.
+ensure_node() {
+    local mode="${1:-install}" cur_bin cur h nb="" fallback="" sys_major
+    [[ "$NODE_READY" == 1 ]] && return 0
+    hash -r 2>/dev/null || true
+    cur_bin="$(command -v node 2>/dev/null || true)"
+    cur="$(node_major "$cur_bin")"
+    if (( cur >= NODE_REQUIRED_MAJOR )); then
+        log "Using Node.js $("$cur_bin" -v) ($cur_bin)"
+        NODE_READY=1
+        return 0
+    fi
+    if [[ "$mode" == upgrade ]] && (( cur >= NODE_FALLBACK_MAJOR )); then
+        fallback="$cur_bin"
+    fi
+
     if [[ -n "${SUDO_USER:-}" ]]; then
-        local h nb
         # WARNING: with `set -e` + `pipefail`, `var=$(pipeline)` fails the whole
         # assignment when the pipeline fails, so the script exits SILENTLY with no
         # error at all. Here `find` returns non-zero when ~/.nvm does not exist, and
@@ -199,45 +452,128 @@ ensure_node() {
         # line was why a customer's Debian 13 install printed "Building frontend..."
         # and dropped straight back to the prompt.
         h=$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)
-        nb=$(find "$h/.nvm/versions/node" -maxdepth 2 -name node -type f 2>/dev/null | sort -Vr | head -1 || true)
-        if [[ -n "$nb" ]] && [[ "$("$nb" -v 2>/dev/null | sed 's/^v//; s/\..*//')" -ge 18 ]]; then
-            ln -sf "$nb" /usr/local/bin/node
-            ln -sf "$(dirname "$nb")/npm" /usr/local/bin/npm 2>/dev/null || true
+        # nvm keeps node at ~/.nvm/versions/node/vX.Y.Z/bin/node, three levels down. This used
+        # to be `-maxdepth 2`, which never matched, so the nvm case had silently never run.
+        nb=$(find "$h/.nvm/versions/node" -mindepth 3 -maxdepth 3 -path '*/bin/node' -type f 2>/dev/null | sort -Vr | head -1 || true)
+        if [[ -n "$nb" ]] && (( $(node_major "$nb") >= NODE_REQUIRED_MAJOR )); then
+            ln -sf "$nb" "$NODE_LINK_DIR/node"
+            ln -sf "$(dirname "$nb")/npm" "$NODE_LINK_DIR/npm" 2>/dev/null || true
             hash -r
             log "Using nvm Node.js $("$nb" -v) from \$SUDO_USER ($SUDO_USER)"
-            return 0
+        elif [[ -n "$nb" ]]; then
+            log "nvm Node.js $("$nb" -v) of \$SUDO_USER ($SUDO_USER) is older than ${NODE_REQUIRED_MAJOR}; not using it."
         fi
     fi
-    log "Installing Node.js 20 (NodeSource)…"
-    # NOTE: errors are NOT silenced here — a failed Node install must be visible, not
-    # swallowed (a silent failure leaves the frontend unbuilt yet the install "looks" OK).
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-        || warn "NodeSource setup script returned non-zero (see output above)"
-    if ! apt-get install -y nodejs; then
-        # Likely the distro libnode-dev/headers (e.g. Ubuntu 22.04 v12) conflict with the
-        # NodeSource package files → purge the distro node stack and retry once.
-        warn "nodejs install hit a conflict; purging distro node packages and retrying…"
-        apt-get purge -y nodejs npm libnode-dev 2>/dev/null || true
-        apt-get autoremove -y 2>/dev/null || true
-        apt-get install -y nodejs || true
+
+    if (( $(node_major "$(command -v node 2>/dev/null || true)") < NODE_REQUIRED_MAJOR )); then
+        log "Installing Node.js ${NODE_REQUIRED_MAJOR} (NodeSource)…"
+        # NOTE: errors are NOT silenced here — a failed Node install must be visible, not
+        # swallowed (a silent failure leaves the frontend unbuilt yet the install "looks" OK).
+        curl -fsSL "https://deb.nodesource.com/setup_${NODE_REQUIRED_MAJOR}.x" | bash - \
+            || warn "NodeSource setup script returned non-zero (see output above)"
+        if ! apt-get install -y nodejs; then
+            if [[ -n "$fallback" ]]; then
+                # No purge-and-retry here: it would remove the very node this upgrade falls back
+                # on, and when the retry failed too (offline, proxy) the site would have none.
+                warn "nodejs ${NODE_REQUIRED_MAJOR} did not install; keeping the existing Node.js $("$fallback" -v) ($fallback)."
+            else
+                # Likely the distro libnode-dev/headers (e.g. Ubuntu 22.04 v12) conflict with the
+                # NodeSource package files → purge the distro node stack and retry once.
+                warn "nodejs install hit a conflict; purging distro node packages and retrying…"
+                apt-get purge -y nodejs npm libnode-dev 2>/dev/null || true
+                apt-get autoremove -y 2>/dev/null || true
+                apt-get install -y nodejs || true
+            fi
+        fi
+        hash -r
+        # NodeSource puts node in /usr/bin, but an older node earlier on PATH still wins --
+        # typically a /usr/local/bin/node link an earlier run made to a sudo user's nvm node --
+        # and the build would quietly go on using it.
+        cur_bin="$(command -v node 2>/dev/null || true)"
+        sys_major="$(node_major "$NODE_SYSTEM_BIN")"
+        if [[ -n "$cur_bin" ]] && (( sys_major >= NODE_REQUIRED_MAJOR )) \
+                && (( $(node_major "$cur_bin") < NODE_REQUIRED_MAJOR )); then
+            if [[ -L "$cur_bin" && "$(readlink "$cur_bin")" == */.nvm/* ]]; then
+                warn "Removing $cur_bin -> $(readlink "$cur_bin") (Node.js $("$cur_bin" -v)); it hid Node.js $("$NODE_SYSTEM_BIN" -v) in $NODE_SYSTEM_BIN."
+                rm -f "$cur_bin"
+                if [[ -L "$(dirname "$cur_bin")/npm" && "$(readlink "$(dirname "$cur_bin")/npm")" == */.nvm/* ]]; then
+                    rm -f "$(dirname "$cur_bin")/npm"
+                fi
+            else
+                warn "$cur_bin (Node.js $("$cur_bin" -v)) comes before $NODE_SYSTEM_BIN on PATH; using $(dirname "$NODE_SYSTEM_BIN") first for this run."
+                PATH="$(dirname "$NODE_SYSTEM_BIN"):$PATH"
+            fi
+            hash -r
+        fi
     fi
-    hash -r
-    # Verify: Node must be >= 18, otherwise stop NOW with a clear, debuggable error —
-    # don't let the frontend build silently fail later while the install appears successful.
-    ver=$(command -v node >/dev/null 2>&1 && node -v 2>/dev/null | sed 's/^v//; s/\..*//' || echo 0)
-    if [[ "${ver:-0}" -lt 18 ]]; then
-        die "Node.js install failed or too old (need >= 18; got '$(command -v node >/dev/null 2>&1 && node -v || echo none)').\n  Install Node 20 manually, then re-run install:\n  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash - && sudo apt-get install -y nodejs"
+
+    # Verdict: verify what PATH really resolves to now -- don't let the frontend build fail
+    # later (or quietly use an old node) while the install appears successful.
+    cur_bin="$(command -v node 2>/dev/null || true)"
+    cur="$(node_major "$cur_bin")"
+    if (( cur >= NODE_REQUIRED_MAJOR )); then
+        log "Using Node.js $("$cur_bin" -v) ($cur_bin)"
+    elif [[ -n "$fallback" ]] && (( cur >= NODE_FALLBACK_MAJOR )); then
+        warn "================================================================================"
+        warn "Node.js ${NODE_REQUIRED_MAJOR} could not be installed -- see above. The upgrade continues and builds the"
+        warn "frontend with the existing Node.js $("$cur_bin" -v) ($cur_bin), which still works for now;"
+        warn "a later version will need ${NODE_REQUIRED_MAJOR}. Fix it, then re-run the upgrade:"
+        warn "  curl -fsSL https://deb.nodesource.com/setup_${NODE_REQUIRED_MAJOR}.x | sudo bash - && sudo apt-get install -y nodejs"
+        warn "  sudo $0 upgrade"
+        warn "================================================================================"
+    else
+        die "Node.js install failed or too old (need >= ${NODE_REQUIRED_MAJOR}; got '$([[ -n "$cur_bin" ]] && "$cur_bin" -v 2>/dev/null || echo none)').\n  Install Node ${NODE_REQUIRED_MAJOR} manually, then re-run ${mode}:\n  curl -fsSL https://deb.nodesource.com/setup_${NODE_REQUIRED_MAJOR}.x | sudo bash - && sudo apt-get install -y nodejs"
     fi
-    log "Using Node.js $(node -v)"
+    NODE_READY=1
+}
+
+# Memory the system can still hand out, in MB: MemAvailable + free swap, capped by the
+# container's cgroup limit (without lxcfs /proc/meminfo shows the host's memory).
+# JT_IPAM_MEMINFO / JT_IPAM_CGROUP_DIR only exist for the tests.
+mem_available_mb() {
+    local avail swap cgdir cgmax cgcur
+    avail="$(awk '/^MemAvailable:/ {print int($2/1024)}' "${JT_IPAM_MEMINFO:-/proc/meminfo}" 2>/dev/null || echo 0)"
+    swap="$(awk '/^SwapFree:/ {print int($2/1024)}' "${JT_IPAM_MEMINFO:-/proc/meminfo}" 2>/dev/null || echo 0)"
+    avail=$(( ${avail:-0} + ${swap:-0} ))
+    cgdir="${JT_IPAM_CGROUP_DIR:-/sys/fs/cgroup}"
+    cgmax="$(cat "$cgdir/memory.max" 2>/dev/null || echo max)"
+    cgcur="$(cat "$cgdir/memory.current" 2>/dev/null || echo 0)"
+    if [[ "$cgmax" =~ ^[0-9]+$ && "$cgcur" =~ ^[0-9]+$ ]] && (( (cgmax - cgcur) / 1048576 < avail )); then
+        avail=$(( (cgmax - cgcur) / 1048576 ))
+    fi
+    echo "$avail"
+}
+
+# The frontend build peaks around 1.6 GB (measured 2026-10-02). On a 4 GB machine with the
+# backend running, an upgrade that meets a background sync could be OOM-killed half way.
+# When memory is short, pause the backend for the build (about a minute; the upgrade
+# restarts it anyway) instead of letting the kernel pick a victim. Sets BUILD_PAUSED_BACKEND.
+FRONTEND_BUILD_MIN_MB=2048
+BUILD_PAUSED_BACKEND=0
+ensure_build_memory() {
+    local avail
+    avail="$(mem_available_mb)"
+    (( avail >= FRONTEND_BUILD_MIN_MB )) && return 0
+    if systemctl is-active --quiet jt-ipam-backend.service 2>/dev/null; then
+        warn "Only ${avail} MB of memory available; pausing jt-ipam-backend during the frontend build (needs about ${FRONTEND_BUILD_MIN_MB} MB)."
+        systemctl stop jt-ipam-backend.service 2>/dev/null || true
+        BUILD_PAUSED_BACKEND=1
+        sleep 2
+        avail="$(mem_available_mb)"
+    fi
+    if (( avail < FRONTEND_BUILD_MIN_MB )); then
+        warn "Only ${avail} MB of memory available for the frontend build (about ${FRONTEND_BUILD_MIN_MB} MB is needed)."
+        warn "If the build is killed, add swap and re-run: fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile"
+    fi
 }
 
 # Build the frontend as root with a clean toolchain, then hand ownership back to $2.
 # Why as root: avoids (a) stale corepack pnpm shims pinned to an old /usr/bin/node, and
 # (b) sudo -u / PAM failures when the owner is a nologin system account on restrictive hosts.
-# $1 = frontend dir, $2 = owner (user:group)
+# $1 = frontend dir, $2 = owner (user:group), $3 = install | upgrade (how ensure_node may fall back)
 build_frontend() {
     local fdir="$1" owner="$2" pnpm_bin
-    ensure_node
+    ensure_node "${3:-install}"
     cd "$fdir"
     # drop stale corepack pnpm shims (they may hardcode an old node path → v12 errors)
     rm -f /usr/bin/pnpm /usr/local/bin/pnpm 2>/dev/null || true
@@ -262,9 +598,20 @@ build_frontend() {
     rm -f "$pnpm_log"
     log "Using pnpm $("$pnpm_bin" --version) (node $(node -v))"
 
-    HOME=/var/lib/jt-ipam "$pnpm_bin" install --frozen-lockfile \
-        || HOME=/var/lib/jt-ipam "$pnpm_bin" install
-    HOME=/var/lib/jt-ipam "$pnpm_bin" run build
+    # CI=true: when node_modules was laid out by another pnpm version/config, pnpm asks
+    # "The modules directory will be removed and reinstalled. Proceed?" and, with no terminal
+    # (upgrade over SSH, cron, systemd), takes no answer as "no" and installs nothing; the build
+    # then fails on the new dependency (2026-10-05, tweetnacl on the production host).
+    HOME=/var/lib/jt-ipam CI=true "$pnpm_bin" install --frozen-lockfile \
+        || HOME=/var/lib/jt-ipam CI=true "$pnpm_bin" install
+    ensure_build_memory
+    if ! HOME=/var/lib/jt-ipam "$pnpm_bin" run build; then
+        # a failed upgrade must not leave the site down because we paused the backend for the build
+        if (( BUILD_PAUSED_BACKEND == 1 )); then
+            systemctl start jt-ipam-backend.service 2>/dev/null || true
+        fi
+        die "Frontend build failed (see the output above). If it was killed for lack of memory, add swap and re-run."
+    fi
     chown -R "$owner" node_modules dist 2>/dev/null || true
 }
 
@@ -308,8 +655,57 @@ ensure_unit_dirs() {
 # headers nginx forwards a plain GET, the backend has no HTTP route at that
 # path, and the browser sees a bare 404 with nothing to suggest the proxy.
 # That is exactly how SFTP shipped broken in 0.5.155.
-WS_PROTOCOLS='ssh|sftp|rdp|vnc|novnc|bmc'
+WS_PROTOCOLS='ssh|sftp|rdp|vnc|novnc|bmc|rustdesk'
 WS_LOCATION_LINE="location ~ ^/api/v1/addresses/[0-9a-fA-F-]+/(${WS_PROTOCOLS})/ws\$ {"
+
+# Idempotently stop writing tokens into nginx's access log on an EXISTING site (2026-10-09):
+# Graylog DSV lookups and the rack embed SVG carry their token in the query string, and the
+# default "combined" format logs the whole request line. Adds a query-less log format, uses it
+# for those locations (and a dedicated HTTPS lookup location). Same safety rules as the other
+# patch_* functions: only-if-missing marker, back up, gate on `nginx -t`, restore on failure.
+patch_nginx_token_logging() {
+    local site=/etc/nginx/sites-available/jt-ipam
+    [[ -f "$site" ]] || return 0
+    command -v nginx >/dev/null 2>&1 || return 0
+    grep -q 'jtipam_noquery' "$site" && return 0
+    local bak="${site}.pre-noquery.bak"
+    cp -p "$site" "$bak" 2>/dev/null || true
+    log "Keeping DSV / rack-embed tokens out of the nginx access log…"
+    awk '
+      !fmt && /^server[[:space:]]*\{/ {
+        print "# Requests whose query string carries a token (Graylog DSV lookups, rack embed SVG) are logged without it.";
+        print "log_format jtipam_noquery \047$remote_addr - $remote_user [$time_local] \"$request_method $uri $server_protocol\" \047";
+        print "                          \047$status $body_bytes_sent \"$http_referer\" \"$http_user_agent\"\047;";
+        print "";
+        fmt = 1;
+      }
+      !lk && /location \/api\/ \{/ {
+        print "    # jtipam-lookup-noquery: Graylog DSV lookups carry the token in the query string.";
+        print "    location /api/v1/lookup/ {";
+        print "        access_log /var/log/nginx/access.log jtipam_noquery;";
+        print "        limit_req zone=api burst=80 nodelay;";
+        print "        proxy_pass http://127.0.0.1:8000;";
+        print "        include /etc/nginx/snippets/jt-ipam-proxy.conf;";
+        print "    }";
+        print "";
+        lk = 1;
+      }
+      { print }
+      /location \/api\/v1\/lookup\/ \{/ || /embed\\\.svg\$ \{/ {
+        if (!(getline nxt)) { next }
+        if (nxt !~ /jtipam_noquery/) print "        access_log /var/log/nginx/access.log jtipam_noquery;";
+        print nxt;
+      }
+    ' "$site" > "${site}.tmp" && mv "${site}.tmp" "$site"
+    if apply_nginx_config; then
+        log "nginx access log no longer records DSV / rack-embed tokens."
+    else
+        warn "nginx -t failed after the access-log patch; restoring previous config."
+        cp -p "$bak" "$site" 2>/dev/null || true
+        apply_nginx_config || true
+    fi
+    return 0
+}
 
 # Apply an nginx config change: test it, make sure nginx is actually RUNNING and
 # enabled at boot, then pick reload or start as appropriate.
@@ -320,6 +716,93 @@ WS_LOCATION_LINE="location ~ ^/api/v1/addresses/[0-9a-fA-F-]+/(${WS_PROTOCOLS})/
 # exit status is swallowed, a fresh install could finish with a fully configured
 # nginx that had never been started and was not enabled at boot. Everything looked
 # installed; the product was simply unreachable. Caught by scripts/test-fresh-install.sh.
+# Idempotently fix two locations in an EXISTING nginx site on upgrade (2026-09-30):
+#   - /readyz fell through to the SPA (always 200 + index.html) -> proxy it to the backend
+#   - the phpIPAM login rate limit used a prefix that never matches /api/phpipam/<app_id>/user/
+# Same safety rules as patch_nginx_websocket: only-if-missing, back up, gate on `nginx -t`,
+# restore on failure, never abort the upgrade.
+patch_nginx_readyz_phpipam() {
+    local site=/etc/nginx/sites-available/jt-ipam
+    [[ -f "$site" ]] || return 0
+    command -v nginx >/dev/null 2>&1 || return 0
+    local need_ready=0 need_php=0 need_embed=0 need_429=0
+    grep -q 'location = /readyz' "$site" || need_ready=1
+    grep -q 'location /api/phpipam/user/ {' "$site" && need_php=1
+    grep -q 'embed\\.svg' "$site" || need_embed=1
+    grep -q '@rate_limited' "$site" || need_429=1
+    (( need_ready || need_php || need_embed || need_429 )) || return 0
+    local bak="${site}.pre-readyz.bak"
+    cp -p "$site" "$bak" 2>/dev/null || true
+    if (( need_php )); then
+        log "Fixing nginx phpIPAM login rate-limit location…"
+        sed -i 's#location /api/phpipam/user/ {#location ~ ^/api/phpipam/[^/]+/user/ {#' "$site"
+    fi
+    if (( need_ready )); then
+        log "Adding nginx /readyz location (was answered by the SPA)…"
+        awk '
+          !ins && /location \/api\/ \{/ {
+            print "    location = /readyz {";
+            print "        access_log off;";
+            print "        proxy_pass http://127.0.0.1:8000;";
+            print "        include /etc/nginx/snippets/jt-ipam-proxy.conf;";
+            print "    }";
+            print "";
+            ins = 1;
+          }
+          { print }
+        ' "$site" > "${site}.tmp" && mv "${site}.tmp" "$site"
+    fi
+    if (( need_embed )); then
+        # Rack embed SVG: other sites load it with <img>; the server-level CORP same-origin blocks
+        # that and the image/* expires rule caches it for 30 days over the backend's no-store.
+        log "Adding nginx location for the rack embed SVG (cross-origin, not cached)…"
+        awk '
+          !done && /location \/api\/ \{/ {
+            print "    location ~ ^/api/v1/racks/[0-9a-fA-F-]+/embed\\.svg$ {";
+            print "        limit_req zone=api burst=80 nodelay;";
+            print "        expires off;";
+            print "        add_header Strict-Transport-Security \"max-age=63072000; includeSubDomains; preload\" always;";
+            print "        add_header X-Content-Type-Options \"nosniff\" always;";
+            print "        add_header Referrer-Policy \"strict-origin-when-cross-origin\" always;";
+            print "        add_header Cross-Origin-Resource-Policy \"cross-origin\" always;";
+            print "        proxy_pass http://127.0.0.1:8000;";
+            print "        include /etc/nginx/snippets/jt-ipam-proxy.conf;";
+            print "    }";
+            print "";
+            done = 1;
+          }
+          { print }
+        ' "$site" > "${site}.tmp" && mv "${site}.tmp" "$site"
+    fi
+    if (( need_429 )); then
+        # nginx's own 429 (limit_req) carried no Retry-After, unlike the backend's (2026-10-01).
+        log "Adding Retry-After to nginx rate-limit responses…"
+        awk '
+          !done && /location \/api\/ \{/ {
+            print "    # Requests nginx itself rejects (limit_req) get Retry-After too, like the backend'"'"'s 429.";
+            print "    error_page 429 @rate_limited;";
+            print "    location @rate_limited {";
+            print "        default_type application/json;";
+            print "        add_header Retry-After 60 always;";
+            print "        add_header Strict-Transport-Security \"max-age=63072000; includeSubDomains; preload\" always;";
+            print "        add_header X-Content-Type-Options \"nosniff\" always;";
+            print "        return 429 \047{\"detail\":\"Too Many Requests\"}\047;";
+            print "    }";
+            print "";
+            done = 1;
+          }
+          { print }
+        ' "$site" > "${site}.tmp" && mv "${site}.tmp" "$site"
+    fi
+    if apply_nginx_config; then
+        log "nginx /readyz + phpIPAM login limit + rack embed + 429 Retry-After patched + reloaded."
+    else
+        warn "nginx -t failed after the /readyz / phpIPAM patch; restoring previous config."
+        cp -p "$bak" "$site" 2>/dev/null || true
+    fi
+    return 0
+}
+
 apply_nginx_config() {
     if ! nginx -t >/dev/null 2>&1; then
         warn "nginx config test failed; leaving the running config alone. Check: sudo nginx -t"
@@ -420,6 +903,51 @@ patch_nginx_websocket() {
     return 0
 }
 
+# Console relay through scan agents (issue #24 phase 2, 2026-10-02): agents dial OUT to
+# /api/v1/scan-agents/relay/<sid>/ws. Without a WebSocket location nginx does not forward the
+# Upgrade and closes idle sockets after 60 s. Same safety rules as patch_nginx_websocket:
+# only-if-missing, back up, gate on `nginx -t`, restore on failure, never abort the upgrade.
+patch_nginx_agent_relay() {
+    local site=/etc/nginx/sites-available/jt-ipam
+    [[ -f "$site" ]] || return 0
+    command -v nginx >/dev/null 2>&1 || return 0
+    grep -q 'scan-agents/relay' "$site" && return 0
+    grep -q 'connection_upgrade' "$site" || return 0      # patch_nginx_websocket adds the map first
+    local bak="${site}.pre-relay.bak"
+    log "Adding nginx location for scan agent console relay…"
+    cp -p "$site" "$bak" 2>/dev/null || true
+    local proto='$scheme'
+    grep -q 'jt_fwd_proto' "$site" && proto='$jt_fwd_proto'
+    awk -v proto="$proto" '
+      !ins && /location \/api\/ \{/ {
+        print "    # jt-ipam-agent-relay: console relay WebSocket dialed OUT by scan agents";
+        print "    location ~ \"^/api/v1/scan-agents/relay/[0-9a-f]{32}/ws$\" {";
+        print "        proxy_pass http://127.0.0.1:8000;";
+        print "        proxy_http_version 1.1;";
+        print "        proxy_set_header Host               $host;";
+        print "        proxy_set_header X-Real-IP          $remote_addr;";
+        print "        proxy_set_header X-Forwarded-For    $proxy_add_x_forwarded_for;";
+        print "        proxy_set_header X-Forwarded-Proto  " proto ";";
+        print "        proxy_set_header Upgrade            $http_upgrade;";
+        print "        proxy_set_header Connection         $connection_upgrade;";
+        print "        proxy_read_timeout 3600s;";
+        print "        proxy_send_timeout 3600s;";
+        print "        proxy_buffering off;";
+        print "    }";
+        print "";
+        ins = 1;
+      }
+      { print }
+    ' "$site" > "${site}.tmp" && mv "${site}.tmp" "$site"
+    if apply_nginx_config; then
+        log "nginx agent relay location added + reloaded."
+    else
+        warn "nginx -t failed after adding the agent relay location; restoring previous config."
+        cp -p "$bak" "$site" 2>/dev/null || true
+    fi
+    return 0
+}
+
 # -- root guard (used by install/upgrade/uninstall; not by help/usage) --
 require_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -430,6 +958,74 @@ require_root() {
 
 # Repo root (parent of scripts/)
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# ── Scheduled reference-data refresh (GeoIP, OUI vendors, Recog fingerprints) ──
+# Installed by BOTH install and upgrade. Until 2026-09-29 only hand-configured hosts had
+# these timers: customer installs never refreshed OUI or GeoIP at all, and the OUI unit
+# on hosts that had one pointed at a script that was never committed.
+REFRESH_UNITS=(jt-ipam-geoip-refresh jt-ipam-oui-refresh jt-ipam-recog-refresh)
+install_refresh_timers() {
+    local u
+    for u in "${REFRESH_UNITS[@]}"; do
+        install -m 0644 "$REPO_ROOT/deploy/systemd/$u.service" "/etc/systemd/system/$u.service"
+        install -m 0644 "$REPO_ROOT/deploy/systemd/$u.timer" "/etc/systemd/system/$u.timer"
+    done
+    systemctl daemon-reload
+    for u in "${REFRESH_UNITS[@]}"; do
+        systemctl enable --now "$u.timer" >/dev/null 2>&1 || warn "could not enable $u.timer"
+    done
+    # A monthly timer that has never fired would leave a new host without MAC vendors for
+    # up to a month: fetch once now, in the background (a failure only shows in the journal).
+    if [[ "$(systemctl show -p LastTriggerUSecMonotonic --value jt-ipam-oui-refresh.timer 2>/dev/null)" == "0" ]]; then
+        systemctl start --no-block jt-ipam-oui-refresh.service 2>/dev/null || true
+    fi
+}
+
+# ── Scheduled AI review (2026-10-12) ──
+# Its own timer instead of running inside jt-ipam-sync: that service is capped at 10 minutes
+# (TimeoutStartSec=600), so a long review was killed and started over 5 minutes later, and the
+# minutes it ran held up every integration's sync. Installed by BOTH install and upgrade
+# (upgrade does not reinstall jt-ipam-sync.service, so this cannot ride along with it).
+install_ai_audit_timer() {
+    install -m 0644 "$REPO_ROOT/deploy/systemd/jt-ipam-ai-audit.service" /etc/systemd/system/jt-ipam-ai-audit.service
+    install -m 0644 "$REPO_ROOT/deploy/systemd/jt-ipam-ai-audit.timer" /etc/systemd/system/jt-ipam-ai-audit.timer
+    systemctl daemon-reload
+    systemctl enable --now jt-ipam-ai-audit.timer >/dev/null 2>&1 \
+        || warn "could not enable jt-ipam-ai-audit.timer (scheduled AI review will not run)"
+}
+
+# Recog fingerprint database (optional; the IP probe uses it to tell NAS / firewall /
+# printer / exact OS apart). A failed download only warns: the probe works without it,
+# and jt-ipam-recog-refresh.timer retries every week. Offline hosts: --recog-zip <file>.
+install_recog_db() {  # <backend_dir> <env_file> <user> [zip]
+    local backend="$1" env_file="$2" user="$3" zip="${4:-}"
+    local args="update" tmpd="" out rc=0
+    if [[ -n "$zip" ]]; then
+        if [[ ! -r "$zip" ]]; then
+            warn "Recog: cannot read $zip -- skipped"
+            return 0
+        fi
+        # The file may live where the service user cannot read it (e.g. /root): hand over a
+        # copy with the same name (the release version is read from the file name).
+        tmpd="$(mktemp -d)"
+        chmod 0755 "$tmpd"
+        install -m 0644 "$zip" "$tmpd/$(basename "$zip")"
+        args="update --file '$tmpd/$(basename "$zip")'"
+    fi
+    log "Recog fingerprint database (optional, used by the IP probe)…"
+    out="$(cd "$backend" && timeout 300 sudo -u "$user" bash -c \
+        "set -a; source '$env_file'; set +a; .venv/bin/python -m app.cli.recog $args" 2>&1)" || rc=$?
+    [[ -n "$tmpd" ]] && rm -rf "$tmpd"
+    if [[ $rc -eq 0 ]]; then
+        log "Recog: ${out//$'\t'/ }"
+    else
+        warn "Recog fingerprint database was not installed/updated (optional -- the probe still works):"
+        warn "  ${out//$'\t'/ }"
+        warn "  Retry: sudo -u $user bash -c 'cd $backend; set -a; source $env_file; set +a; .venv/bin/python -m app.cli.recog update'"
+        warn "  Offline host: get recog-content-<version>.zip from https://github.com/rapid7/recog/releases and re-run with --recog-zip <file>"
+    fi
+    return 0
+}
 
 usage() {
     cat <<'USAGE'
@@ -447,11 +1043,22 @@ Commands:
                                                           (freerdp2-x11 xvfb xclip, ~150 MB of X libraries).
                                                           Needed only for RDP targets that reject the default
                                                           engine -- xrdp and GNOME Remote Login do.
+                 --guacd-tarball <file>                   install guacd (required: the RDP / VNC console engine,
+                                                          prebuilt per OS version, bound to 127.0.0.1 only) from this
+                                                          file instead of downloading it -- for offline hosts
+                 --recog-zip <file>                       install the Recog fingerprint database (optional, used by
+                                                          the IP probe) from this recog-content-<ver>.zip instead of
+                                                          downloading it from GitHub -- for offline hosts
   doctor       check a running install and print an exact fix for anything wrong
+  harden-audit give the audit table to a NOLOGIN role (install and upgrade do this; run it after a restore)
   upgrade      upgrade existing install (git pull -> backup -> pip -> alembic -> build -> restart)
                  --no-pull                                skip git pull
                  --force                                  discard local changes to tracked files (e.g. an edited
                                                           scripts/jt-ipam.sh) so git pull won't abort
+                 --guacd-tarball <file>                   use this guacd package instead of downloading it
+                                                          (guacd is required and installed/updated on every upgrade)
+                 --recog-zip <file>                       update the Recog fingerprint database from this file
+                                                          instead of checking GitHub
   uninstall    stop and remove systemd units/timers + nginx site (keeps data by default)
                  --purge                                  also dropdb + remove config/uploads/system user
                  --yes                                    skip interactive confirmation when using --purge
@@ -506,15 +1113,40 @@ ensure_runtime_deps() {
     # ICMP echo, which almost always gets through. It lives in /usr/sbin.
     { command -v traceroute >/dev/null 2>&1 || [ -x /usr/sbin/traceroute ]; } \
         || missing+=("traceroute")
+    # net-snmp client tools (snmpget / snmpbulkwalk) for the LOCAL scan agent's SNMP collection
+    # (Integrations -> SNMP, collector "server"). Remote agents get them from their own installer.
+    { command -v snmpbulkwalk >/dev/null 2>&1 && command -v snmpget >/dev/null 2>&1; } \
+        || missing+=("snmp")
+    ensure_report_font
     if [ "${#missing[@]}" -eq 0 ]; then
-        log "Runtime dependencies present (ping, tracepath, traceroute)"
+        log "Runtime dependencies present (ping, tracepath, traceroute, snmp)"
         return 0
     fi
     log "Installing runtime dependencies: ${missing[*]}"
     if apt-get install -y -qq "${missing[@]}" >/dev/null 2>&1; then
         log "Installed ${missing[*]}"
     else
-        warn "could not install ${missing[*]} — the connectivity diagnostics in Tools will show those tools as unavailable"
+        warn "could not install ${missing[*]} — the connectivity diagnostics in Tools will show those tools as unavailable (and without 'snmp' the local scan agent cannot do SNMP collection)"
+    fi
+}
+
+# CJK font for PDF reports (the backend embeds a subset into each PDF, so Chinese and
+# Japanese show up in any viewer). Noto Sans CJK has proper Traditional Chinese and Japanese
+# glyph forms plus a bold face, which the smaller WenQuanYi fonts lack (~60 MB download,
+# ~90 MB installed). Never fatal: without it the PDF export returns report_pdf_no_font with
+# the command to run, and DOCX/ODT exports keep working.
+ensure_report_font() {
+    if find /usr/share/fonts /usr/local/share/fonts -name 'NotoSansCJK*' -print -quit 2>/dev/null | grep -q .; then
+        log "CJK font for PDF reports present (Noto Sans CJK)"
+        return 0
+    fi
+    log "Installing the CJK font for PDF reports (fonts-noto-cjk, ~60 MB download)…"
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends fonts-noto-cjk >/dev/null 2>&1 \
+        || { apt-get update -qq >/dev/null 2>&1 \
+             && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends fonts-noto-cjk >/dev/null 2>&1; }; then
+        log "Installed fonts-noto-cjk"
+    else
+        warn "could not install fonts-noto-cjk — PDF reports will fall back to another CJK font if one is installed, otherwise PDF export reports that a font is missing (DOCX/ODT still work). Install later with: sudo apt install fonts-noto-cjk"
     fi
 }
 
@@ -632,17 +1264,74 @@ verify_icmp_ready() {
     warn "Everything else (TCP / UDP / TLS / HTTP checks) is unaffected; those never needed privileges."
 }
 
+# ── Audit table ownership (2026-10-09) ──────────────────────────────────────────────
+# The append-only triggers on audit_logs (migrations 0149/0201) can be disabled by the
+# table owner, and the app's database role used to own it. harden-audit gives the table to
+# a NOLOGIN role so the app role keeps only SELECT/INSERT; unharden hands it back for the
+# duration of a migration run (migrations run as the app role). Local PostgreSQL only:
+# with an external database the DBA runs scripts/sql/audit-harden.sql once.
+audit_db_setting() {
+    local key="$1" def="$2" v=""
+    [[ -f "${ENV_FILE:-/etc/jt-ipam/backend.env}" ]] &&         v="$(grep -oP "^${key}=\K\S+" "${ENV_FILE:-/etc/jt-ipam/backend.env}" 2>/dev/null | tail -1)"
+    echo "${v:-$def}"
+}
+
+audit_db_is_local() {
+    local host; host="$(audit_db_setting POSTGRES_HOST 127.0.0.1)"
+    [[ "$host" == "127.0.0.1" || "$host" == "localhost" || "$host" == "::1" || "$host" == /* ]] || return 1
+    command -v psql >/dev/null 2>&1 && id -u postgres >/dev/null 2>&1
+}
+
+audit_table_sql() {
+    local file="$1" db app root
+    root="${ROOT:-$REPO_ROOT}"
+    db="$(audit_db_setting POSTGRES_DB jt_ipam)"
+    app="$(audit_db_setting POSTGRES_USER jt_ipam)"
+    if ! audit_db_is_local; then
+        warn "Database is not local; ask the DBA to run $root/scripts/sql/$file as a superuser (-v app=$app -d $db)."
+        return 0
+    fi
+    if ! sudo -u postgres psql -d "$db" -tAc "SELECT 1 FROM pg_tables WHERE tablename='audit_logs'" 2>/dev/null | grep -q 1; then
+        return 0          # fresh install before migrations, or no database yet
+    fi
+    sudo -u postgres psql -q -v ON_ERROR_STOP=1 -v app="$app" -d "$db" -f "$root/scripts/sql/$file" >/dev/null
+}
+
+harden_audit_table() {
+    if audit_table_sql audit-harden.sql; then
+        log "Audit table owned by jt_ipam_audit_owner (the app role can only read and append)."
+    else
+        warn "Could not hand the audit table to jt_ipam_audit_owner; the app role can still disable its triggers. Re-run: sudo bash $0 harden-audit"
+    fi
+}
+
+unharden_audit_table() {
+    audit_table_sql audit-unharden.sql || warn "Could not hand the audit table back for migrations; a migration that changes it may fail."
+}
+
+cmd_harden_audit() {
+    require_root
+    local ENV_FILE="${ENV_FILE:-/etc/jt-ipam/backend.env}"
+    harden_audit_table
+}
+
+
 cmd_install() {
     # -- default parameters --
     local TLS_MODE="nginx"
     local PUBLIC_FQDN="ipam.example.com"
     local BIND_PORT_DIRECT=8443
     local WITH_FREERDP=0
+    local GUACD_TARBALL=""      # guacd 是必要元件，一定會裝（GitHub issue #42）
+    local RECOG_ZIP=""          # Recog 指紋庫（選用）：離線主機用手上的發佈檔
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --tls-mode) TLS_MODE="$2"; shift 2 ;;
+            --recog-zip) RECOG_ZIP="$(readlink -f "$2")"; shift 2 ;;
             --with-freerdp) WITH_FREERDP=1; shift ;;
+            --with-guacd) shift ;;                     # 舊參數，保留相容（guacd 一定會裝）
+            --guacd-tarball) GUACD_TARBALL="$(readlink -f "$2")"; shift 2 ;;
             --public-fqdn) PUBLIC_FQDN="$2"; shift 2 ;;
             --bind-port) BIND_PORT_DIRECT="$2"; shift 2 ;;
             -h|--help) usage; exit 0 ;;
@@ -834,7 +1523,7 @@ cmd_install() {
     )
 
     # Node.js is handled by ensure_node() right before the frontend build — distro 'nodejs'
-    # on Ubuntu 22.04 is v12 (too old), so we install NodeSource 20 / reuse a modern node instead.
+    # is too old on most supported releases, so we install NodeSource 22 / reuse a node >= 22 instead.
     # only install nginx in nginx mode
     if [[ "$TLS_MODE" == "nginx" ]]; then
         PKGS+=(nginx)
@@ -937,15 +1626,23 @@ SQL
     log "Setting up backend venv…"
     cd "$BACKEND_DIR"
     sudo -u "$JTIPAM_USER" "$PYTHON_BIN" -m venv .venv
-    sudo -u "$JTIPAM_USER" .venv/bin/pip install --upgrade pip wheel
+    # pip 至少 26.2.2：舊版 pip 內嵌的 certifi 仍信任 2026-10 金鑰外洩的 eMudhra/emSign 中間憑證，從 PyPI 下載會被冒充
+    sudo -u "$JTIPAM_USER" .venv/bin/pip install --upgrade "pip>=26.2.2" wheel
     # prod installs runtime deps only (matching upgrade); for dev/test tools run pip install -e ".[dev]" separately
     sudo -u "$JTIPAM_USER" .venv/bin/pip install -e .
     install_rdp_optional
+    ensure_kerberos_support
     if [[ "$WITH_FREERDP" == "1" ]]; then
         install_freerdp_apt || true
     else
         log "FreeRDP console engine not installed (use --with-freerdp, or install later:"
         log "  sudo apt-get install -y ${FREERDP_APT_PACKAGES[*]} )"
+    fi
+    # guacd 是必要元件：裝不起來就停在這裡（還沒有任何服務對外），講清楚怎麼補
+    if ! install_guacd "$GUACD_TARBALL"; then
+        die "guacd is required (the RDP / VNC console engine) and could not be installed -- see above.
+  Offline host, or an OS version without a prebuilt package yet: build or download it for this OS
+  (scripts/guacd/, GitHub releases) and re-run: sudo $0 install --guacd-tarball <file> [other options]"
     fi
 
     # -- 6. backend.env --
@@ -1040,6 +1737,7 @@ EOF
     cd "$BACKEND_DIR"
     sudo -u "$JTIPAM_USER" --preserve-env=PATH \
         bash -c "set -a; source $ENV_FILE; set +a; .venv/bin/alembic upgrade head"
+    harden_audit_table
 
     # -- 7b. first admin (only if none yet): generate a random password and show it once --
     ADMIN_PW_RECORD="$ETC_DIR/.admin-initial-password"
@@ -1095,6 +1793,7 @@ EOF
     log "Installing systemd units…"
     install -m 0644 "$REPO_ROOT/deploy/systemd/jt-ipam-backend.service" \
         /etc/systemd/system/jt-ipam-backend.service
+    ensure_backend_syscall_dropin
     install -m 0644 "$REPO_ROOT/deploy/systemd/jt-ipam-sync.service" \
         /etc/systemd/system/jt-ipam-sync.service
     install -m 0644 "$REPO_ROOT/deploy/systemd/jt-ipam-sync.timer" \
@@ -1110,8 +1809,13 @@ EOF
     verify_icmp_ready
     # Periodically sync OPNsense / Wazuh / LibreNMS (per each instance's own sync_interval_seconds)
     systemctl enable --now jt-ipam-sync.timer
+    # Scheduled AI review (does nothing until it is turned on under Admin → LLM / AI)
+    install_ai_audit_timer
     # Daily backup at 03:30; keep 14 days under /var/backups/jt-ipam/
     systemctl enable --now jt-ipam-backup.timer
+    # GeoIP / OUI / Recog refresh timers, then the Recog database itself (optional)
+    install_refresh_timers
+    install_recog_db "$BACKEND_DIR" "$ENV_FILE" "$JTIPAM_USER" "$RECOG_ZIP"
 
     # -- 11. nginx site (nginx mode only) --
     if [[ "$TLS_MODE" == "nginx" ]]; then
@@ -1379,6 +2083,23 @@ cmd_doctor() {
         fi
     fi
 
+    # guacd（必要元件：RDP／VNC 的預設引擎）：一定要裝、在跑、答得出來
+    if [[ -x "$GUACD_PREFIX/sbin/guacd" ]]; then
+        local greply=""
+        if systemctl is-active --quiet "$GUACD_UNIT"; then
+            greply="$(timeout 5 bash -c 'exec 3<>/dev/tcp/127.0.0.1/4822; printf "6.select,3.rdp;" >&3; head -c 100 <&3' 2>/dev/null || true)"
+        fi
+        if [[ "$greply" == *args* ]]; then
+            _ok "guacd $(guacd_installed_version) running and answering on 127.0.0.1:4822"
+        else
+            _bad "guacd is installed but not answering on 127.0.0.1:4822" \
+                 "sudo systemctl restart $GUACD_UNIT; journalctl -u jt-ipam-guacd -n 50 --no-pager"
+        fi
+    else
+        _bad "guacd is not installed -- it is required (the RDP / VNC console engine); consoles only work through the optional built-in engine" \
+             "sudo $0 upgrade   (installs it; offline: sudo $0 upgrade --guacd-tarball <file>)"
+    fi
+
     # ── database ──
     echo
     echo "Database"
@@ -1395,6 +2116,14 @@ cmd_doctor() {
             else
                 _bad "pgvector is not enabled in database '$dbname'" \
                      "sudo apt install -y postgresql-${pgmaj}-pgvector && sudo -u postgres psql -d $dbname -c 'CREATE EXTENSION IF NOT EXISTS vector;'"
+            fi
+            local aowner
+            aowner="$(sudo -u postgres psql -d "$dbname" -tAc "SELECT tableowner FROM pg_tables WHERE tablename='audit_logs'" 2>/dev/null | tr -d ' ')"
+            if [[ "$aowner" == "jt_ipam_audit_owner" ]]; then
+                _ok "audit table owned by jt_ipam_audit_owner (app role can only read and append)"
+            elif [[ -n "$aowner" ]]; then
+                _warn "audit table is owned by '$aowner': that role can disable its append-only triggers" \
+                      "sudo bash $ROOT/scripts/jt-ipam.sh harden-audit"
             fi
         else
             _bad "cannot reach PostgreSQL as the postgres user" "systemctl status postgresql"
@@ -1431,24 +2160,76 @@ cmd_doctor() {
     else
         _bad "frontend was never built (no dist/index.html)" "sudo $0 upgrade"
     fi
+    # The build toolchain is only used by install / upgrade, so an old one is a warning. A site
+    # shows it after an upgrade that could not install Node.js 22 and fell back (ensure_node).
+    local nbin nmaj
+    nbin="$(command -v node 2>/dev/null || true)"
+    nmaj="$(node_major "$nbin")"
+    if (( nmaj >= NODE_REQUIRED_MAJOR )); then
+        _ok "Node.js $("$nbin" -v) for building the frontend"
+    elif (( nmaj > 0 )); then
+        _warn "Node.js $("$nbin" -v) is older than ${NODE_REQUIRED_MAJOR}, which building the frontend needs" \
+              "curl -fsSL https://deb.nodesource.com/setup_${NODE_REQUIRED_MAJOR}.x | sudo bash - && sudo apt-get install -y nodejs   (or: sudo $0 upgrade)"
+    else
+        _warn "Node.js not found (only needed to rebuild the frontend)" "sudo $0 upgrade   (installs it)"
+    fi
 
     # ── scheduled work ──
     echo
     echo "Scheduled work"
     local t
-    for t in jt-ipam-sync.timer jt-ipam-backup.timer; do
+    for t in jt-ipam-sync.timer jt-ipam-ai-audit.timer jt-ipam-backup.timer; do
         systemctl is-active --quiet "$t" && _ok "$t enabled" \
             || _bad "$t is not running" "sudo systemctl enable --now $t"
     done
+    # Reference-data refresh: missing only means stale data, so a warning, not a failure
+    local rt
+    for rt in "${REFRESH_UNITS[@]}"; do
+        if systemctl is-active --quiet "$rt.timer"; then
+            _ok "$rt.timer enabled"
+        elif [[ -f "/etc/systemd/system/$rt.timer" ]]; then
+            _warn "$rt.timer is installed but not running" "sudo systemctl enable --now $rt.timer"
+        else
+            _warn "$rt.timer is not installed (reference data will not refresh)" "sudo $0 upgrade"
+        fi
+    done
+    # Recog fingerprint database (optional component of the IP probe)
+    local recog_out
+    if recog_out="$(cd "$BACKEND_DIR" && timeout 30 sudo -u "${JTIPAM_USER:-jtipam}" bash -c \
+            "set -a; source '$ENV_FILE'; set +a; .venv/bin/python -m app.cli.recog status" 2>/dev/null)"; then
+        _ok "Recog fingerprint database: ${recog_out//$'\t'/ }"
+    else
+        _warn "Recog fingerprint database not installed (optional; the IP probe identifies less without it)" \
+              "sudo -u ${JTIPAM_USER:-jtipam} bash -c 'cd $BACKEND_DIR; set -a; source $ENV_FILE; set +a; .venv/bin/python -m app.cli.recog update'"
+    fi
     # Without the directory the backup unit dies at 226/NAMESPACE, and the message
     # looks like "script not found".
     if [[ -d /var/backups/jt-ipam ]]; then
-        local latest
-        latest="$(ls -1t /var/backups/jt-ipam 2>/dev/null | head -1)"
-        if [[ -n "$latest" ]]; then
-            _ok "backups present (latest: $latest)"
+        # Look at the status file the backup script writes and at real (non-empty) dump files. "The
+        # newest dated directory exists" is not enough: a failed run used to leave one with a 0-byte dump, and
+        # backups failed for weeks on a real site while this check said OK.
+        local bst="" berr="" benc="" latest_dump=""
+        if [[ -r /var/backups/jt-ipam/last-run ]]; then
+            bst="$(sed -n 's/^status=//p' /var/backups/jt-ipam/last-run | head -1)"
+            berr="$(sed -n 's/^error=//p' /var/backups/jt-ipam/last-run | head -1)"
+            benc="$(sed -n 's/^encrypted=//p' /var/backups/jt-ipam/last-run | head -1)"
+        fi
+        # Plain backups are <date>/<name>.dump; encrypted ones (2026-10-09) are jt-ipam-<date>.jtbak
+        latest_dump="$( { find /var/backups/jt-ipam -mindepth 2 -maxdepth 2 -name '*.dump' -size +0 -printf '%T@ %p\n'
+                          find /var/backups/jt-ipam -mindepth 1 -maxdepth 1 -name '*.jtbak' -size +0 -printf '%T@ %p\n'
+                        } 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)"
+        if [[ "$bst" == "fail" ]]; then
+            _bad "the last backup failed: ${berr:-see the backup log}" "journalctl -u jt-ipam-backup -n 30"
+        elif [[ -z "$latest_dump" ]]; then
+            _warn "no backup file yet" "sudo systemctl start jt-ipam-backup.service"
+        elif [[ -z "$(find "$latest_dump" -mmin -2880 2>/dev/null)" ]]; then
+            _warn "the newest backup is older than 48 hours: $latest_dump" "journalctl -u jt-ipam-backup -n 30"
         else
-            _warn "backup directory exists but is empty" "sudo systemctl start jt-ipam-backup.service"
+            _ok "backups present (latest: $latest_dump)"
+        fi
+        if [[ "$bst" == "ok" && "$benc" != "1" ]]; then
+            _warn "the latest backup is not encrypted: it holds the database and backend.env (the key that decrypts its secrets) in the clear" \
+                  "set a passphrase under System settings → Backup encryption"
         fi
     else
         _bad "/var/backups/jt-ipam is missing — the backup unit will fail at 226/NAMESPACE" \
@@ -1476,11 +2257,15 @@ cmd_doctor() {
     # Only report the engine the site actually selected. Saying "FreeRDP not installed" on a
     # site that uses the default engine is noise, and noise is what makes people stop reading
     # the output.
-    local rdp_engine
+    local rdp_engine vnc_engine
     rdp_engine="$(sudo -u postgres psql -tAd jt_ipam -c \
-        "SELECT COALESCE(value->>'rdp_engine','aardwolf') FROM system_settings WHERE key='console_security'" \
+        "SELECT COALESCE(value->>'rdp_engine','guacd') FROM system_settings WHERE key='console_security'" \
         2>/dev/null | tr -d '[:space:]')"
-    [[ -n "$rdp_engine" ]] || rdp_engine="aardwolf"
+    [[ -n "$rdp_engine" ]] || rdp_engine="guacd"
+    vnc_engine="$(sudo -u postgres psql -tAd jt_ipam -c \
+        "SELECT COALESCE(value->>'vnc_engine','guacd') FROM system_settings WHERE key='console_security'" \
+        2>/dev/null | tr -d '[:space:]')"
+    [[ -n "$vnc_engine" ]] || vnc_engine="guacd"
     echo
     echo "Remote console"
     if [[ "$rdp_engine" == "freerdp" ]]; then
@@ -1493,8 +2278,17 @@ cmd_doctor() {
             _bad "RDP engine is set to FreeRDP but the syscall drop-in is missing — the virtual display is killed on start (SIGSYS)" \
                  "sudo $0 upgrade   (installs it), or see docs/INSTALL.md"
         fi
-    else
-        _ok "RDP engine: aardwolf (built in)"
+    elif [[ "$rdp_engine" == "guacd" ]]; then
+        _ok "RDP engine: guacd (checked above)"
+    fi
+    # aardwolf is optional now; only a problem when a console is explicitly set to it
+    if [[ "$rdp_engine" == "aardwolf" || "$vnc_engine" == "builtin" ]]; then
+        if "$BACKEND_DIR/.venv/bin/python" -c 'import aardwolf' 2>/dev/null; then
+            _ok "aardwolf present (RDP engine: $rdp_engine, VNC engine: $vnc_engine)"
+        else
+            _bad "a console is set to the built-in aardwolf engine (RDP: $rdp_engine, VNC: $vnc_engine) but aardwolf is not installed" \
+                 "switch RDP / VNC back to guacd in Admin -> System settings (aardwolf is optional)"
+        fi
     fi
 
     echo
@@ -1564,10 +2358,18 @@ cmd_upgrade() {
     local SVC="jt-ipam-backend"
     local DO_PULL=1
     local FORCE=0
+    local GUACD_TARBALL=""      # guacd 是必要元件：每次升級都會裝上／更新
+    local RECOG_ZIP=""          # Recog 指紋庫（選用）：離線主機用手上的發佈檔
+    local _prev=""
     for arg in "$@"; do
+      if [[ "$_prev" == "--guacd-tarball" ]]; then GUACD_TARBALL="$(readlink -f "$arg")"; _prev=""; continue; fi
+      if [[ "$_prev" == "--recog-zip" ]]; then RECOG_ZIP="$(readlink -f "$arg")"; _prev=""; continue; fi
       case "$arg" in
         --no-pull) DO_PULL=0 ;;
         --force|-f) FORCE=1 ;;
+        --with-guacd) ;;                    # 舊參數，保留相容（guacd 一定會裝）
+        --guacd-tarball) _prev="--guacd-tarball" ;;
+        --recog-zip) _prev="--recog-zip" ;;
       esac
     done
 
@@ -1600,8 +2402,12 @@ cmd_upgrade() {
     on_err() {
       warn "Upgrade aborted. How to roll back:"
       warn "  1) Code: sudo -u $JTIPAM_USER git -C $ROOT reset --hard $OLD_REV"
-      [[ -n "$DUMP_PATH" ]] && \
-      warn "  2) Database: pg_restore --clean --no-owner -d <db> $DUMP_PATH"
+      if [[ "$DUMP_PATH" == *.jtbak ]]; then
+        warn "  2) Database: decrypt first: python3 $ROOT/backend/app/services/backup_crypt.py decrypt $DUMP_PATH --out /root/jt-ipam-restore"
+        warn "     then: pg_restore --clean --no-owner -d <db> /root/jt-ipam-restore/*/*.dump"
+      elif [[ -n "$DUMP_PATH" ]]; then
+        warn "  2) Database: pg_restore --clean --no-owner -d <db> $DUMP_PATH"
+      fi
       warn "  3) Rebuild frontend and restart: run build in $ROOT/frontend, then systemctl restart $SVC"
     }
     trap on_err ERR
@@ -1668,11 +2474,18 @@ cmd_upgrade() {
         exec bash "$ROOT/scripts/jt-ipam.sh" upgrade --no-pull "${UPGRADE_ARGS[@]}"
     fi
 
+    # -- 2b. Node.js for the frontend build: settle it before anything touches the database.
+    # Found out at build time (as it used to be), a missing node stopped the upgrade with the
+    # schema already migrated under a backend still running the old code. Falls back to an
+    # existing Node >= 20 when 22 cannot be installed -- see ensure_node. The call in
+    # build_frontend is then a no-op.
+    ensure_node upgrade
+
     # -- 3. back up the database (use the existing script if present) --
     if [[ -x "$ROOT/scripts/jt-ipam-backup.sh" ]]; then
       log "Backing up the database…"
       "$ROOT/scripts/jt-ipam-backup.sh"
-      DUMP_PATH="$(find /var/backups/jt-ipam -name '*.dump' -newermt '-2 min' 2>/dev/null | sort | tail -1 || true)"
+      DUMP_PATH="$(find /var/backups/jt-ipam \( -name '*.dump' -o -name '*.jtbak' \) -newermt '-2 min' 2>/dev/null | sort | tail -1 || true)"
       [[ -n "$DUMP_PATH" ]] && log "Backup file: $DUMP_PATH"
     else
       warn "cannot find jt-ipam-backup.sh, skipping automatic backup (strongly recommend a manual pg_dump first)"
@@ -1684,9 +2497,14 @@ cmd_upgrade() {
 
     # -- 4. backend dependencies --
     log "Updating backend dependencies (pip install -e .)…"
+    # 先把 pip 升到安全版本（以前升級完全不升 pip）：舊版 pip 內嵌的 certifi 仍信任 2026-10 外洩的 emSign 中間憑證
+    ( cd "$ROOT/backend"; as_user .venv/bin/pip install --quiet --upgrade "pip>=26.2.2" ) \
+        || warn "Could not upgrade pip to 26.2.2 or later; continuing with the current pip"
     ( cd "$ROOT/backend"; as_user .venv/bin/pip install --quiet -e . )
     install_rdp_optional
+    ensure_kerberos_support
     ensure_freerdp_if_selected
+    ensure_guacd_current "$GUACD_TARBALL"
     # IPMI tools for the BMC console (install on upgrade of existing setups; best-effort)
     if command -v apt-get >/dev/null 2>&1 && ! command -v ipmitool >/dev/null 2>&1; then
         log "Installing IPMI tools (ipmitool freeipmi-tools) for the BMC console…"
@@ -1695,23 +2513,50 @@ cmd_upgrade() {
     fi
 
     # -- 5. database migration --
+    # The audit table belongs to a NOLOGIN role; migrations run as the app role, so hand it
+    # back for the migration and take it away again right after (also on failure below).
+    unharden_audit_table
     log "alembic upgrade head…"
     # env must be sourced inside the sudo subshell (sudo does not carry parent environment by default)
-    as_user bash -c "cd '$ROOT/backend'; set -a; source '$ENV_FILE'; set +a; .venv/bin/alembic upgrade head"
+    if ! as_user bash -c "cd '$ROOT/backend'; set -a; source '$ENV_FILE'; set +a; .venv/bin/alembic upgrade head"; then
+        harden_audit_table
+        die "alembic upgrade failed (see above)."
+    fi
+    harden_audit_table
+
+    # -- 5b. Recog fingerprint database (optional): install if missing, update if GitHub has a newer release --
+    install_recog_db "$ROOT/backend" "$ENV_FILE" "$JTIPAM_USER" "$RECOG_ZIP"
 
     # -- 6. frontend build (as root with a clean toolchain, then chown back) --
     log "Building frontend…"
-    build_frontend "$ROOT/frontend" "$JTIPAM_USER:$JTIPAM_USER"
+    build_frontend "$ROOT/frontend" "$JTIPAM_USER:$JTIPAM_USER" upgrade
 
     # -- 6b. ensure nginx forwards WebSocket (SSH terminal); idempotent, safe no-op if already present --
     patch_nginx_websocket
+    patch_nginx_readyz_phpipam
+    patch_nginx_agent_relay
+    patch_nginx_token_logging
 
     # -- 6c. directories the sandboxed units require --
     # Installs from older versions never created /var/backups/jt-ipam, while
     # jt-ipam-backup.service lists it in ReadWritePaths -- so the daily backup died at
     # 226/NAMESPACE every night, with a message that looked like "backup script not
     # found".
+    # PDF 報告的 fpdf2 會載入 numpy／OpenBLAS，它一載入就呼叫 mbind：沒有這份 drop-in 會被 SystemCallFilter 殺掉
+    ensure_backend_syscall_dropin
     ensure_unit_dirs
+
+    # -- 6c2. the daily backup runs /usr/local/bin/jt-ipam-backup.sh, a copy made at install
+    # time. Without refreshing it here no fix to the backup script ever reaches an existing
+    # site (2026-10-08: the status file and the safe temp-then-rename only exist in the repo copy).
+    if [[ -f "$ROOT/scripts/jt-ipam-backup.sh" ]]; then
+        install -m 0755 "$ROOT/scripts/jt-ipam-backup.sh" /usr/local/bin/jt-ipam-backup.sh
+    fi
+
+    # -- 6d. scheduled refresh of GeoIP / OUI / Recog (older installs never had these timers) --
+    install_refresh_timers
+    # -- 6e. scheduled AI review now has its own timer (it used to run inside jt-ipam-sync) --
+    install_ai_audit_timer
 
     # -- 7. restart backend --
     log "Restarting $SVC…"
@@ -1782,11 +2627,18 @@ cmd_uninstall() {
         jt-ipam-backend.service
         jt-ipam-sync.timer
         jt-ipam-sync.service
+        jt-ipam-ai-audit.timer
+        jt-ipam-ai-audit.service
         jt-ipam-oui-refresh.timer
         jt-ipam-oui-refresh.service
+        jt-ipam-geoip-refresh.timer
+        jt-ipam-geoip-refresh.service
+        jt-ipam-recog-refresh.timer
+        jt-ipam-recog-refresh.service
         jt-ipam-backup.timer
         jt-ipam-backup.service
         jt-ipam-scan-agent.service
+        jt-ipam-guacd.service
     )
     local unit
     for unit in "${UNITS[@]}"; do
@@ -1849,6 +2701,7 @@ cmd_uninstall() {
     echo -e "\033[1;31m#   * $ETC_DIR (config / secrets / TLS certs)\033[0m" >&2
     echo -e "\033[1;31m#   * $DATA_DIR (uploads / floorplans / logs)\033[0m" >&2
     echo -e "\033[1;31m#   * system user $JTIPAM_USER\033[0m" >&2
+    echo -e "\033[1;31m#   * $GUACD_PREFIX (guacd, if installed)\033[0m" >&2
     echo -e "\033[1;31m# (the source $REPO_ROOT will not be deleted)\033[0m" >&2
     echo -e "\033[1;31m###############################################################\033[0m" >&2
     echo
@@ -1872,6 +2725,7 @@ cmd_uninstall() {
         if sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='jt_ipam'" 2>/dev/null | grep -q 1; then
             sudo -u postgres psql -c "DROP ROLE IF EXISTS jt_ipam;" 2>/dev/null \
                 || warn "DROP ROLE jt_ipam failed (may have dependent objects)"
+            sudo -u postgres psql -c "DROP ROLE IF EXISTS jt_ipam_audit_owner;" 2>/dev/null || true
         fi
     else
         warn "cannot find psql, skipping dropdb (please clean up PostgreSQL manually)"
@@ -1881,6 +2735,12 @@ cmd_uninstall() {
     if [[ -d "$ETC_DIR" ]]; then
         rm -rf "$ETC_DIR"
         log "Removed $ETC_DIR"
+    fi
+
+    # 2b) guacd（選用的主控台引擎；服務已在上面停掉）
+    if [[ -d "$GUACD_PREFIX" ]]; then
+        rm -rf "$GUACD_PREFIX" /var/lib/private/jt-ipam-guacd /var/lib/jt-ipam-guacd
+        log "Removed $GUACD_PREFIX"
     fi
 
     # 3) /var/lib/jt-ipam (+ log directory)
@@ -1917,6 +2777,7 @@ main() {
         upgrade)   shift; cmd_upgrade "$@" ;;
         uninstall) shift; cmd_uninstall "$@" ;;
         doctor)    shift; cmd_doctor "$@" ;;
+        harden-audit) shift; cmd_harden_audit "$@" ;;
         *)
             echo "[error] Unknown command: $cmd" >&2
             echo >&2

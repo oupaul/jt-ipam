@@ -159,6 +159,22 @@ async def test_nat_vip_and_ippool(db_session, admin_user, monkeypatch) -> None:
     assert "203.0.113.20-203.0.113.29" in (by_name["snat-pool"].description or "")
 
 
+async def test_nat_vip_status_disable_is_marked(db_session, admin_user, monkeypatch) -> None:
+    """VIP 停用（status: disable）要標成停用（使用者 2026-10-11）；沒有 status 欄位的版本當作啟用。"""
+    from app.models.nat import NATTranslation
+    fw = await _mk_fw(db_session, "fgt-nat-off", vdoms=["root"])
+    _patch_api(monkeypatch, {
+        fg.EP_VIP: [{"name": "off-vip", "extip": "203.0.113.11", "mappedip": [{"range": "192.0.2.11"}],
+                     "status": "disable"},
+                    {"name": "on-vip", "extip": "203.0.113.12", "mappedip": [{"range": "192.0.2.12"}]}],
+        fg.EP_IPPOOL: [],
+    })
+    await fg.sync_nat(db_session, fw, ["root"])
+    rows = (await db_session.execute(select(NATTranslation).where(
+        NATTranslation.source_origin == f"fortigate:{fw.id}"))).scalars().all()
+    assert {r.name: r.disabled for r in rows} == {"off-vip": True, "on-vip": False}
+
+
 @pytest.mark.anyio
 async def test_vpn_status_from_nested_proxyid(db_session, admin_user, monkeypatch) -> None:
     """IPsec 狀態在巢狀 proxyid[].status；SSL-VPN 配發 IP 在 subsessions[].aip。"""
@@ -238,13 +254,23 @@ async def test_failing_endpoint_does_not_break_other_syncs(db_session, admin_use
     fw.sync_dhcp_ranges = True
     fw.sync_policies = True
     fw.sync_arp = False
+    from app.models.dhcp import DHCPPoolRange
+    db_session.add(DHCPPoolRange(
+        source_type="fortigate", source_id=fw.id, source_name=fw.name,
+        subnet_cidr="internal", start_ip="10.7.0.1", end_ip="10.7.0.9", family=4, source="fortigate"))
+    await db_session.flush()
     _patch_api(monkeypatch, {
         fg.EP_POLICY: [{"policyid": 7, "name": "p7"}],
     }, fail={fg.EP_DHCP_SERVERS})     # DHCP server 端點不可用
     out = await fg.sync_instance(db_session, fw)
-    assert out["dhcp_ranges"] == 0    # 掛掉的項目回 0
     assert out["policies"] == 1       # 其他項不受影響
-    assert fw.last_error is None
+    # 以前：掛掉的項目回 0 —— 其實是把既有範圍整批清掉，而且 last_error 是空的（藏起失敗）。
+    # 現在：保留既有資料、講出來（2026-09-26 稽核）
+    assert "dhcp_ranges" in out["errors"]
+    kept = (await db_session.execute(select(DHCPPoolRange).where(
+        DHCPPoolRange.source_id == fw.id))).scalars().all()
+    assert len(kept) == 1, "讀取失敗不可以清掉既有的發放範圍"
+    assert fw.last_error and "dhcp_ranges" in fw.last_error
 
 
 @pytest.mark.anyio
@@ -362,7 +388,7 @@ async def test_one_dead_endpoint_does_not_abort_whole_sync(db_session, monkeypat
     await db_session.flush()
 
     async def _vdoms(_fw):
-        return ["root"]
+        return ["root"], True     # (VDOM 清單, 是否權威)
 
     async def _dead(*_a, **_k):
         raise fg.FortiGateError("回應不是 JSON（/api/v2/monitor/system/dhcp）")
@@ -370,9 +396,13 @@ async def test_one_dead_endpoint_does_not_abort_whole_sync(db_session, monkeypat
     async def _arp_ok(*_a, **_k):
         return 7
 
-    monkeypatch.setattr(fg, "list_vdoms", _vdoms)
+    async def _iface(*_a, **_k):
+        return 0
+
+    monkeypatch.setattr(fg, "list_vdoms_ex", _vdoms)
     monkeypatch.setattr(fg, "sync_dhcp_leases", _dead)
     monkeypatch.setattr(fg, "sync_arp", _arp_ok)
+    monkeypatch.setattr(fg, "sync_interface_ips", _iface)     # 介面位址（2026-10-14）：這支測試不管它
 
     counts = await fg.sync_instance(db_session, fw)
     assert counts["arp"] == 7, "DHCP 失敗把 ARP 一起帶走了"
@@ -425,3 +455,127 @@ def test_real_html_body_still_raises() -> None:
 
     with pytest.raises(ValueError, match="Expecting value"):
         _loads_tolerant("<!DOCTYPE html><html><body>login</body></html>")
+
+
+@pytest.mark.anyio
+async def test_one_failing_vdom_does_not_wipe_policies_or_raise_a_false_alert(db_session, admin_user, monkeypatch) -> None:
+    """兩個 VDOM、其中一個讀不到政策：以前照樣整份取代 → 那個 VDOM 的政策全被刪，
+    規則異動偵測還發出「移除」告警。現在整個區段不動。"""
+    from app.models.fortigate import FortiGatePolicy
+    fw = await _mk_fw(db_session, "fgt-2vdom", vdoms=["a", "b"])
+    both = {"a": [{"policyid": 1, "name": "pa"}], "b": [{"policyid": 2, "name": "pb"}]}
+    _patch_api(monkeypatch, {fg.EP_POLICY: lambda vdom: both[vdom]})
+    assert await fg.sync_policies(db_session, fw, ["a", "b"]) == 2
+
+    async def half(_fw, path, *, vdom=None, timeout=15.0):  # type: ignore[no-untyped-def]
+        if path == fg.EP_POLICY and vdom == "b":
+            raise fg.FortiGateError("HTTP 403")
+        return both[vdom] if path == fg.EP_POLICY else []
+    monkeypatch.setattr(fg, "_api_get", half)
+    with pytest.raises(fg.FortiGateError):
+        await fg.sync_policies(db_session, fw, ["a", "b"])
+    left = (await db_session.execute(select(FortiGatePolicy.name).where(
+        FortiGatePolicy.firewall_id == fw.id))).scalars().all()
+    assert sorted(left) == ["pa", "pb"]
+
+
+@pytest.mark.anyio
+async def test_an_unreadable_vdom_list_removes_nothing(db_session, admin_user, monkeypatch) -> None:
+    """VDOM 清單讀不到 → 只看得到管理 VDOM：整份取代的區段這一輪不動，並講出來。"""
+    from app.models.fortigate import FortiGatePolicy
+    fw = await _mk_fw(db_session, "fgt-novdoms")
+    fw.sync_policies = True
+    fw.sync_dhcp = False
+    fw.sync_arp = False
+    db_session.add(FortiGatePolicy(firewall_id=fw.id, vdom="guest", policyid="9", name="guest-rule"))
+    await db_session.flush()
+
+    async def _vdoms(_fw):
+        return [fg.NO_VDOM], False
+    monkeypatch.setattr(fg, "list_vdoms_ex", _vdoms)
+    _patch_api(monkeypatch, {fg.EP_POLICY: []})
+    out = await fg.sync_instance(db_session, fw)
+    assert "vdoms" in out["errors"]
+    left = (await db_session.execute(select(FortiGatePolicy.name).where(
+        FortiGatePolicy.firewall_id == fw.id))).scalars().all()
+    assert left == ["guest-rule"]
+
+
+async def test_nat_links_the_external_address(db_session, admin_user, monkeypatch) -> None:
+    """issue #52：VIP 的對外 IP（extip）要連到 IPAM 記錄（src_ip_id），單一位址的 IP pool 也是。
+
+    以前 extip 從頭到尾沒讀，src_ip_id 一律空的：從公網 IP 的頁面查不到「這個位址對外開了哪些服務」。
+    對外 IP 通常不在整合的關聯子網路（只勾內網段）→ 範圍內找不到時，全站唯一完全相符也算；
+    0.0.0.0、範圍、對不到或不唯一的都不連。
+    """
+    from app.models.address import IPAddress
+    from app.models.nat import NATTranslation
+    from app.models.section import Section
+    from app.models.subnet import Subnet
+
+    sec = Section(name=f"fg52-{uuid.uuid4().hex[:6]}")
+    db_session.add(sec)
+    await db_session.flush()
+    pub = Subnet(section_id=sec.id, cidr="203.0.113.0/24")
+    lan = Subnet(section_id=sec.id, cidr="198.51.100.0/24")
+    db_session.add_all([pub, lan])
+    await db_session.flush()
+    ext = IPAddress(subnet_id=pub.id, ip="203.0.113.10")
+    pool_ip = IPAddress(subnet_id=pub.id, ip="203.0.113.20")
+    inner = IPAddress(subnet_id=lan.id, ip="198.51.100.20")
+    db_session.add_all([ext, pool_ip, inner])
+    await db_session.flush()
+    fw = await _mk_fw(db_session, "fgt-extip", vdoms=["root"])
+    fw.scope_subnet_ids = [str(lan.id)]          # 只勾內網段
+    await db_session.flush()
+    _patch_api(monkeypatch, {
+        fg.EP_VIP: [
+            {"name": "https", "extip": "203.0.113.10", "extport": "443", "mappedip": [{"range": "198.51.100.20"}],
+             "mappedport": "443", "portforward": "enable", "protocol": "tcp"},
+            {"name": "ssh", "extip": "203.0.113.10", "extport": "2222", "mappedip": [{"range": "198.51.100.20"}],
+             "mappedport": "22", "portforward": "enable", "protocol": "tcp"},
+            {"name": "any-ext", "extip": "0.0.0.0", "mappedip": [{"range": "198.51.100.20"}]},
+            {"name": "ext-range", "extip": "203.0.113.10-203.0.113.12", "mappedip": [{"range": "198.51.100.20"}]},
+            {"name": "unknown-ext", "extip": "203.0.113.99", "mappedip": [{"range": "198.51.100.20"}]},
+        ],
+        fg.EP_IPPOOL: [{"name": "one", "startip": "203.0.113.20", "endip": "203.0.113.20"},
+                       {"name": "many", "startip": "203.0.113.20", "endip": "203.0.113.29"}],
+    })
+    await fg.sync_nat(db_session, fw, ["root"])
+    rows = {r.name: r for r in (await db_session.execute(select(NATTranslation).where(
+        NATTranslation.source_origin == f"fortigate:{fw.id}"))).scalars().all()}
+    assert rows["https"].src_ip_id == ext.id
+    assert rows["https"].dst_ip_id == inner.id
+    assert rows["ssh"].src_ip_id == ext.id, "同一個公網 IP 掛多條 VIP"
+    assert rows["any-ext"].src_ip_id is None
+    assert rows["ext-range"].src_ip_id is None
+    assert rows["unknown-ext"].src_ip_id is None
+    assert rows["one"].src_ip_id == pool_ip.id
+    assert rows["many"].src_ip_id is None
+    assert "203.0.113.20-203.0.113.29" in (rows["many"].description or "")
+
+
+async def test_nat_external_address_must_be_unique(db_session, admin_user, monkeypatch) -> None:
+    """範圍外放寬時仍然「唯一才連」：同一個位址在兩個子網路都有（重疊網段）就不猜。"""
+    from app.models.address import IPAddress
+    from app.models.nat import NATTranslation
+    from app.models.section import Section
+    from app.models.subnet import Subnet
+
+    secs = [Section(name=f"fg52b-{i}-{uuid.uuid4().hex[:6]}") for i in range(2)]
+    db_session.add_all(secs)
+    await db_session.flush()
+    subs = [Subnet(section_id=s.id, cidr="203.0.113.0/24") for s in secs]
+    db_session.add_all(subs)
+    await db_session.flush()
+    db_session.add_all([IPAddress(subnet_id=s.id, ip="203.0.113.10") for s in subs])
+    await db_session.flush()
+    fw = await _mk_fw(db_session, "fgt-extip-dup", vdoms=["root"])
+    _patch_api(monkeypatch, {
+        fg.EP_VIP: [{"name": "dup", "extip": "203.0.113.10", "mappedip": [{"range": "198.51.100.21"}]}],
+        fg.EP_IPPOOL: [],
+    })
+    await fg.sync_nat(db_session, fw, ["root"])
+    row = (await db_session.execute(select(NATTranslation).where(
+        NATTranslation.source_origin == f"fortigate:{fw.id}"))).scalars().one()
+    assert row.src_ip_id is None

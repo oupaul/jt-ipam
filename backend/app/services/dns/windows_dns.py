@@ -11,21 +11,18 @@ PowerShell cmdlets：
 
 OWASP A04：password 即時解密、不在 instance 上常駐
 OWASP A05：所有 PowerShell 參數透過 winrm 的 named parameters 傳，不字串拼接
-OWASP A02：use_ssl=true 為預設；不接受 cert validation skip
+OWASP A02：預設 HTTP 5985（Windows Server 防火牆預設封鎖 5986，使用者 2026-10-09），此時強制 NTLM 訊息加密（message_encryption=always），加密不了就連線失敗；HTTPS 時預設驗證憑證；WinRM HTTPS 常用自簽憑證（客戶 2026-10-08），
+           比照其他整合可在設定頁關閉「驗證 TLS 憑證」—— 仍走 HTTPS 加密，只是不驗憑證
 OWASP A06：host 透過 socket 解析後檢查（DNS 解析後 pin IP 防 rebinding）
 """
 
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import re
-import socket
 from typing import Any
 
-from app.core.config import get_settings
-from app.core.safe_http import _BLOCKED_CIDRS, _PRIVATE_CIDRS, _ip_in
 from app.services.dns.base import DNSAdapter, DNSAdapterError, DNSRecordOp, DNSZoneInfo
 
 # 不允許 PowerShell 注入的字元（A03）
@@ -39,20 +36,13 @@ def _safe_ps_arg(value: str) -> str:
 
 
 def _check_address_safe(host: str) -> None:
-    settings = get_settings()
+    """A10：跟 HTTP 相同的出站規則（core/net_guard 的 strict）：雲端中繼資料／本機擋、私網照設定。"""
+    from app.core.net_guard import check_target
+    from app.core.safe_http import UnsafeOutboundURL
     try:
-        addrs = [ipaddress.ip_address(host)]
-    except ValueError:
-        try:
-            infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
-        except socket.gaierror as exc:
-            raise DNSAdapterError(f"DNS resolution failed for {host}") from exc
-        addrs = [ipaddress.ip_address(info[4][0]) for info in infos]
-    for ip in addrs:
-        if _ip_in(ip, _BLOCKED_CIDRS):
-            raise DNSAdapterError(f"Blocked IP for SSRF: {ip}")
-        if _ip_in(ip, _PRIVATE_CIDRS) and not settings.outbound_allow_private:
-            raise DNSAdapterError(f"Private IP {ip} not allowed without OUTBOUND_ALLOW_PRIVATE")
+        check_target(host, policy="strict")
+    except UnsafeOutboundURL as exc:
+        raise DNSAdapterError(str(exc)) from exc
 
 
 class WindowsDNSAdapter(DNSAdapter):
@@ -64,8 +54,9 @@ class WindowsDNSAdapter(DNSAdapter):
         host: str,
         username: str,
         password: str,
-        port: int = 5986,
-        use_ssl: bool = True,
+        port: int = 5985,
+        use_ssl: bool = False,
+        verify_tls: bool = True,
         timeout: float = 30.0,
     ) -> None:
         if not host:
@@ -76,18 +67,22 @@ class WindowsDNSAdapter(DNSAdapter):
         self.password = password
         self.port = port
         self.use_ssl = use_ssl
+        self.verify_tls = verify_tls
         self.timeout = timeout
 
     def _session(self) -> Any:
         # winrm import 放這裡讓單元測試不需要全部裝齊
         import winrm
+        _check_address_safe(self.host)        # 連線當下再檢查一次（建構之後 DNS 可能換了答案）
         scheme = "https" if self.use_ssl else "http"
         endpoint = f"{scheme}://{self.host}:{self.port}/wsman"
         return winrm.Session(
             target=endpoint,
             auth=(self.username, self.password),
             transport="ntlm",
-            server_cert_validation="validate" if self.use_ssl else "ignore",
+            server_cert_validation="validate" if self.use_ssl and self.verify_tls else "ignore",
+            # HTTP 5985（Windows Server 預設只開這個）：一定要 NTLM 加密，不支援就失敗、不可退回明文
+            message_encryption="auto" if self.use_ssl else "always",
             operation_timeout_sec=int(self.timeout),
             read_timeout_sec=int(self.timeout) + 5,
         )
@@ -101,6 +96,23 @@ class WindowsDNSAdapter(DNSAdapter):
         except Exception as exc:  # winrm/requests 連線/認證/TLS/timeout 都不是 DNSAdapterError
             # 不轉成 DNSAdapterError 的話，dns.py 端點只 except DNSAdapterError →
             # 連線測試一失敗就變未處理的 500、且無可讀訊息。
+            if "CERTIFICATE_VERIFY_FAILED" in str(exc):
+                # 自簽／內部 CA：講清楚兩條路（匯入 CA 或關閉驗證），原文附在後面
+                raise DNSAdapterError(
+                    f"Windows DNS WinRM certificate not trusted: {exc}", code="dns_winrm_cert",
+                    reason=str(exc)[-300:],
+                ) from exc
+            text = str(exc)
+            if self.use_ssl and re.search(
+                    r"ConnectTimeout|Max retries exceeded|Connection refused|NewConnectionError|timed out", text):
+                # 客戶 2026-10-11：Windows Server 預設只開 HTTP 5985，1.0.5 以前建立的連線沿用 HTTPS 5986 →
+                # 一長串連線逾時看不出該怎麼改。直接講：沒有另外建立 HTTPS 監聽就改成 HTTP 5985
+                raise DNSAdapterError(
+                    f"Windows DNS WinRM HTTPS {self.host}:{self.port} is unreachable. Windows Server only opens "
+                    f"HTTP 5985 by default: unless an HTTPS listener was set up, edit this server under "
+                    f"Admin → External integrations → DNS and switch WinRM to HTTP (5985). ({text[-200:]})",
+                    code="dns_winrm_https_unreachable", host=self.host, port=self.port, reason=text[-300:],
+                ) from exc
             raise DNSAdapterError(
                 f"Windows DNS WinRM connection failed: {exc.__class__.__name__}: {exc}"
             ) from exc
@@ -126,7 +138,7 @@ class WindowsDNSAdapter(DNSAdapter):
         out = await asyncio.to_thread(
             self._run_ps,
             "Get-DnsServerZone | Where-Object {$_.IsAutoCreated -eq $false} "
-            "| Select-Object ZoneName, IsReverseLookupZone "
+            "| Select-Object ZoneName, IsReverseLookupZone, IsPaused, IsShutdown "
             "| ConvertTo-Json -Compress",
         )
         if not out.strip():
@@ -138,6 +150,9 @@ class WindowsDNSAdapter(DNSAdapter):
         for z in data:
             name = (z.get("ZoneName") or "").rstrip(".")
             if not name:
+                continue
+            # 暫停或關閉的 zone 不在服務（使用者 2026-10-13：「停用的不要抓」）
+            if z.get("IsPaused") is True or z.get("IsShutdown") is True:
                 continue
             kind = "reverse" if z.get("IsReverseLookupZone") else "forward"
             result.append(DNSZoneInfo(name=name, kind=kind))

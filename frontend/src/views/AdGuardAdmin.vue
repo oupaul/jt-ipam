@@ -2,6 +2,7 @@
 import { computed, h, onMounted, ref } from "vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
+import { trackTask } from "@/composables/useTaskTracker";
 import ScopeOverlapWarning from "@/components/ScopeOverlapWarning.vue";
 import {
   NCard, NDataTable, NSpace, NButton, NTag, NIcon, NTooltip,
@@ -22,7 +23,8 @@ import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { apiErrMsg } from "@/api/client";
 const { t } = useI18n();
 
-const { visibleKeys: agVis, setVisible: agSet, reset: agReset } = useColumnPrefs(
+const { visibleKeys: agVis, setVisible: agSet, reset: agReset,
+  order: agOrder, setOrder: agSetOrder, orderColumns: agOrderCols } = useColumnPrefs(
   "adguard",
   ["name", "api_url", "enabled", "sync_flags", "last_sync_at", "last_error", "actions"],
   ["name", "api_url", "enabled", "sync_flags", "last_sync_at", "last_error", "actions"],
@@ -107,7 +109,7 @@ async function submit() {
         sync_clients: form.value.sync_clients,
         sync_rewrites: form.value.sync_rewrites,
         sync_interval_seconds: form.value.sync_interval_seconds,
-        description: form.value.description || undefined,
+        description: form.value.description ?? "",
         scope_subnet_ids: form.value.scope_subnet_ids,
       };
       if (form.value.api_password) payload.api_password = form.value.api_password;
@@ -123,7 +125,7 @@ async function submit() {
         sync_clients: form.value.sync_clients,
         sync_rewrites: form.value.sync_rewrites,
         sync_interval_seconds: form.value.sync_interval_seconds,
-        description: form.value.description || undefined,
+        description: form.value.description ?? "",
         scope_subnet_ids: form.value.scope_subnet_ids,
       });
     }
@@ -141,11 +143,9 @@ async function test(id: string) {
 }
 
 async function sync(id: string) {
-  const row = rows.value.find((r) => r.id === id);
-  const targetName = row?.name ?? id.slice(0, 8);
   try {
-    await syncAdGuard(id);
-    msg.success(t("tasks.queued_toast", { kind: "AdGuard sync", target: targetName }));
+    const r = await syncAdGuard(id);
+    trackTask(r.task_id, { onDone: () => void refresh() });
   } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
 
@@ -199,7 +199,7 @@ const allCols = computed<DataTableColumns<AdGuardInstance>>(() => autoSort([
 ]));
 
 const cols = computed<DataTableColumns<AdGuardInstance>>(() =>
-  allCols.value.filter((c: any) => agVis.value.includes(c.key)),
+  agOrderCols(allCols.value.filter((c: any) => agVis.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); void loadSubnetOptions(); });
@@ -223,7 +223,8 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         {{ t("common.create") }}
       </n-button>
       <ColumnPicker :all="agPicker" :visible="agVis"
-                    @update:visible="agSet" @reset="agReset" />
+                    @update:visible="agSet" @reset="agReset"
+                    :order="agOrder" @update:order="agSetOrder" />
     </n-space>
     <n-data-table :columns="cols" :data="rows" :loading="loading" :bordered="false" :scroll-x="1126" />
 

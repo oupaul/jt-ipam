@@ -68,6 +68,16 @@ export interface ScanAgent {
   available_probes: string[] | null;
   tools: ScanAgentTool[] | null;
   subnet_count: number;
+  /** 最近一輪的負載摘要（代理 1.10.0 起回報）；還沒回報過就是 null */
+  load?: ScanAgentLoadSummary | null;
+  /** 主控台中繼（issue #24 階段二）：管理員允許、上限、代理回報的能力（舊代理＝null）、目前中繼數 */
+  relay_allowed?: boolean;
+  relay_max_sessions?: number;
+  /** 允許中繼的埠（網頁設定，"22,3389,5900-5910"） */
+  relay_ports?: string;
+  /** 代理回報：enabled＝代理主機沒有否決；ports／max＝代理主機的本機限縮（空／0＝不限） */
+  relay_caps?: { enabled: boolean; ports: number[]; max: number; pinned: boolean } | null;
+  relay_active?: number;
   last_seen_at: string | null;
   last_error: string | null;
   created_at: string;
@@ -75,6 +85,38 @@ export interface ScanAgent {
 }
 // 建立 / rotate 時多回一次性 enroll_key
 export interface ScanAgentCreated extends ScanAgent { enroll_key: string; }
+
+export type ScanLoadLevel = "ok" | "busy" | "overloaded";
+export interface ScanAgentLoadSummary {
+  ratio: number; level: ScanLoadLevel; duration_s: number; interval_s: number;
+  heavy_backlog: number; truncated: number; coverage_gap?: number; at: string | null;
+}
+export interface ScanLoadSubnet {
+  cidr: string; subnet_id?: string | null; hosts: number; total_hosts?: number; alive: number;
+  duration_s: number; per_host_ms: number | null; truncated: boolean;
+  /** 分段輪替（代理 1.11.0 起）：這輪是第幾段／共幾段 */
+  chunk?: number; rounds?: number;
+  /** 兩層掃描（代理 1.18.0 起）：known＝已知位址數；discover_* 是背景探索的段數 */
+  mode?: "targets"; known?: number; discover_chunk?: number; discover_rounds?: number;
+}
+export interface ScanLoadSuggestion { code: string; params: Record<string, unknown> }
+export interface ScanAgentLoad {
+  agent_id: string;
+  last_cycle: Record<string, unknown> | null;
+  evaluation: {
+    ratio: number; level: ScanLoadLevel; duration_s: number; interval_s: number;
+    heavy_backlog: number; heavy_lagging: boolean; truncated: string[];
+    subnets: ScanLoadSubnet[]; suggestions: ScanLoadSuggestion[];
+  } | null;
+  history: { at: string; duration_s: number; interval_s: number; heavy_backlog: number;
+             hosts: number | null; alive: number | null }[];
+}
+
+/** 負載面板：最近一輪的逐子網路細節、評估與建議、最近幾輪的耗時 */
+export async function getScanAgentLoad(id: string): Promise<ScanAgentLoad> {
+  const { data } = await apiClient.get<ScanAgentLoad>(`/api/v1/scan-agents/${id}/load`);
+  return data;
+}
 
 export async function listScanAgents(): Promise<Paginated<ScanAgent>> {
   const { data } = await apiClient.get<Paginated<ScanAgent>>("/api/v1/scan-agents", {
@@ -98,8 +140,9 @@ export async function scanNowAgent(id: string): Promise<{ queued: boolean; eta_s
   return data;
 }
 export async function updateScanAgent(id: string, p: Partial<{
-  description: string; enabled: boolean; auto_create_ips: boolean;
+  name: string; description: string; enabled: boolean; auto_create_ips: boolean;
   enabled_probes: string[]; probe_intervals: Record<string, number>;
+  relay_allowed: boolean; relay_max_sessions: number; relay_ports: string;
 }>): Promise<ScanAgent> {
   const { data } = await apiClient.patch<ScanAgent>(`/api/v1/scan-agents/${id}`, p);
   return data;
@@ -110,6 +153,12 @@ export async function deleteScanAgent(id: string): Promise<void> {
 export async function getAgentSubnets(id: string): Promise<string[]> {
   const { data } = await apiClient.get<{ subnet_ids: string[] }>(`/api/v1/scan-agents/${id}/subnets`);
   return data.subnet_ids;
+}
+export interface AgentSubnetItem { id: string; cidr: string; description: string | null; scan_enabled: boolean }
+/** 這台代理負責的子網路（CIDR／說明／是否啟用掃描），給代理頁點子網路數字時彈出的清單 */
+export async function getAgentSubnetList(id: string): Promise<AgentSubnetItem[]> {
+  const { data } = await apiClient.get<{ subnets?: AgentSubnetItem[] }>(`/api/v1/scan-agents/${id}/subnets`);
+  return data.subnets ?? [];
 }
 export async function setAgentSubnets(id: string, subnetIds: string[]): Promise<string[]> {
   const { data } = await apiClient.put<{ subnet_ids: string[] }>(
@@ -191,6 +240,7 @@ export interface NAT {
   source_kind: string | null;
   source_firewall_id: string | null;
   source_label: string | null;
+  source_firewall_name?: string | null;
   external_id: string | null;
 }
 
@@ -241,8 +291,12 @@ export async function deleteNAT(id: string): Promise<void> {
 export interface AnomalyReport {
   ip_conflicts: any[];
   mac_drifts: any[];
+  /** 參考用的換埠（虛擬機遷移、隨機 MAC 漫遊、上行路徑變更）：不通知、不算總數 */
+  mac_drift_reference?: any[];
   ghost_ips: any[];
   unauthorized_ips: any[];
+  /** 未授權 IP 總數：清單最多列 1,000 筆（最近看到的在前），超過時這裡比清單長度大 */
+  unauthorized_total?: number;
   rogue_dhcp: any[];
   external_exposure: any[];
   dangling_dns: any[];
@@ -252,10 +306,28 @@ export interface AnomalyReport {
   arp_only_liveness: any[];
   stale_device_links: any[];
   mac_flapping?: Record<string, any>[];
+  identity_changes?: Record<string, any>[];
+  /** 同一台主機多張網卡回應同一個 IP（2026-10-09 從 IP 衝突分出來） */
+  arp_flux?: Record<string, any>[];
+  /** 兩個子網段混在同一個二層 */
+  l2_subnet_bleed?: Record<string, any>[];
+  /** DNS 比對群組各台的紀錄不一樣（持續超過寬限時間；2026-10-10） */
+  dns_compare_mismatch?: Record<string, any>[];
 }
 
 export async function runAnomalyScan(): Promise<AnomalyReport> {
   const { data } = await apiClient.post<AnomalyReport>("/api/v1/anomalies/scan");
+  return data;
+}
+
+/** 上一次偵測的結果（手動或排程）。`live`（上線狀態）是現在算的，不是當時的快照。 */
+export interface LastAnomalyReport {
+  report: AnomalyReport | null;
+  at: string | null;
+  trigger: "manual" | "schedule" | null;
+}
+export async function getLastAnomalyReport(): Promise<LastAnomalyReport> {
+  const { data } = await apiClient.get<LastAnomalyReport>("/api/v1/anomalies/last");
   return data;
 }
 
@@ -419,10 +491,14 @@ export async function deleteDevicePowerPort(id: string): Promise<void> {
 export interface VirtCluster { id: string; name: string; type: string | null; is_standalone: boolean; description: string | null; }
 export interface VirtualMachine { id: string; name: string; cluster_id: string | null; node: string | null; kind: string | null; status: string | null; ips: string[]; macs: string[]; bridges: string[];
   /** IP 字串 → IPAM 位址 id。重疊網段下分不出是哪一筆時後端不會給。 */
-  ip_links?: Record<string, string>; }
-export interface ProxmoxInstance { id: string; name: string; api_url: string; extra_api_urls: string[]; node: string | null; auth_username: string; auth_token_id: string; verify_tls: boolean; sync_interval_seconds: number; enabled: boolean; scope_subnet_ids?: string[] | null; last_sync_at: string | null; last_error: string | null; }
+  ip_links?: Record<string, string>;
+  /** 平台沒回報 IP、同步時用網卡 MAC 比對到的 IPAM 位址 */
+  ips_by_mac?: string[];
+  os_name?: string | null; }
+export interface ProxmoxInstance { id: string; name: string | null; api_url: string; extra_api_urls: string[]; node: string | null; auth_username: string; auth_token_id: string; verify_tls: boolean; sync_interval_seconds: number; enabled: boolean; scope_subnet_ids?: string[] | null; last_sync_at: string | null; last_error: string | null; }
 
 export interface ProxmoxWrite {
+  name?: string;
   cluster_id?: string; api_url: string; extra_api_urls?: string[];
   auth_username: string; auth_token_id: string; token_secret?: string;
   verify_tls?: boolean; enabled?: boolean; sync_interval_seconds?: number;
@@ -435,7 +511,7 @@ export const Virt = {
   clusters: () => getList<VirtCluster>("/api/v1/virt/clusters"),
   vms: () => getList<VirtualMachine>("/api/v1/virt/vms"),
   proxmox: () => getList<ProxmoxInstance>("/api/v1/virt/proxmox"),
-  syncProxmox: async (id: string) => {
+  syncProxmox: async (id: string): Promise<{ task_id: string }> => {
     const { data } = await apiClient.post(`/api/v1/virt/proxmox/${id}/sync`,
       undefined, { timeout: 300_000 });
     return data;
@@ -481,6 +557,8 @@ export interface DevicePort {
   id: string; device_id: string; name: string; type: string;
   peer_port_id: string | null; position: number | null; description: string | null;
   link?: string | null; mac_address?: string | null;
+  /** OUI 廠商（後端依 MAC 前綴查） */
+  mac_vendor?: string | null;
 }
 export interface TraceNode {
   port_id?: string; port_name?: string; port_type?: string;
@@ -512,7 +590,8 @@ export const Physical = {
     return data;
   },
   async deletePort(id: string): Promise<void> { await apiClient.delete(`/api/v1/device-ports/${id}`); },
-  async importPorts(deviceId: string): Promise<{ imported: number; found: number; linked_librenms: number; source: string }> {
+  async importPorts(deviceId: string): Promise<{ imported: number; removed?: number; pruned?: number;
+    found: number; linked_librenms: number; source: string }> {
     const { data } = await apiClient.post("/api/v1/device-ports/import", null, { params: { device_id: deviceId } });
     return data;
   },

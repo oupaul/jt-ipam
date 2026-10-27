@@ -24,7 +24,8 @@ const msg = useMessage();
 interface Change {
   id: string; source_type: string; instance_name: string; taken_at: string;
   rule_count: number; is_baseline: boolean;
-  diff: { added: any[]; removed: any[]; changed: any[] } | null;
+  diff: { added: any[]; removed: any[]; changed: any[];
+          auto?: { added: any[]; removed: any[]; changed: any[] } } | null;
   ack: { at: string; note: string } | null;
 }
 const items = ref<Change[]>([]);
@@ -43,6 +44,7 @@ onMounted(load);
 /** 廠牌顯示名稱：`source_type` 是內部鍵，直接印出來會是全小寫的 paloalto／pfsense。 */
 const VENDOR_LABEL: Record<string, string> = {
   opnsense: "OPNsense", pfsense: "pfSense", fortigate: "FortiGate", paloalto: "Palo Alto",
+  checkpoint: "Check Point", mikrotik: "MikroTik",
 };
 
 function ruleLine(r: any): string {
@@ -51,10 +53,38 @@ function ruleLine(r: any): string {
   return `${r.action || "?"} ${r.src || "any"} → ${r.dst || "any"}${port}${descr}`;
 }
 
-type DiffKind = "add" | "del" | "chg";
-const KIND_TAG: Record<DiffKind, "error" | "default" | "warning"> = {
-  add: "error", del: "default", chg: "warning",
+type DiffKind = "add" | "del" | "chg" | "sys";
+const KIND_TAG: Record<DiffKind, "error" | "default" | "warning" | "info"> = {
+  add: "error", del: "default", chg: "warning", sys: "info",
 };
+
+/* 系統自動規則（10-22：一台 OPNsense 升級韌體後被列成「新增 28 條」）：防火牆依設定自己產生的規則
+ * （anti-lockout、預設拒絕、封鎖表…），不是管理員改的。收成一行摘要、可展開；只有這種變動的那一筆不需要確認。 */
+const expanded = ref<Set<string>>(new Set());
+const hasUserChange = (r: Change) => !!r.diff && !!(r.diff.added?.length || r.diff.removed?.length || r.diff.changed?.length);
+function autoLines(row: Change): { kind: DiffKind; text: string }[] {
+  const a = row.diff?.auto;
+  if (!a) return [];
+  const n = (a.added?.length ?? 0) + (a.removed?.length ?? 0) + (a.changed?.length ?? 0);
+  if (!n) return [];
+  const parts = [
+    a.added?.length ? t("fw_changes.auto_added", { n: a.added.length }) : "",
+    a.removed?.length ? t("fw_changes.auto_removed", { n: a.removed.length }) : "",
+    a.changed?.length ? t("fw_changes.auto_changed", { n: a.changed.length }) : "",
+  ].filter(Boolean).join("、");
+  const out = [{ kind: "sys" as DiffKind, text: t("fw_changes.auto_summary", { parts }) }];
+  if (expanded.value.has(row.id)) {
+    for (const r of (a.added ?? [])) out.push({ kind: "sys", text: `＋ ${ruleLine(r)}` });
+    for (const r of (a.removed ?? [])) out.push({ kind: "sys", text: `－ ${ruleLine(r)}` });
+    for (const c of (a.changed ?? [])) out.push({ kind: "sys", text: `～ ${c.descr || c.key}` });
+  }
+  return out;
+}
+function toggleAuto(id: string) {
+  const next = new Set(expanded.value);
+  if (next.has(id)) next.delete(id); else next.add(id);
+  expanded.value = next;
+}
 
 /** 把一筆快照的 diff 攤成「一列一條規則」。類型與文字分開回傳，兩個欄位才對得齊。 */
 function diffLines(row: Change): { kind: DiffKind; text: string }[] {
@@ -67,28 +97,33 @@ function diffLines(row: Change): { kind: DiffKind; text: string }[] {
     out.push({ kind: "chg", text: `${c.descr || c.key}：${(c.fields ?? []).map(
       (f: string) => `${f} ${c.old?.[f] ?? ""} → ${c.new?.[f] ?? ""}`).join("、")}` });
   }
-  return out;
+  return [...out, ...autoLines(row)];
 }
 
-/** 每一列的高度要與「異動內容」那欄的同一列對齊 —— 兩欄用一樣的 line-height 與 gap。 */
-const LINE_STYLE = "font-size:12.5px;line-height:1.7;min-height:22px";
+/** 類型欄的寬度：異動列的「類型＋內容」合成一格時，左邊那一欄也用這個寬，文字才會跟「異動內容」標題對齊 */
+const KIND_COL_W = 84;
+const LINE_STYLE = "font-size:12.5px;line-height:1.7";
 
-/** 異動類型欄：只有標籤，靠上對齊，與右側規則文字一列一列對應。 */
-function renderKinds(row: Change) {
-  if (row.is_baseline) return h("span", { style: "opacity:.55;font-size:12.5px" }, "—");
-  return h("div", { style: "display:flex;flex-direction:column;gap:3px;padding:4px 0" },
-    diffLines(row).map((l) => h("div", { style: LINE_STYLE },
-      h(NTag, { size: "tiny", type: KIND_TAG[l.kind] },
-        { default: () => t(`fw_changes.d_${l.kind}`) }))));
-}
-
-/** 異動內容欄；規則描述是不可信文字，一律以純文字 render（不進 v-html）。 */
-function renderDiff(row: Change) {
-  if (row.is_baseline) {
-    return h("span", { style: "opacity:.65" }, t("fw_changes.baseline"));
-  }
-  return h("div", { style: "display:flex;flex-direction:column;gap:3px;padding:4px 0" },
-    diffLines(row).map((l) => h("div", { style: LINE_STYLE }, l.text)));
+/**
+ * 有異動的那一列：類型與內容放在同一格（橫跨兩欄，見 cols 的 colSpan），用兩欄格線排「標籤｜文字」。
+ * 以前分成兩個獨立的儲存格各排各的，內容一換行，左邊的標籤就跟右邊對不上（使用者回報）；
+ * 再更早是標籤混在文字前面，標籤寬度不一讓文字起點參差（也被回報）—— 格線兩邊都顧到。
+ * 規則描述是不可信文字，一律以純文字 render（不進 v-html）。
+ */
+function renderKindAndDiff(row: Change) {
+  return h("div", {
+    style: `display:grid;grid-template-columns:${KIND_COL_W}px minmax(0,1fr);row-gap:3px;padding:4px 0;align-items:start`,
+    "data-testid": "fw-change-lines",
+  }, diffLines(row).flatMap((l, i, all) => [
+    h("div", { style: LINE_STYLE },
+      h(NTag, { size: "tiny", type: KIND_TAG[l.kind] }, { default: () => t(`fw_changes.d_${l.kind}`) })),
+    h("div", { style: `${LINE_STYLE};overflow-wrap:anywhere${l.kind === "sys" ? ";opacity:.7" : ""}` },
+      // 系統規則摘要那一行帶「展開／收合」
+      l.kind === "sys" && all.findIndex((x) => x.kind === "sys") === i
+        ? [l.text, " ", h("a", { style: "cursor:pointer", "data-testid": "fw-auto-toggle", onClick: () => toggleAuto(row.id) },
+            expanded.value.has(row.id) ? t("fw_changes.auto_hide") : t("fw_changes.auto_show"))]
+        : l.text),
+  ]));
 }
 
 /** AI 解讀：偵測是確定性的，解讀層按需觸發 —— 帶上目標位址的全系統整合證據。
@@ -157,16 +192,21 @@ const cols: DataTableColumns<Change> = autoSort([
       r.instance_name,
     ]) },
   { title: t("fw_changes.rules"), key: "rule_count", width: 90 },
-  // 類型獨立一欄：混在異動內容裡時，標籤寬度不一會讓每一列的規則文字起點不同
-  //（使用者回報「很不整齊」）。
-  { title: t("fw_changes.kind"), key: "_kind", width: 84, render: (r) => renderKinds(r) },
-  { title: t("fw_changes.diff"), key: "diff", render: (r) => renderDiff(r) },
+  // 類型與異動內容：有異動的列這一格橫跨兩欄，標籤與文字同一列（換行也對得齊，見 renderKindAndDiff）；
+  // 初次快照照舊各一欄。兩欄都不排序（沒有可比的值，以前的排序箭頭按了也沒作用）
+  { title: t("fw_changes.kind"), key: "_kind", width: KIND_COL_W, sorter: false,
+    colSpan: (r) => (r.is_baseline ? 1 : 2),
+    render: (r) => (r.is_baseline ? h("span", { style: "opacity:.55;font-size:12.5px" }, "—") : renderKindAndDiff(r)) },
+  { title: t("fw_changes.diff"), key: "diff", sorter: false,
+    render: (r) => (r.is_baseline ? h("span", { style: "opacity:.65" }, t("fw_changes.baseline")) : null) },
   // 單一「操作」欄：欄位標題若與裡面的按鈕同名（認可／AI 解讀）會像重複貼了兩次
   //（使用者回饋）；認可後按鈕原位換成狀態文字。
   // 寬度只留到剛好放下兩顆按鈕（使用者回饋：多餘寬度優先給異動內容），
   // 「檢視結果」長出來或認可說明較長時靠 flex-wrap 換行。
   { title: t("common.actions"), key: "_actions", width: 185, className: "col-actions",
-    render: (r) => r.is_baseline ? null : h("span",
+    render: (r) => r.is_baseline ? null : !hasUserChange(r)
+      ? h("span", { style: "font-size:12px;opacity:.65" }, t("fw_changes.no_ack_needed"))
+      : h("span",
       { style: "display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap" }, [
         r.ack
           ? h("span", { style: "font-size:12px;opacity:.75" },

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+from typing import Any
 import hmac
 
 import pytest
@@ -110,10 +111,10 @@ async def test_missing_config_raises():
 async def test_broadcast_concurrent_best_effort(monkeypatch):
     ran: list[str] = []
 
-    async def ok(cfg, s, t):
+    async def ok(cfg, s, t, **kw):
         ran.append("slack")
 
-    async def boom(cfg, s, t):
+    async def boom(cfg, s, t, **kw):
         ran.append("telegram")
         raise RuntimeError("channel down")
 
@@ -127,3 +128,168 @@ async def test_broadcast_concurrent_best_effort(monkeypatch):
     # 一個管道丟例外不可中斷另一個；兩個啟用的都要被呼叫
     await nc.broadcast_channels(None, subject="s", text="t")
     assert set(ran) == {"slack", "telegram"}
+
+
+# ── 「前往檢視」連結（使用者 2026-10-19：Zulip 收到「詳見異常偵測頁面」卻點不過去）──
+URL = "https://ipam.example.com/anomaly?tab=conflicts"
+
+
+async def test_every_channel_carries_the_link(sent):
+    cfgs = {
+        "telegram": {"telegram_token": "T:tok", "telegram_chat_id": "-100"},
+        "slack": {"slack_webhook": "https://hooks.slack/x"},
+        "teams": {"teams_webhook": "https://teams/x"},
+        "zulip": {"zulip_site": "https://z.example", "zulip_bot_email": "b@z", "zulip_api_key": "k",
+                  "zulip_stream": "s"},
+        "nextcloud": {"nextcloud_url": "https://nc", "nextcloud_token": "t", "nextcloud_secret": "x"},
+        "webhook": {"webhook_url": "https://hook"},
+    }
+    for ch, cfg in cfgs.items():
+        sent.clear()
+        await nc.send_one(cfg, ch, "Sub", "Body", link=URL)
+        blob = str(sent[0])
+        assert URL in blob, ch
+    # 各管道用自己會顯示成可點連結的寫法
+    sent.clear()
+    await nc.send_slack(cfgs["slack"], "Sub", "Body", link=URL)
+    assert f"<{URL}|前往檢視>" in sent[0]["json"]["text"]
+    sent.clear()
+    await nc.send_zulip(cfgs["zulip"], "Sub", "Body", link=URL)
+    assert f"[前往檢視]({URL})" in sent[0]["data"]["content"]
+    sent.clear()
+    await nc.send_webhook(cfgs["webhook"], "Sub", "Body", link=URL)
+    assert sent[0]["json"]["url"] == URL
+
+
+async def test_teams_card_has_an_open_button(monkeypatch):
+    calls: list[dict] = []
+
+    async def flaky_post(url, *, json=None, data=None, headers=None, auth=None):
+        calls.append(json)
+        if len(calls) == 1:
+            raise RuntimeError("400 legacy rejected")
+
+    monkeypatch.setattr(nc, "_post", flaky_post)
+    await nc.send_teams({"teams_webhook": "https://teams/x"}, "Sub", "Body", link=URL)
+    assert f"[前往檢視]({URL})" in calls[0]["text"]
+    card = calls[1]["attachments"][0]["content"]
+    assert card["actions"] == [{"type": "Action.OpenUrl", "title": "前往檢視", "url": URL}]
+
+
+async def test_no_link_keeps_the_old_message(sent):
+    await nc.send_zulip({"zulip_site": "https://z", "zulip_bot_email": "b", "zulip_api_key": "k",
+                         "zulip_stream": "s"}, "Sub", "Body")
+    assert sent[0]["data"]["content"] == "**Sub**\nBody"
+
+
+async def test_broadcast_turns_a_site_path_into_a_full_url(monkeypatch):
+    got: list[str | None] = []
+
+    async def ok(cfg, s, t, link=None, **kw):
+        got.append(link)
+
+    monkeypatch.setitem(nc._SENDERS, "slack", ok)
+
+    async def fake_cfg(session):
+        return {"slack_enabled": True}
+
+    monkeypatch.setattr("app.services.system_config.get_notification_channels", fake_cfg)
+    monkeypatch.setattr(nc, "_public_base", lambda: "https://ipam.example.com/")
+    await nc.broadcast_channels(None, subject="s", text="t", link="/anomaly?tab=conflicts")
+    await nc.broadcast_channels(None, subject="s", text="t", link="https://other.example/x")
+    await nc.broadcast_channels(None, subject="s", text="t")
+    assert got == [URL, "https://other.example/x", None]
+
+
+# ── 美觀：emoji 前綴與連結圖示（使用者 2026-10-19）──
+async def test_chat_channels_get_an_emoji_but_the_webhook_gets_a_severity_field(monkeypatch):
+    got: dict[str, Any] = {}
+
+    async def zulip(cfg, s, t, link=None, rich=None):
+        got["zulip"] = nc.rich_markdown(rich, zulip=True)
+
+    async def hook(url, *, json=None, data=None, headers=None, auth=None):
+        got["webhook"] = json
+
+    monkeypatch.setitem(nc._SENDERS, "zulip", zulip)
+    monkeypatch.setattr(nc, "_post", hook)
+
+    async def fake_cfg(session):
+        return {"zulip_enabled": True, "webhook_enabled": True, "webhook_url": "https://hook"}
+
+    monkeypatch.setattr("app.services.system_config.get_notification_channels", fake_cfg)
+    monkeypatch.setattr(nc, "_public_base", lambda: "https://ipam.example.com/")
+    await nc.broadcast_channels(None, subject="疑似登入權杖被盜用", text="t", link="/audit", severity="error")
+    assert got["zulip"].startswith("**🚨 疑似登入權杖被盜用**")
+    assert got["webhook"]["subject"] == "疑似登入權杖被盜用"
+    assert got["webhook"]["severity"] == "error"
+    await nc.broadcast_channels(None, subject="IP 申請", text="t", link="/requests", emoji="📝")
+    assert got["zulip"].startswith("**📝 IP 申請**")
+    assert "severity" not in got["webhook"]
+
+
+async def test_link_line_is_plain(sent):
+    """emoji 只留標題那一個（使用者 2026-10-20：「emoji 過多了適量就好」）。"""
+    await nc.send_zulip({"zulip_site": "https://z", "zulip_bot_email": "b", "zulip_api_key": "k",
+                         "zulip_stream": "s"}, "⚠️ Sub", "Body", link=URL)
+    assert sent[0]["data"]["content"] == f"**⚠️ Sub**\nBody\n[前往檢視]({URL})"
+
+
+def test_anomaly_notifications_name_a_few_examples():
+    from app.services.anomaly import _notify_examples
+    items = [{"ip": "192.0.2.1"}, {"ip": "192.0.2.2"}, {"mac": "00:00:5e:00:53:01"}, {"ip": "192.0.2.4"}]
+    assert _notify_examples(items) == ["192.0.2.1", "192.0.2.2", "00:00:5e:00:53:01"]
+    assert _notify_examples([{"other": 1}]) == []
+
+
+
+def _rich(**k: Any):
+    base = dict(title="⚠️ 異常偵測：2 類有新發現", link=URL, severity="warning", rows=[
+        nc.Row("IP 衝突", "新增 1 筆，共 12 筆", ["192.0.2.13"], URL + "&a"),
+        nc.Row("類型或 OS 突變", "新增 3 筆，共 28 筆", ["192.0.2.20", "192.0.2.21"], URL + "&b", more=True)])
+    base.update(k)
+    return nc.Rich(**base)
+
+
+def test_rich_markdown_layout() -> None:
+    """一個 emoji（標題）、每類一列（名稱是連結、後面接實例）、最後前往檢視；沒有時間與主機名稱（聊天軟體自己有）。"""
+    md = nc.rich_markdown(_rich(), zulip=True)
+    assert md.splitlines() == [
+        "**⚠️ 異常偵測：2 類有新發現**",
+        f"- [IP 衝突]({URL}&a)：新增 1 筆，共 12 筆　`192.0.2.13`",
+        f"- [類型或 OS 突變]({URL}&b)：新增 3 筆，共 28 筆　`192.0.2.20`　`192.0.2.21` …",
+        "", f"[前往檢視]({URL})"]
+    assert "<time:" not in md
+    single = nc.rich_markdown(nc.Rich(title="🚨 疑似登入權杖被盜用", text="說明一句。", link=URL))
+    assert single.splitlines() == ["**🚨 疑似登入權杖被盜用**", "說明一句。", f"[前往檢視]({URL})"]
+
+
+def test_rich_telegram_escapes_and_uses_html() -> None:
+    out = nc.rich_telegram(_rich(text="<script>x</script>"))
+    assert "<b>⚠️ 異常偵測" in out
+    assert "&lt;script&gt;" in out
+    assert "<code>192.0.2.13</code>" in out
+    assert f'<a href="{URL}&amp;a">IP 衝突</a>' in out
+
+
+def test_rich_slack_blocks_and_teams_card() -> None:
+    sl = nc.rich_slack(_rich())
+    assert [b["type"] for b in sl["blocks"]] == ["section", "actions"]
+    assert f"<{URL}&a|IP 衝突>" in sl["blocks"][0]["text"]["text"]
+    assert sl["blocks"][-1]["elements"][0]["url"] == URL
+    card = nc.rich_teams_card(_rich(severity="error"))["attachments"][0]["content"]
+    assert card["body"][0]["style"] == "attention"
+    assert card["actions"][0]["url"] == URL
+
+
+async def test_broadcast_sends_rich_to_every_chat_channel(monkeypatch, sent) -> None:
+    async def fake_cfg(session):
+        return {"telegram_enabled": True, "telegram_token": "T:t", "telegram_chat_id": "-1",
+                "slack_enabled": True, "slack_webhook": "https://hooks.slack/x"}
+    monkeypatch.setattr("app.services.system_config.get_notification_channels", fake_cfg)
+    monkeypatch.setattr(nc, "_public_base", lambda: "https://ipam.example.com/")
+    await nc.broadcast_channels(None, subject="IP 衝突", link="/anomaly", severity="warning", bullets=["192.0.2.1"])
+    tg = next(c for c in sent if "telegram" in c["url"])
+    sl = next(c for c in sent if "slack" in c["url"])
+    assert tg["json"]["parse_mode"] == "HTML"
+    assert "blocks" in sl["json"]

@@ -2,17 +2,17 @@
 
 OWASP 對應：
 - A02：密碼用 argon2id（core.security.hash_password），自動 rehash
-- A07：失敗計數 + 暫時鎖定、JWT 短有效期、refresh token 旋轉
+- A07：失敗計數 + 暫時鎖定（MFA 驗證碼錯誤也算）、存取權杖 15 分鐘、更新權杖每次換發都換新
+  （伺服器端工作階段，見 services/sessions）
 - A09：所有 login 嘗試（成功/失敗）寫入 audit log
 """
 
 from __future__ import annotations
 
-import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Final
 
-from sqlalchemy import func, select
+from sqlalchemy import false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import append_audit
@@ -134,13 +134,7 @@ async def authenticate(
         raise InvalidCredentials
 
     async def _bump_lock(u: User) -> None:
-        u.failed_login_count = (u.failed_login_count or 0) + 1
-        if u.failed_login_count >= _MAX_FAILED_ATTEMPTS:
-            u.locked_until = now + _LOCK_DURATION
-            # 鎖定原本只改欄位就 commit —— 「這個帳號什麼時候被鎖過、從哪個位址打的」
-            # 事後完全查不到。鎖定是資安事件，一定要留下記錄。
-            from app.services.security_alert import audit_lockout
-            await audit_lockout(session, user=u, actor_ip=actor_ip, until=u.locked_until)
+        await register_failure(session, u, actor_ip=actor_ip)
 
     # ───────────── LDAP / AD realm ─────────────
     if realm == "ldap":
@@ -152,10 +146,10 @@ async def authenticate(
         # email 允許重複（同一人常同時有本機與 LDAP 帳號），所以 email 這一路
         # 必須限定在 LDAP 帳號內，否則會撈到同 email 的本機帳號去改它；
         # 且不可用 scalar_one_or_none（多筆同 email 會炸 MultipleResultsFound）
+        ldap_by_email = ((User.email == username) & (User.auth_provider == "ldap")) if "@" in username else false()
         user = (await session.execute(
             select(User).where(
-                (User.username == stored)
-                | ((User.email == username) & (User.auth_provider == "ldap")),
+                (User.username == stored) | ldap_by_email,
             ).order_by((User.username == stored).desc()).limit(1)   # 帳號精準命中優先
         )).scalars().first()
         if user is not None:
@@ -173,25 +167,10 @@ async def authenticate(
             await session.commit()
             raise InvalidCredentials from exc
         if user is None:
-            # email 唯一：若 LDAP 回的 email 已被別的帳號（例如同名本機帳號）佔用，
-            # 改用領域命名空間的 email，避免自動建帳號因 unique 衝突而失敗
-            prov_email = info.email or f"{account}@ldap.local"
-            if prov_email:
-                taken = (await session.execute(
-                    select(User.id).where(User.email == prov_email))).first()
-                if taken:
-                    # 依序退到領域命名空間的 email；仍撞號就加短隨機碼，
-                    # 保證自動建帳號不會因 unique 衝突而整個登入失敗
-                    import uuid as _uuid4
-
-                    for cand in (f"{account}@ldap.local", f"{stored}@ldap.local",
-                                 f"{account}-{_uuid4.uuid4().hex[:8]}@ldap.local"):
-                        if not (await session.execute(
-                                select(User.id).where(User.email == cand))).first():
-                            prov_email = cand
-                            break
+            # 目錄沒有 email 就留空：以前會塞「帳號@ldap.local」，通知信寄過去只會被退信。
+            # email 早就不是唯一鍵（0120），不必再為了避開撞號編地址
             user = User(
-                username=stored, email=prov_email,
+                username=stored, email=(info.email or "").strip(),
                 display_name=info.display_name, auth_provider="ldap",
                 external_subject=info.dn, is_active=True, is_admin=info.is_admin,
             )
@@ -239,9 +218,10 @@ async def authenticate(
     # ───────────── 本機 realm（預設）─────────────
     # 同上：email 可重複 → 以 email 登入時排除 LDAP 帳號（那要走 ldap 領域），
     # 並以帳號精準命中優先、取一筆，避免 MultipleResultsFound
+    # email 是選用的，空字串不是一個 email：只有看起來像 email 的輸入才比對 email 欄位
+    by_email = (User.email == username) & (User.auth_provider != "ldap") if "@" in (username or "") else false()
     stmt = (select(User).where(
-        (User.username == username)
-        | ((User.email == username) & (User.auth_provider != "ldap")),
+        (User.username == username) | by_email,
     ).order_by((User.username == username).desc()).limit(1))
     user = (await session.execute(stmt)).scalars().first()
     if user is None:
@@ -291,25 +271,31 @@ async def authenticate(
     return user
 
 
-def issue_access_token(user: User) -> str:
-    return create_access_token(
-        subject=str(user.id),
-        extra_claims={
-            "username": user.username,
-            "is_admin": user.is_admin,
-            "type": "access",
-        },
-    )
+async def register_failure(session: AsyncSession, user: User, *, actor_ip: str | None) -> None:
+    """密碼或 MFA 驗證碼錯一次：累計失敗次數，達門檻就鎖定（並留稽核）。
+
+    MFA 驗證碼錯誤以前不算進來：知道密碼的人可以對 6 位數驗證碼無限次嘗試（只受每分鐘限流）。"""
+    now = datetime.now(UTC)
+    user.failed_login_count = (user.failed_login_count or 0) + 1
+    if user.failed_login_count >= _MAX_FAILED_ATTEMPTS:
+        user.locked_until = now + _LOCK_DURATION
+        # 鎖定原本只改欄位就 commit —— 「這個帳號什麼時候被鎖過、從哪個位址打的」
+        # 事後完全查不到。鎖定是資安事件，一定要留下記錄。
+        from app.services.security_alert import audit_lockout
+        await audit_lockout(session, user=user, actor_ip=actor_ip, until=user.locked_until)
 
 
-def issue_refresh_token(user: User) -> str:
-    """Refresh token 走 JWT；放在 HttpOnly cookie。"""
-    settings = get_settings()
-    return create_access_token(
-        subject=str(user.id),
-        extra_claims={"type": "refresh", "jti": secrets.token_urlsafe(16)},
-        expires_in_minutes=settings.refresh_token_expire_days * 24 * 60,
-    )
+def is_locked(user: User) -> bool:
+    return user.locked_until is not None and user.locked_until > datetime.now(UTC)
+
+
+def issue_access_token(user: User, *, sid: object | None = None) -> str:
+    """存取權杖。正式的登入流程一律帶 `sid`（工作階段），撤銷工作階段就立即失效；
+    不帶 sid 的只有測試在用（守門：tests/test_session_revocation.py 檢查 app/ 裡每個呼叫都帶 sid）。"""
+    claims: dict[str, object] = {"username": user.username, "is_admin": user.is_admin, "type": "access"}
+    if sid is not None:
+        claims["sid"] = str(sid)
+    return create_access_token(subject=str(user.id), extra_claims=claims)
 
 
 def decode_token(token: str, *, expected_type: str) -> dict[str, object]:

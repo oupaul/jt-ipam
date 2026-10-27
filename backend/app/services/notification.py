@@ -3,7 +3,7 @@
 OWASP 對應：
 - A02：Webhook secret 用 AES-GCM 加密儲存（aad 綁 webhook id）
 - A09：每次 Webhook 出站結果寫 audit
-- A10：對外請求一律走 safe_http；URL 經白名單驗證
+- A10：對外請求一律走 safe_http；URL 經允許清單驗證
 """
 
 from __future__ import annotations
@@ -78,13 +78,29 @@ async def push_notification(
 
 
 # ─────────────────── 通知矩陣分派（站內 + Email，依矩陣設定）───────────────────
+#: 舊版在 LDAP 目錄沒有 email 時自動塞的假地址：寄過去只會被退信
+_PLACEHOLDER_DOMAINS = ("@ldap.local",)
+
+
+def deliverable_email(addr: str | None) -> bool:
+    """這個地址寄得出去嗎：空的與舊版自動產生的假地址不寄。"""
+    a = (addr or "").strip().lower()
+    return bool(a) and "@" in a and not a.endswith(_PLACEHOLDER_DOMAINS)
+
+
 async def email_users(
     session: AsyncSession, recipients: list[str | None], subject: str, body_text: str,
+    *, link: str | None = None,
 ) -> None:
-    """對一組收件者寄信（best-effort；email 管道沒開或單筆失敗都不會中斷流程）。"""
-    tos = [r for r in recipients if r]
+    """對一組收件者寄信（best-effort；email 管道沒開或單筆失敗都不會中斷流程）。
+
+    `link`（站內路徑）會換成完整網址附在信末「前往檢視」。"""
+    tos = [r for r in recipients if deliverable_email(r)]
     if not tos:
         return
+    if link:
+        from app.services.notify_channels import LINK_LABEL, absolute_link
+        body_text = f"{body_text}\n\n{LINK_LABEL}：{absolute_link(link)}"
     from app.services.email import send_email_via_config
     from app.services.system_config import get_notification_channels
     try:
@@ -108,9 +124,9 @@ async def notify_admins_event(
 ) -> int:
     """依通知矩陣把單一事件發給所有 admin（站內 + Email）。回傳收到站內通知的人數。"""
     from app.models.user import User
-    from app.services.system_config import get_notification_matrix
+    from app.services.system_config import get_notification_matrix, notify_wanted
     ch = (await get_notification_matrix(session)).get(event, {"in_app": True, "email": False})
-    if not (ch.get("in_app") or ch.get("email")):
+    if not notify_wanted(ch):
         return 0
     admins = (await session.execute(
         select(User).where(User.is_admin.is_(True), User.is_active.is_(True))
@@ -124,9 +140,9 @@ async def notify_admins_event(
                 title_key=title_key, body_key=body_key, params=params)
             sent += 1
     if ch.get("email"):
-        await email_users(session, [a.email for a in admins], f"[jt-ipam] {title}", body or title)
+        await email_users(session, [a.email for a in admins], f"[jt-ipam] {title}", body or title, link=link)
     from app.services.notify_channels import broadcast_channels
-    await broadcast_channels(session, subject=title, text=body)
+    await broadcast_channels(session, subject=title, text=body, link=link, severity=severity, event=event)
     return sent
 
 

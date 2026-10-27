@@ -3,7 +3,9 @@
 OS 資訊有三個來源，各自存在不同地方：
   - scanner  : 掃描代理 nmap 偵測 → ip_addresses.os_guess
   - librenms : LibreNMS 裝置 → devices.os（IP 經 device_id 關聯）
-  - wazuh    : Wazuh 代理 → wazuh_agents.os_platform / os_version（以 IP 對映）
+  - wazuh    : Wazuh 代理 → wazuh_agents.os_name（沒有才用 os_platform / os_version）（以 IP 對映）
+  - ocs      : OCS 代理 → ip_addresses.os_ocs
+  - rustdesk : RustDesk 客戶端心跳 → rustdesk_peers.os_name（已對應到這筆 IP 的）
 
 依設定的順序取第一個有值的來源當作此 IP 的「有效 OS」。compute-on-read：不另存欄位，
 由 `effective_os()` 即時彙整（OS 不常變，且免 migration / sync hook）。
@@ -23,8 +25,9 @@ from app.core.os_fingerprint import normalize_os
 from app.services.precedence import Precedence
 
 OS_KEY = "os_precedence"
-OS_SOURCES: list[str] = ["scanner", "librenms", "wazuh", "ocs"]
-DEFAULT_ORDER: list[str] = ["librenms", "wazuh", "ocs", "scanner"]
+OS_SOURCES: list[str] = ["scanner", "librenms", "wazuh", "ocs", "rustdesk"]
+# rustdesk 排最後（使用者 2026-10-06）：既有站台存的順序裡沒有它，Precedence 會依預設次序補在最後
+DEFAULT_ORDER: list[str] = ["librenms", "wazuh", "ocs", "scanner", "rustdesk"]
 
 # OS 沒有「停用個別來源」的需求，protected 留空即可（沒有 manual 這個來源）
 _P = Precedence(key=OS_KEY, sources=tuple(OS_SOURCES),
@@ -52,7 +55,10 @@ async def _candidates(session: AsyncSession, ip: Any) -> dict[str, str]:
     if ip.os_guess:
         out["scanner"] = ip.os_guess
     # OCS 代理回報的 OS（獨立欄位，排在 scanner 之上 → 蓋過 nmap 指紋猜測）
-    if getattr(ip, "os_ocs", None):
+    since = getattr(ip, "device_since", None)
+    seen_ocs = getattr(ip, "last_seen_ocs", None)
+    # 位址換手之後沒再盤點過的 OCS 資料說的是上一台（2026-10-12）
+    if getattr(ip, "os_ocs", None) and (since is None or (seen_ocs is not None and seen_ocs >= since)):
         out["ocs"] = ip.os_ocs
     if ip.device_id:
         from app.models.device import Device
@@ -62,16 +68,36 @@ async def _candidates(session: AsyncSession, ip: Any) -> dict[str, str]:
             out["librenms"] = f"{dev.os}{' ' + ver if ver else ''}"
     # Wazuh 代理以 IP 對映
     from app.models.wazuh import WazuhAgent
-    wa = (await session.execute(
-        select(WazuhAgent).where(WazuhAgent.ip == str(ip.ip)).limit(1)
-    )).scalars().first()
-    # 只比對 IP 不夠：DHCP 位址會被回收，失聯 agent 的舊登記會把別台機器的 OS 貼過來
     from app.services.wazuh import agent_represents_ip
-    if wa is not None and not agent_represents_ip(wa, ip):
-        wa = None
-    if wa is not None and wa.os_platform:
-        ver = wa.os_version
-        out["wazuh"] = f"{wa.os_platform}{' ' + ver if ver else ''}"
+
+    # 只比對 IP 不夠：DHCP 位址會被回收，失聯 agent 的舊登記會把別台機器的 OS 貼過來。
+    # 同一個 IP 可能有好幾個 agent（舊的失聯、新的連著）：以前 .limit(1) 任意取一個，
+    # 取到舊的就被判不代表 → 連著的那個反而沒用上。改成在「還代表這個 IP」的裡面挑，
+    # 連著的優先、再來是最近回報的
+    agents = [a for a in (await session.execute(
+        select(WazuhAgent).where(WazuhAgent.ip == str(ip.ip)).limit(20)
+    )).scalars().all() if agent_represents_ip(a, ip)]
+    agents.sort(key=lambda a: ((a.status or "").lower() == "active",
+                               a.last_keep_alive.timestamp() if a.last_keep_alive else 0.0),
+                reverse=True)
+    wa = agents[0] if agents else None
+    if wa is not None:
+        from app.core.os_fingerprint import wazuh_os_display
+        shown = wazuh_os_display(wa.os_name, wa.os_platform, wa.os_version)
+        if shown:
+            out["wazuh"] = shown
+    # RustDesk 客戶端回報的作業系統（只用已對應到這筆 IP 的裝置；預設排最後）
+    from app.models.rustdesk import RustDeskPeer
+    rd_q = select(RustDeskPeer.os_name).where(RustDeskPeer.address_id == ip.id, RustDeskPeer.match_status == "matched",
+                                              RustDeskPeer.os_name.is_not(None))
+    if since is not None:     # 換手之前就沒再上線的 peer 說的是上一台
+        rd_q = rd_q.where(RustDeskPeer.last_online_at >= since)
+    rd_os = (await session.execute(
+        rd_q.order_by(RustDeskPeer.online.desc(), RustDeskPeer.last_online_at.desc().nulls_last()).limit(1)
+    )).scalar_one_or_none()
+    if rd_os:
+        from app.services.rustdesk import os_display
+        out["rustdesk"] = os_display(rd_os) or rd_os
     return out
 
 
@@ -84,4 +110,14 @@ async def effective_os(session: AsyncSession, ip: Any) -> dict[str, Any]:
     src, raw = _P.pick(dict(cand), order, disabled)
     if not raw:
         return {"os_guess": None, "os_family": None, "os_source": None}
-    return {"os_guess": raw, "os_family": normalize_os(raw), "os_source": src}
+    family = normalize_os(raw)
+    if family == "unknown":
+        # 優先的來源寫的是對照表不認得的名稱：家族改用其他來源判得出的（依同一個順序），顯示文字仍用優先來源的原文。
+        # 一台 Bazzite 桌機：Wazuh 只說「Bazzite」，LibreNMS 說 linux、OCS 說「… (Kinoite)」—— 明明有人知道它是 Linux（2026-10-16）
+        for s in [*order, *cand]:
+            if s in cand and s not in disabled and s != src:
+                f = normalize_os(cand[s])
+                if f != "unknown":
+                    family = f
+                    break
+    return {"os_guess": raw, "os_family": family, "os_source": src}

@@ -29,6 +29,7 @@ import { humanToolName } from "@/utils/toolLabel";
 import { CancelIcon, SendIcon, ChatHistoryIcon, ToolsIcon, RefreshIcon, WarnIcon, ExpandIcon, ReduceIcon } from "@/icons";
 import { useAuthStore } from "@/stores/auth";
 import { renderMarkdown } from "@/utils/markdown";
+import { aiErrText } from "@/utils/wsError";
 
 const { t, te } = useI18n();
 const route = useRoute();
@@ -266,7 +267,8 @@ async function send() {
           partial.value = "";
           toolStatus.value = "";
         } else if (ev.type === "error") {
-          msg.error(friendlyChatError(ev.detail));
+          // 有代碼就照語系翻（管理員另外附原因）；舊格式才走字串比對
+          msg.error(ev.code ? aiErrText(ev) : friendlyChatError(ev.detail));
         }
       },
       inflight.signal,
@@ -421,9 +423,7 @@ async function removeConversation(id: string) {
               <span class="chat-act-label">{{ t("chat.reset") }}</span>
             </n-button>
           </div>
-          <n-button quaternary circle size="small" :title="t('common.cancel')" @click="open = false">
-            <template #icon><n-icon :size="18"><CancelIcon /></n-icon></template>
-          </n-button>
+          <!-- 放大／縮小在前、關閉固定在最右邊（使用者 2026-10-08） -->
           <n-button quaternary circle size="small" class="chat-expand-btn"
                     :title="expanded ? t('chat.collapse') : t('chat.expand')"
                     @click="expanded = !expanded">
@@ -433,6 +433,9 @@ async function removeConversation(id: string) {
                 <ExpandIcon v-else />
               </n-icon>
             </template>
+          </n-button>
+          <n-button quaternary circle size="small" :title="t('common.close')" data-testid="chat-close" @click="open = false">
+            <template #icon><n-icon :size="18"><CancelIcon /></n-icon></template>
           </n-button>
         </div>
       </n-space>
@@ -573,7 +576,10 @@ async function removeConversation(id: string) {
   font-size: 24px;
   cursor: pointer;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-  z-index: 9000;
+  /* 在頁面內容之上、但在彈出層底下：Naive UI 的確認框／下拉／對話框從 2000 起跳，
+   *  原本 9000 會把開在右下角的「確定」蓋住（點到的是 AI 助手）；手機側欄 2000 也要蓋得過它。
+   *  （e2e/chat-fab-overlays.spec.ts） */
+  z-index: 1900;
   /* 平常半透明、不搶視覺；移過去才變實心 */
   opacity: 0.45;
   transition: opacity .15s ease, transform .15s ease;

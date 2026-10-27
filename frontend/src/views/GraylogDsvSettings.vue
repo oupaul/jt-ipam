@@ -12,7 +12,8 @@ import {
   NDrawer, NDrawerContent, NDataTable, useMessage, type DataTableColumns,
 } from "naive-ui";
 import { ExportIcon, SaveIcon, RefreshIcon, CopyIcon, InfoIcon } from "@/icons";
-import { getGraylogDsv, putGraylogDsv, type GraylogDsv } from "@/api/system";
+import { getGraylogDsv, putGraylogDsv, revealGraylogDsvToken, type GraylogDsv } from "@/api/system";
+import { fmtDate } from "@/utils/datetime";
 import { listFirewalls } from "@/api/integrations";
 import { Virt } from "@/api/phase3";
 import { autoSort } from "@/composables/useTableSort";
@@ -24,7 +25,30 @@ import { apiErrMsg } from "@/api/client";
 const { t } = useI18n();
 const msg = useMessage();
 
-const dsv = ref<GraylogDsv>({ enabled: false, fmt: "csv", path: "ip-fqdn", token: "" });
+const dsv = ref<GraylogDsv>({
+  enabled: false, fmt: "csv", path: "ip-fqdn", token_set: false, token_expires_at: null,
+  allow_plain_http: false, allowed_sources: [],
+});
+// 權杖不再隨設定回傳（2026-10-09）：按「顯示」或複製網址時才向後端取，後端每次都留稽核。
+// 還沒取之前網址裡的權杖以 MASK 顯示
+const MASK = "********";
+const token = ref("");
+const urlToken = computed(() => token.value || MASK);
+const tokenShown = ref(false);
+const tokenDays = ref(365);
+const tokenDayOptions = computed(() => [30, 90, 180, 365].map((d) => ({ label: t("llm_settings.mcp_key_days_n", { n: d }), value: d })));
+const tokenExpired = computed(() => !!dsv.value.token_expires_at && new Date(dsv.value.token_expires_at).getTime() <= Date.now());
+const sourcesText = ref("");
+async function ensureToken(): Promise<string> {
+  if (!token.value && dsv.value.token_set) token.value = await revealGraylogDsvToken();
+  return token.value;
+}
+async function toggleToken() {
+  if (!tokenShown.value) {
+    try { await ensureToken(); } catch (e) { msg.error(apiErrMsg(e)); return; }
+  }
+  tokenShown.value = !tokenShown.value;
+}
 const saving = ref(false);
 const loading = ref(false);
 const fmtOpts = [{ label: "CSV (,)", value: "csv" }, { label: "TSV (Tab)", value: "tsv" }];
@@ -34,24 +58,25 @@ const DSV_HTTP_PORT = 8088;
 const fwDsv = ref<{ id: string; name: string }[]>([]);
 const pveClusters = ref<{ id: string; name: string }[]>([]);
 function fwLookupUrl(id: string, kind: "rule-aliases" | "aliases", http = false): string {
-  if (!dsv.value.token) return "";
+  if (!dsv.value.token_set) return "";
   const base = http ? `http://${location.hostname}:${DSV_HTTP_PORT}` : location.origin;
-  return `${base}/api/v1/lookup/firewall/${id}/${kind}?token=${dsv.value.token}`;
+  return `${base}/api/v1/lookup/firewall/${id}/${kind}?token=${urlToken.value}`;
 }
 function proxmoxVmsUrl(clusterId: string, http = false): string {
-  if (!dsv.value.token) return "";
+  if (!dsv.value.token_set) return "";
   const base = http ? `http://${location.hostname}:${DSV_HTTP_PORT}` : location.origin;
-  return `${base}/api/v1/lookup/proxmox/${clusterId}/vms?token=${dsv.value.token}`;
+  return `${base}/api/v1/lookup/proxmox/${clusterId}/vms?token=${urlToken.value}`;
 }
 function slugify(s: string): string {
   return (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "fw";
 }
 
 const dsvUrl = computed(() =>
-  dsv.value.token ? `${location.origin}/api/v1/lookup/${dsv.value.path}?token=${dsv.value.token}` : "");
+  dsv.value.token_set ? `${location.origin}/api/v1/lookup/${dsv.value.path}?token=${urlToken.value}` : "");
+// 明文 8088 沒打開時不給網址（後端會回 404）
 const dsvUrlHttp = computed(() =>
-  dsv.value.token
-    ? `http://${location.hostname}:${DSV_HTTP_PORT}/api/v1/lookup/${dsv.value.path}?token=${dsv.value.token}`
+  dsv.value.token_set && dsv.value.allow_plain_http
+    ? `http://${location.hostname}:${DSV_HTTP_PORT}/api/v1/lookup/${dsv.value.path}?token=${urlToken.value}`
     : "");
 const gSep = computed(() => (dsv.value.fmt === "tsv" ? "\\t" : ","));
 
@@ -139,7 +164,7 @@ const PICKER = computed(() => [
   { key: "mapping", label: t("settings.system.graylog_tbl_mapping") },
   { key: "enabled", label: t("common.status") },
 ]);
-const { visibleKeys, setVisible, reset } = useColumnPrefs(
+const { visibleKeys, setVisible, reset, order, setOrder, orderColumns } = useColumnPrefs(
   "graylog_dsv_sources", ["name", "mapping", "enabled"], ["name", "mapping", "enabled"]);
 const { query, filtered } = useTableQuickFilter(dsvSources);
 const allCols = computed<DataTableColumns<DsvSource>>(() => autoSort([
@@ -154,7 +179,7 @@ const allCols = computed<DataTableColumns<DsvSource>>(() => autoSort([
       onClick: (e: MouseEvent) => { e.stopPropagation(); openDetail(r.id); } },
       { icon: () => h(NIcon, null, () => h(InfoIcon)), default: () => t("settings.system.graylog_detail") }) },
 ]));
-const cols = computed(() => allCols.value.filter((c: any) => c.key === "_" || visibleKeys.value.includes(String(c.key))));
+const cols = computed(() => orderColumns(allCols.value.filter((c: any) => c.key === "_" || visibleKeys.value.includes(String(c.key)))));
 function rowProps(row: DsvSource) {
   return {
     style: "cursor: pointer",
@@ -178,7 +203,10 @@ const selected = computed<DsvSource>(() => dsvSources.value.find((s) => s.id ===
 
 async function load() {
   loading.value = true;
-  try { dsv.value = await getGraylogDsv(); } catch { /* ignore */ }
+  try {
+    dsv.value = await getGraylogDsv();
+    sourcesText.value = (dsv.value.allowed_sources || []).join("\n");
+  } catch { /* ignore */ }
   try {
     const r = await listFirewalls(200, 0);
     fwDsv.value = r.items.filter((f) => f.expose_dsv).map((f) => ({ id: f.id, name: f.name }));
@@ -195,19 +223,29 @@ async function save(regenerate = false) {
   try {
     dsv.value = await putGraylogDsv({
       enabled: dsv.value.enabled, fmt: dsv.value.fmt, path: dsv.value.path, regenerate_token: regenerate,
+      token_days: tokenDays.value, allow_plain_http: dsv.value.allow_plain_http,
+      allowed_sources: sourcesText.value.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean),
     });
+    sourcesText.value = dsv.value.allowed_sources.join("\n");
+    if (regenerate) { token.value = ""; tokenShown.value = false; }
     msg.success(t("common.saved"));
   } catch (e) { msg.error(apiErrMsg(e)); } finally { saving.value = false; }
 }
-function copy(text: string) {
-  if (text) { void navigator.clipboard.writeText(text); msg.success(t("common.copied_clipboard")); }
+// 網址裡的權杖還是 MASK（還沒顯示過）→ 先向後端取（留稽核）再複製
+async function copy(text: string) {
+  if (!text) return;
+  try {
+    if (text.includes(MASK)) text = text.split(MASK).join(await ensureToken());
+    await navigator.clipboard.writeText(text);
+    msg.success(t("common.copied_clipboard"));
+  } catch (e) { msg.error(apiErrMsg(e)); }
 }
 // 教學表格內任何 <code>（要貼進 Graylog 的值）點一下就複製
 function onCodeCopy(e: MouseEvent) {
   const el = e.target as HTMLElement;
   if (el && el.tagName === "CODE") {
     const txt = (el.innerText || el.textContent || "").trim();
-    if (txt) { void navigator.clipboard.writeText(txt); msg.success(t("common.copied_clipboard")); }
+    if (txt) void copy(txt);       // 網址裡的權杖還是遮住的 → copy() 會先取回再複製
   }
 }
 
@@ -288,13 +326,50 @@ onMounted(() => { void load(); });
         </div>
         <div class="gd-panel">
           <label class="gd-panel-label">{{ t("settings.system.graylog_token_label") }}</label>
-          <n-button size="small" :loading="saving" @click="() => save(true)">
-            <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("settings.system.graylog_regen") }}
-          </n-button>
+          <n-space size="small" align="center" :wrap-item="false" style="flex-wrap: wrap">
+            <code class="gd-token" data-testid="dsv-token">{{ tokenShown ? token : MASK }}</code>
+            <n-tag v-if="dsv.token_expires_at" size="small" :bordered="false" :type="tokenExpired ? 'error' : 'default'"
+                   data-testid="dsv-token-expiry">
+              {{ tokenExpired ? t("llm_settings.mcp_key_expired", { date: fmtDate(dsv.token_expires_at) })
+                              : t("llm_settings.mcp_key_expires", { date: fmtDate(dsv.token_expires_at) }) }}
+            </n-tag>
+            <n-button v-if="dsv.token_set" size="small" data-testid="dsv-token-show" @click="toggleToken">
+              {{ tokenShown ? t("common.hide") : t("common.show") }}
+            </n-button>
+            <n-select v-model:value="tokenDays" :options="tokenDayOptions" size="small" style="width: 110px"
+                      :aria-label="t('llm_settings.mcp_key_days')" />
+            <n-button size="small" :loading="saving" @click="() => save(true)">
+              <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("settings.system.graylog_regen") }}
+            </n-button>
+          </n-space>
+          <div class="hint">{{ t("settings.system.graylog_token_hint2") }}</div>
         </div>
       </div>
 
-      <n-alert v-if="!dsv.token" type="warning" :show-icon="true" style="margin-top:14px">
+      <!-- 傳輸安全：明文 8088 與允許的來源 -->
+      <div class="gd-config-row">
+        <div class="gd-panel">
+          <label class="gd-panel-label">{{ t("settings.system.graylog_plain_label") }}</label>
+          <n-switch v-model:value="dsv.allow_plain_http" data-testid="dsv-allow-plain" @update:value="() => save()" />
+          <n-alert v-if="dsv.allow_plain_http" type="warning" :show-icon="true" style="margin-top:8px">
+            {{ t("settings.system.graylog_plain_warn") }}
+          </n-alert>
+          <div v-else class="hint">{{ t("settings.system.graylog_plain_off_hint") }}</div>
+        </div>
+        <div class="gd-panel">
+          <label class="gd-panel-label">{{ t("settings.system.graylog_sources_label") }}</label>
+          <n-input v-model:value="sourcesText" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }"
+                   :placeholder="t('settings.system.graylog_sources_ph')" data-testid="dsv-sources" />
+          <n-space size="small" style="margin-top: 6px">
+            <n-button size="small" type="primary" :loading="saving" @click="() => save()">
+              <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
+            </n-button>
+          </n-space>
+          <div class="hint">{{ t("settings.system.graylog_sources_hint") }}</div>
+        </div>
+      </div>
+
+      <n-alert v-if="!dsv.token_set" type="warning" :show-icon="true" style="margin-top:14px">
         {{ t("settings.system.graylog_need_token") }}
         <n-button size="tiny" type="primary" style="margin-left:8px" :loading="saving" @click="() => save(true)">
           {{ t("settings.system.graylog_gen_token") }}
@@ -309,7 +384,8 @@ onMounted(() => { void load(); });
           <n-button :loading="loading" @click="load">
             <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("common.refresh") }}
           </n-button>
-          <ColumnPicker :all="PICKER" :visible="visibleKeys" @update:visible="setVisible" @reset="reset" />
+          <ColumnPicker :all="PICKER" :visible="visibleKeys" @update:visible="setVisible" @reset="reset"
+                        :order="order" @update:order="setOrder" />
         </n-space>
         <n-data-table
           :columns="cols" :data="filtered" :loading="loading" :bordered="false"
@@ -462,6 +538,7 @@ onMounted(() => { void load(); });
 </template>
 
 <style scoped>
+.gd-token { font-size: 12px; word-break: break-all; padding: 2px 6px; border-radius: 4px; background: rgba(128,128,128,.12); }
 .gd-wrap { width: 100%; }
 .gd-intro { font-size: 13px; opacity: .75; margin: 0 0 14px; line-height: 1.6; }
 .gd-row { display: flex; align-items: center; gap: 8px; }
@@ -497,6 +574,11 @@ onMounted(() => { void load(); });
 .gd-tbl td { padding: 5px 8px; border: 1px solid rgba(128,128,128,.18); vertical-align: top; }
 /* 左欄（欄位名）淡底，跟右欄（值）做區分 */
 .gd-tbl td:first-child { width: 200px; opacity: .85; white-space: nowrap; background: rgba(128,128,128,.07); font-weight: 500; }
+@media (max-width: 640px) {
+  .gd-tbl td:first-child { width: 34%; white-space: normal; }
+  .gd-tbl td { word-break: break-word; }
+  .gd-tbl code { word-break: break-all; }
+}
 code { background: rgba(128,128,128,.14); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 /* 教學區的值點一下即複製 */
 .guide-body code { cursor: pointer; transition: background .12s ease; }

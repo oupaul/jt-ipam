@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { wsErrorText } from "@/utils/wsError";
+import { credSuffix, defaultCredId } from "@/utils/savedCreds";
+import { wsErrorText, revokedCloseText } from "@/utils/wsError";
 /**
  * BMC 主控台（IPMI SOL）— 瀏覽器內序列主控台，版面比照 SshTerminal。
  * 與後端 `/addresses/{id}/bmc/ws` 連線：先送 JSON config，之後資料雙向走 binary（鍵盤 ↔ SOL）。
@@ -18,6 +19,7 @@ import "@xterm/xterm/css/xterm.css";
 import { requestBmcTicket, buildBmcWsUrl, listBmcCredentials, createBmcCredential } from "@/api/bmc";
 import type { SshCredential } from "@/api/ssh";
 import { TerminalIcon, CancelIcon, RefreshIcon, InfoIcon, FitIcon } from "@/icons";
+import ConnElapsed from "@/components/ConnElapsed.vue";
 import ConsoleDisconnectedOverlay from "@/components/ConsoleDisconnectedOverlay.vue";
 
 const props = withDefaults(defineProps<{
@@ -58,8 +60,9 @@ async function loadCreds() {
     creds.value = await listBmcCredentials(props.addressId);
     credOptions.value = [
     { label: t('ssh.cred_manual'), value: null as unknown as string },
-    ...creds.value.map((c) => ({ label: `${c.label} (${c.username})`, value: c.id }))];
-    if (creds.value.length && !selectedCredId.value) selectedCredId.value = creds.value[0].id;
+    ...creds.value.map((c) => ({ label: `${c.label} (${c.username})${credSuffix(t, c)}`, value: c.id }))];
+    // 位址換手前存的不自動帶入（utils/savedCreds）
+    if (!selectedCredId.value) selectedCredId.value = defaultCredId(creds.value);
   } catch { /* ignore */ }
 }
 void loadCreds();
@@ -85,6 +88,8 @@ async function connect() {
         password: form.value.password, target_ip_id: props.addressId,
       });
       selectedCredId.value = c.id;
+      // 同時重新載入清單：否則下拉找不到這個 id 的選項，會直接顯示一串 UUID（noVNC 踩過）
+      void loadCreds();
     } catch { /* 存失敗不擋連線 */ }
   }
 
@@ -123,7 +128,11 @@ async function connect() {
       } catch { /* ignore */ }
     } else { term?.write(new Uint8Array(ev.data as ArrayBuffer)); }
   };
-  ws.onclose = () => { if (phase.value === "connected") phase.value = "closed"; };
+  ws.onclose = (ev) => {
+    const revoked = revokedCloseText(ev);
+    if (revoked) { phase.value = "error"; errorMsg.value = revoked; }
+    else if (phase.value === "connected") phase.value = "closed";
+  };
   ws.onerror = () => { if (phase.value === "connecting") { phase.value = "error"; errorMsg.value = t("bmc.ws_failed"); } };
 }
 
@@ -152,7 +161,7 @@ onBeforeUnmount(() => { window.removeEventListener("resize", onWinResize); teard
   <div class="bmc-wrap" :class="{ 'bmc-full': fullHeight, 'bmc-center': fullHeight && phase === 'form' }">
     <!-- 連線設定表單 -->
     <div v-if="phase === 'form'" class="bmc-form">
-      <n-card size="small" :bordered="true">
+      <n-card size="small" :bordered="true" class="console-connect-card">
         <template #header>
           <span style="display:flex;align-items:center;gap:8px">
             <n-icon :component="TerminalIcon" :size="18" />
@@ -164,7 +173,7 @@ onBeforeUnmount(() => { window.removeEventListener("resize", onWinResize); teard
           </span>
         </template>
         <!-- 已存帳密 -->
-        <div v-if="credOptions.length" class="bmc-saved-row">
+        <div v-if="creds.length" class="bmc-saved-row">
           <span class="bmc-saved-label">{{ t("bmc.saved_cred") }}</span>
           <n-select v-model:value="selectedCredId" :options="credOptions" clearable size="small"
                     :placeholder="t('bmc.saved_cred_ph')" style="flex:1" />
@@ -211,6 +220,7 @@ onBeforeUnmount(() => { window.removeEventListener("resize", onWinResize); teard
           <n-tag v-if="hostname" size="small" :bordered="false" round>{{ hostname }}</n-tag>
           <span class="conn-proto conn-proto--bmc">BMC SOL</span>
           <span v-if="connInfo" class="bmc-meta">{{ connInfo }}</span>
+          <ConnElapsed :active="phase === 'connected'" />
         </span>
         <n-space :size="8" align="center">
           <n-tooltip v-if="phase === 'connected'" :delay="0" trigger="hover" placement="bottom">
@@ -348,9 +358,13 @@ proxmox-boot-tool refresh</pre>
 .bmc-disp { position: relative; }
 .bmc-disp.bmc-full { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .bmc-term-area.bmc-full { flex: 1; min-height: 0; }
-.bmc-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 2px; gap: 8px; }
+.bmc-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 4px 2px; gap: 8px; }
 .bmc-status { font-size: 13px; display: inline-flex; align-items: center; gap: 7px;
   padding: 3px 11px; border-radius: 999px; font-weight: 500; background: rgba(128,128,128,.12); color: #888; }
+/* 手機：內容放不下時整顆標籤換到下一行，不要把「連線錯誤」擠成直排、也不要超出畫面 */
+.bmc-status { flex-wrap: wrap; row-gap: 4px; max-width: 100%; min-width: 0; }
+.bmc-status > * { flex: none; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 640px) { .bmc-status { border-radius: 14px; } }
 .bmc-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
 .bmc-ip { opacity: .7; font-variant-numeric: tabular-nums; }
 .bmc-meta { opacity: .7; font-size: 12px; }

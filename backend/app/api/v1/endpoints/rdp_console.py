@@ -30,15 +30,23 @@ from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
-from sqlalchemy import func, select
+from sqlalchemy import String, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser
 from app.core.audit import append_audit
 from app.core.config import get_settings
+from app.core.console_guard import (
+    console_target_blocked,
+    note_ticket,
+    require_console_target,
+    ticket_fields,
+    watch_console,
+)
 from app.core.db import SessionLocal, get_session
 from app.core.rate_limit import _redis_client
 from app.core.security import envelope_decrypt
+from app.core.sqlin import in_values
 from app.core.tickets import take_once
 from app.core.ui_error import detail_of, ui_detail
 from app.core.ws_timeouts import HANDSHAKE_TIMEOUT, WsTimeout, receive_text_within
@@ -50,9 +58,6 @@ from app.schemas.address import IPAddressRead
 from app.services import console_route
 from app.services.permission import (
     can_use_rdp,
-    get_object_permission,
-    has_permission,
-    visible_ids,
 )
 from app.services.rdp_freerdp import UnsupportedCharacter  # 模組層沒有硬相依，沒裝也載得起來
 
@@ -79,6 +84,8 @@ _CONNECT_TIMEOUT = 20.0       # RDP（NLA）連線逾時（aardwolf：單純的 
 #: 本來就比「開一條 socket」久。共用 20 秒會在機器有負載時把成功的連線判成逾時
 #: （2026-09-17 正式環境上就是這樣）。
 _CONNECT_TIMEOUT_FREERDP = 45.0
+#: guacd：等到第一個畫面才算連上（NLA 登入、慢的目標都在這段時間裡）
+_CONNECT_TIMEOUT_GUACD = 45.0
 #: RDP 標準埠。原本沒有這個常數（靠 aardwolf 的預設），但走跳板時
 #: 必須明確知道要轉發到哪個埠，而且 URL 也要帶上（見下方註解）。
 _RDP_PORT = 3389
@@ -157,47 +164,20 @@ async def list_connection_targets(
 
     與 can_use_ssh/can_use_rdp 一致的 deny-by-default：admin 全部；否則限可見子網路，
     再依「對該子網路有 write」或「具 can_ssh 能力且至少 read」逐筆放行。每筆回 ssh/rdp 兩旗標。
+    相容 RustDesk 的網頁連線（can_use_rustdesk 同一套權限）：IP 開了 rustdesk_enabled、對應到的 RustDesk
+    裝置所在的伺服器開放網頁連線，才算一種可用的連線；只開了 RustDesk 卻不能網頁連線的 IP 不列出。
     """
-    stmt = select(IPAddress).where(
-        IPAddress.ssh_enabled.is_(True)
-        | IPAddress.rdp_enabled.is_(True)
-        | IPAddress.vnc_enabled.is_(True)
-        | IPAddress.novnc_enabled.is_(True)
-        | IPAddress.bmc_enabled.is_(True)
-    )
-    vis: set[uuid.UUID] | None = None  # None = 不限（admin 或萬用可見）
-    if not user.is_admin:
-        vis = await visible_ids(session, user=user, object_type="subnet")
-        if vis is not None:
-            if not vis:
-                return []
-            stmt = stmt.where(IPAddress.subnet_id.in_(vis))
-    rows = (await session.execute(stmt)).scalars().all()
-
-    perm_cache: dict[uuid.UUID, str] = {}
-    kept: list[tuple[IPAddress, bool, bool, bool, bool]] = []
-    for ip in rows:
-        if user.is_admin:
-            usable = True
-        else:
-            lvl = perm_cache.get(ip.subnet_id)
-            if lvl is None:
-                lvl = await get_object_permission(
-                    session, user=user, object_type="subnet", object_id=ip.subnet_id
-                )
-                perm_cache[ip.subnet_id] = lvl
-            if lvl == "none":
-                continue
-            usable = has_permission(lvl, "write") or bool(user.can_ssh)
-        if not usable:
-            continue
-        kept.append((ip, bool(ip.ssh_enabled), bool(ip.rdp_enabled), bool(ip.vnc_enabled), bool(ip.bmc_enabled)))
+    # 篩選與 AI 工具 list_connection_targets 共用（services/connection_targets）
+    from app.services.connection_targets import usable_connection_targets
+    targets, rd_web, vis = await usable_connection_targets(session, user=user)
+    kept = [(ip, bool(ip.ssh_enabled), bool(ip.rdp_enabled), bool(ip.vnc_enabled), bool(ip.bmc_enabled))
+            for ip in targets]
 
     dev_ids = {ip.device_id for ip, *_ in kept if ip.device_id}
     dev_names: dict[uuid.UUID, str] = {}
     if dev_ids:
         drows = (await session.execute(
-            select(Device.id, Device.name).where(Device.id.in_(dev_ids))
+            select(Device.id, Device.name).where(in_values(Device.id, dev_ids))
         )).all()
         dev_names = {d[0]: d[1] for d in drows}
 
@@ -214,11 +194,11 @@ async def list_connection_targets(
                 func.max(IPAddress.last_seen_librenms),
                 func.max(IPAddress.last_seen_dns),
             )
-            .where(func.host(IPAddress.ip).in_(ip_values))
+            .where(in_values(func.host(IPAddress.ip), ip_values, type_=String()))
             .group_by(func.host(IPAddress.ip))
         )
         if vis is not None:
-            lstmt = lstmt.where(IPAddress.subnet_id.in_(vis))
+            lstmt = lstmt.where(in_values(IPAddress.subnet_id, vis))
         for lr in (await session.execute(lstmt)).all():
             live_map[str(lr[0])] = (lr[1], lr[2], lr[3])
 
@@ -236,6 +216,7 @@ async def list_connection_targets(
         r.rdp_available = rdp_ok
         r.vnc_available = vnc_ok
         r.bmc_available = bmc_ok
+        r.rustdesk_web_available = ip.id in rd_web
         if ip.novnc_enabled:  # PVE 主控台：已啟用且對應到 PVE VM/CT（權限已在 kept 過濾）
             from app.services.pve_console import resolve_pve_target
             tgt = await resolve_pve_target(session, ip)
@@ -268,6 +249,33 @@ def engine_available(engine: str) -> tuple[bool, str]:
     return (RDP_AVAILABLE, "" if RDP_AVAILABLE else "aardwolf")
 
 
+def python_version() -> str:
+    import sys
+    return f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+def rdp_unavailable_detail(engine: str, missing: str) -> dict[str, Any]:
+    """RDP 用不了時給使用者看的說明：原因加出路（GitHub issue #39）。
+
+    以前只說「缺 aardwolf」。實際最常見的原因是這台的 Python 太新（aardwolf 0.2.13 只有
+    CPython 3.9–3.13 的預編譯 wheel，安裝時刻意不現場編 Rust）。
+    出路一律是 guacd（預設，使用者 2026-10-13）：以前寫「改用 FreeRDP」，客戶照著切過去；
+    aardwolf 也會逐步淘汰。仍要用 FreeRDP 的才附上怎麼裝。
+    """
+    if engine == "freerdp":
+        return ui_detail(
+            "console_rdp_freerdp_missing",
+            f"FreeRDP 引擎缺少 {missing}。建議請管理員到「管理 → 系統設定 → RDP 連線引擎」改回 guacd（預設，"
+            "不需要額外套件）；仍要用 FreeRDP 的話，請在伺服器上執行 jt-ipam.sh upgrade 安裝。",
+            engine=engine, missing=missing)
+    py = python_version()
+    return ui_detail(
+        "console_rdp_no_aardwolf",
+        f"這台伺服器沒有 aardwolf（Python {py} 沒有它的預編譯套件；aardwolf 會逐步淘汰）。"
+        "請管理員到「管理 → 系統設定 → RDP 連線引擎」改回 guacd（預設）。",
+        engine=engine, missing=missing, python=py)
+
+
 @router.post("/{address_id}/rdp/ticket")
 async def issue_rdp_ticket(
     address_id: uuid.UUID,
@@ -285,6 +293,7 @@ async def issue_rdp_ticket(
         raise HTTPException(status_code=404, detail="Address not found")
     if not await can_use_rdp(session, user=user, ip=ip):
         raise HTTPException(status_code=403, detail=ui_detail("console_rdp_forbidden", "無 RDP 連線權限"))
+    await require_console_target(str(ip.ip).split("/")[0])
 
     saved = (await session.execute(
         select(SSHCredential.id).where(
@@ -294,18 +303,26 @@ async def issue_rdp_ticket(
         ).limit(1)
     )).first()
 
-    from app.services.system_config import get_rdp_clipboard_paste, get_rdp_engine
+    from app.services import console_engine
+    from app.services.system_config import get_rdp_clipboard_paste
     clip_enabled = await get_rdp_clipboard_paste(session)
-    engine = await get_rdp_engine(session)
-    ok, missing = engine_available(engine)
-    if not ok:
-        raise HTTPException(status_code=503, detail=ui_detail(
-            "console_rdp_not_installed",
-            f"RDP 功能未安裝（{engine} 引擎缺少 {missing}）",
-            engine=engine, missing=missing))
+    # 預設 guacd；這台的 guacd 處理不了 RDP 時退回可用的內建引擎（見 services/console_engine.py）
+    engine = await console_engine.resolve(session, "rdp", fallbacks=[
+        ("aardwolf", engine_available("aardwolf")[0]), ("freerdp", engine_available("freerdp")[0])])
+    if engine == "guacd":
+        from app.services import guacd as guac
+        try:
+            await guac.require("rdp")
+        except guac.GuacdError as exc:
+            raise HTTPException(status_code=503, detail=exc.ui()) from exc
+    else:
+        ok, missing = engine_available(engine)
+        if not ok:
+            raise HTTPException(status_code=503, detail=rdp_unavailable_detail(engine, missing))
 
     ticket = secrets.token_urlsafe(32)
-    payload = json.dumps({"user_id": str(user.id), "ip_id": str(ip.id)})
+    # 引擎寫進票證：WebSocket 照這個用，不自己再判斷（guacd 剛好起落時兩邊會講不同協定）
+    payload = json.dumps({"user_id": str(user.id), "ip_id": str(ip.id), **ticket_fields(request), "engine": engine})
     await _redis_client().set(_ticket_key(ticket), payload, ex=_TICKET_TTL)
 
     return {
@@ -319,19 +336,21 @@ async def issue_rdp_ticket(
     }
 
 
-async def _redeem_ticket(ticket: str, address_id: uuid.UUID) -> uuid.UUID | None:
+async def _redeem_ticket(ticket: str, address_id: uuid.UUID) -> tuple[uuid.UUID | None, str | None]:
+    """單次取出 → (user_id, 發票證時決定的引擎)。舊票證沒有引擎欄位 → None（呼叫端照設定）。"""
     if not ticket:
-        return None
+        return None, None
     raw = await take_once(_redis_client(), _ticket_key(ticket))
+    note_ticket(raw)
     if not raw:
-        return None
+        return None, None
     try:
         data = json.loads(raw)
         if data.get("ip_id") != str(address_id):
-            return None
-        return uuid.UUID(data["user_id"])
+            return None, None
+        return uuid.UUID(data["user_id"]), data.get("engine")
     except (ValueError, KeyError, TypeError):
-        return None
+        return None, None
 
 
 async def _audit_rdp(
@@ -389,12 +408,13 @@ def _build_freerdp_conn(*, tunnel: Any, username: str, password: str, domain: st
 
 
 @router.websocket("/{address_id}/rdp/ws")
+@watch_console("rdp")
 async def rdp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") -> None:
     global _active_sessions
 
     # 引擎在建立連線時才決定；這裡先不擋 —— aardwolf 沒裝不代表 FreeRDP 不能用
     # 1) 驗 ticket（單次取出）
-    user_id = await _redeem_ticket(ticket, address_id)
+    user_id, ticket_engine = await _redeem_ticket(ticket, address_id)
     if user_id is None:
         await websocket.close(code=4401)
         return
@@ -410,10 +430,14 @@ async def rdp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
         host = str(ip.ip).split("/")[0]
         # 連線出口：直連或經由跳板（IP 覆寫 > 子網路 > 直連）
         route = await console_route.resolve_route(s, ip)
-        from app.services.system_config import get_rdp_clipboard_paste, get_rdp_engine
+        from app.services.system_config import RDP_ENGINES, get_rdp_clipboard_paste, get_rdp_engine
         clip_enabled = await get_rdp_clipboard_paste(s)
-        engine = await get_rdp_engine(s)
+        engine = ticket_engine if ticket_engine in RDP_ENGINES else await get_rdp_engine(s)
     if not allowed:
+        await websocket.close(code=4403)
+        return
+    # 目標位址不能是本機／link-local／保留位址（IP 記錄可以被有寫入權限的人自己建）
+    if await console_target_blocked(host):
         await websocket.close(code=4403)
         return
 
@@ -435,6 +459,8 @@ async def rdp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
     counted = False
     tunnel: console_route.Tunnel | None = None
     started: datetime | None = None
+    # guacd 連上之後這條 WebSocket 改講 Guacamole 協定：不可以再送 JSON（瀏覽器那端會解析錯誤）
+    guac_mode = False
     _log.info("rdp: ws 已接受 host=%s engine=%s user=%s", host, engine, user_id)
     try:
         # 3) 收第一個設定訊息
@@ -460,6 +486,12 @@ async def rdp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
         password = cfg.get("password") or ""
         domain = (cfg.get("domain") or "").strip()
         credential_id = cfg.get("credential_id")
+        # 連接埠（使用者 2026-10-11：VNC 可以選，RDP 沒有）；跳板與代理中繼的允許埠由 open_route 檢查
+        port = console_route.config_port(cfg, _RDP_PORT)
+        if port is None:
+            await send({"type": "error", **ui_detail("console_bad_port", "連接埠須為 1–65535")})
+            await websocket.close()
+            return
 
         # 4) 已存帳密（金庫）— 明文只在記憶體
         used_cred_id: uuid.UUID | None = None
@@ -502,16 +534,60 @@ async def rdp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
 
         # 經跳板時把目標換成本機轉發埠（直連時 open_route 是零成本的）
         try:
-            tunnel = await console_route.open_route(route, host, _RDP_PORT)
+            tunnel = await console_route.open_route(route, host, port, user_id=user_id, purpose="rdp")
         except console_route.JumpHostError as exc:
             await send({"type": "error", **detail_of(exc, "jump_failed")})
             await websocket.close()
             return
 
         if tunnel.via:
-            await send({"type": "status", "state": "via_jump", "via": tunnel.via})
+            await send({"type": "status", "state": "via_jump", "via": tunnel.via,
+                        "via_kind": tunnel.via_kind})
 
-        _log.info("rdp: 開始連線 host=%s engine=%s via_jump=%s", host, engine, tunnel.via)
+        _log.info("rdp: 開始連線 host=%s port=%s engine=%s via_jump=%s", host, port, engine, tunnel.via)
+        if engine == "guacd":
+            from app.services import guacd as guac
+            # 帳密只交給本機的 guacd，不經過瀏覽器；目標是通道的位址（走跳板時是本機轉發埠）
+            params = {
+                "hostname": tunnel.host, "port": str(tunnel.port),
+                "username": username, "password": password, "domain": domain,
+                # 憑證不驗：跟另外兩個引擎一致（內網主機多半是自簽憑證）
+                "security": "any", "ignore-cert": "true",
+                "resize-method": "display-update",
+                # 剪貼簿維持單向：被控端的內容不回傳；控制端貼上要管理者開啟
+                "disable-copy": "true", "disable-paste": "false" if clip_enabled else "true",
+                "disable-audio": "true", "client-name": "jt-ipam",
+            }
+            del password
+            try:
+                conn = await guac.GuacdConnection.open()
+                await conn.handshake("rdp", params, width=width, height=height,
+                                     dpi=guac.client_dpi(cfg.get("dpi")),
+                                     timezone=guac.client_timezone(cfg.get("timezone")))
+                del params
+                initial = await conn.wait_first_frame(_CONNECT_TIMEOUT_GUACD)
+            except guac.GuacdError as exc:
+                _log.info("rdp: guacd 連線失敗 host=%s code=%s reason=%s", host, exc.code, exc.reason)
+                await send({"type": "error", **exc.ui()})
+                await websocket.close()
+                return
+            _active_sessions += 1
+            counted = True
+            started = datetime.now(UTC)
+            await _audit_rdp(
+                actor_user_id=str(user_id), actor_ip=actor_ip, object_id=str(address_id),
+                action="rdp.session_open",
+                diff={"host": host, "port": port, "username": username, "domain": domain or None,
+                      "via_jump_host": tunnel.via, "via_kind": tunnel.via_kind, "size": f"{width}x{height}", "engine": "guacd",
+                      "credential_id": str(used_cred_id) if used_cred_id else None},
+            )
+            _log.info("rdp: 已連上（guacd）host=%s", host)
+            await send({"type": "status", "state": "connected", "engine": "guacd",
+                        "width": width, "height": height})
+            guac_mode = True
+            res = await guac.relay(websocket, conn, initial=initial)
+            _log.info("rdp: guacd 工作階段結束 host=%s ended_by=%s dropped=%s", host, res.ended_by, res.dropped)
+            return
         if engine == "freerdp":
             conn = _build_freerdp_conn(
                 tunnel=tunnel, username=username, password=password,
@@ -562,8 +638,8 @@ async def rdp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
         await _audit_rdp(
             actor_user_id=str(user_id), actor_ip=actor_ip, object_id=str(address_id),
             action="rdp.session_open",
-            diff={"host": host, "username": username, "domain": domain or None,
-                  "via_jump_host": tunnel.via,
+            diff={"host": host, "port": port, "username": username, "domain": domain or None,
+                  "via_jump_host": tunnel.via, "via_kind": tunnel.via_kind,
                   "size": f"{width}x{height}",
                   "credential_id": str(used_cred_id) if used_cred_id else None},
         )
@@ -586,8 +662,9 @@ async def rdp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
         _log.info("rdp: 控制端離線 host=%s", host)
     except Exception:  # 對外不洩漏堆疊，但伺服器端一定要留下來
         _log.exception("rdp: 未預期錯誤 host=%s engine=%s", host, engine)
-        with contextlib.suppress(Exception):
-            await send({"type": "error", **ui_detail("console_internal", "連線發生未預期錯誤")})
+        if not guac_mode:
+            with contextlib.suppress(Exception):
+                await send({"type": "error", **ui_detail("console_internal", "連線發生未預期錯誤")})
     finally:
         if conn is not None:
             with contextlib.suppress(Exception):
@@ -605,7 +682,8 @@ async def rdp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
                         action="rdp.session_close", diff={"host": host, "duration_seconds": round(dur, 1)},
                     )
         with contextlib.suppress(Exception):
-            await send({"type": "status", "state": "disconnected"})
+            if not guac_mode:
+                await send({"type": "status", "state": "disconnected"})
             await websocket.close()
 
 
@@ -632,13 +710,17 @@ async def _bridge(websocket: WebSocket, conn: Any, send: Any, *, clip_enabled: b
     伺服器→控制端的剪貼簿一律不回傳（pump_out 只送視訊），維持單向、不外洩被控端剪貼簿。
     """
 
+    frames = 0      # 送出過幾張畫面：一張都沒有就被結束＝伺服器在工作階段一開始就拒絕了
+
     async def pump_out() -> None:
+        nonlocal frames
         with contextlib.suppress(Exception):
             while True:
                 data = await conn.ext_out_queue.get()
                 if data is None:
                     break
                 if _is_video(data):
+                    frames += 1
                     await send({
                         "type": "img", "x": data.x, "y": data.y,
                         "w": data.width, "h": data.height,
@@ -719,7 +801,9 @@ async def _bridge(websocket: WebSocket, conn: Any, send: Any, *, clip_enabled: b
 
     out_task = asyncio.create_task(pump_out())
     in_task = asyncio.create_task(pump_in())
-    _done, pending = await asyncio.wait({out_task, in_task}, return_when=asyncio.FIRST_COMPLETED)
+    done, pending = await asyncio.wait({out_task, in_task}, return_when=asyncio.FIRST_COMPLETED)
+    # 畫面那一端先結束、瀏覽器還開著＝被控端結束了工作階段（不是使用者關掉分頁）
+    remote_ended = out_task in done and in_task not in done
     for p in pending:
         p.cancel()
     await asyncio.gather(*pending, return_exceptions=True)
@@ -733,3 +817,16 @@ async def _bridge(websocket: WebSocket, conn: Any, send: Any, *, clip_enabled: b
             # 不能只放在 message，否則前端用翻譯時那一段會是空的
             await send({"type": "error",
                         **ui_detail("console_remote_closed", reason, reason=reason)})
+    elif remote_ended:
+        # aardwolf 不給中斷原因（GitHub issue #42：它的讀取迴圈拿到 None 就丟 TypeError，
+        # 真正的原因被蓋掉）。至少分得出「還沒出畫面就被拒」與「用到一半被結束」。
+        _log.info("rdp: 被控端結束了工作階段（沒有原因；已送出 %s 張畫面）", frames)
+        detail = (ui_detail(
+            "console_remote_ended_early",
+            "遠端主機在工作階段一開始就結束了連線，還沒送出任何畫面。常見原因：這個帳號沒有"
+            "遠端登入權限、遠端桌面授權或連線代理拒絕、工作階段數已滿。建議改用 guacd 引擎"
+            "（管理 → 系統設定 → RDP 連線引擎，預設），它會顯示伺服器給的原因。")
+            if frames == 0 else
+            ui_detail("console_remote_ended", "遠端主機結束了這個工作階段（沒有提供原因）"))
+        with contextlib.suppress(Exception):
+            await send({"type": "error", **detail})

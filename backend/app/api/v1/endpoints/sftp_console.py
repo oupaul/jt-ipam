@@ -38,6 +38,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSo
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser
+from app.core.console_guard import (
+    console_target_blocked,
+    note_ticket,
+    require_console_target,
+    ticket_fields,
+    watch_console,
+)
 from app.core.db import SessionLocal, get_session
 from app.core.rate_limit import _redis_client
 from app.core.security import envelope_decrypt
@@ -45,6 +52,7 @@ from app.core.tickets import take_once
 from app.core.ui_error import detail_of, ui_detail
 from app.core.ws_timeouts import (
     HANDSHAKE_TIMEOUT,
+    PROMPT_TIMEOUT,
     WsTimeout,
     keepalive_loop,
     receive_text_within,
@@ -67,7 +75,13 @@ from app.services.sftp import (
     to_entry,
     walk_for_delete,
 )
-from app.services.ssh_tunnel import LEGACY_SSH_ALGS
+from app.services.ssh_tunnel import (
+    LEGACY_SSH_ALGS,
+    SSHHostKeyMismatch,
+    SSHTunnelError,
+    fetch_host_key,
+    pinned_connect_options,
+)
 
 log = structlog.get_logger("sftp")
 
@@ -79,6 +93,39 @@ _CONNECT_TIMEOUT = 15.0
 
 def _ticket_key(ticket: str) -> str:
     return f"sftp:tk:{ticket}"
+
+
+def _probe_ticket_key(ticket: str) -> str:
+    """傳輸路徑測試的票證：與一般 SFTP 票證分開的命名空間，兩者不可能互換。"""
+    return f"sftp:probe:{ticket}"
+
+
+async def _run_probe(websocket: WebSocket, ticket: str) -> None:
+    """傳輸路徑測試模式（見 app/services/sftp_probe.py）：只給管理者、不連任何主機。"""
+    from app.services import sftp_probe
+
+    raw = await take_once(_redis_client(), _probe_ticket_key(ticket)) if ticket else None
+    try:
+        user_id = uuid.UUID(str(json.loads(raw).get("user_id"))) if raw else None
+    except (TypeError, ValueError, AttributeError):
+        user_id = None
+    if user_id is None:
+        await websocket.close(code=4401)
+        return
+    async with SessionLocal() as s:
+        user = await s.get(User, user_id)
+        if user is None or not user.is_active or not user.is_admin:
+            await websocket.close(code=4403)
+            return
+    await websocket.accept()
+    log.info("sftp probe start", user=str(user_id))
+    try:
+        await sftp_probe.run(websocket.receive, websocket.send_text, websocket.send_bytes)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        with contextlib.suppress(Exception):
+            await websocket.close()
 
 
 @router.post("/{address_id}/sftp/ticket")
@@ -99,9 +146,10 @@ async def issue_sftp_ticket(
     if not await can_use_sftp(session, user=user, ip=ip):
         # 不洩漏存在性差異 —— 一律 403（與 SSH 相同）
         raise HTTPException(status_code=403, detail=ui_detail("console_sftp_forbidden", "無 SSH／SFTP 連線權限"))
+    await require_console_target(str(ip.ip).split("/")[0])
 
     ticket = secrets.token_urlsafe(32)
-    payload = json.dumps({"user_id": str(user.id), "ip_id": str(ip.id)})
+    payload = json.dumps({"user_id": str(user.id), "ip_id": str(ip.id), **ticket_fields(request)})
     await _redis_client().set(_ticket_key(ticket), payload, ex=_TICKET_TTL)
     return {
         "ticket": ticket,
@@ -116,6 +164,7 @@ async def _redeem(ticket: str, address_id: uuid.UUID) -> uuid.UUID | None:
     if not ticket:
         return None
     raw = await take_once(_redis_client(), _ticket_key(ticket))
+    note_ticket(raw)
     if not raw:
         return None
     try:
@@ -128,6 +177,18 @@ async def _redeem(ticket: str, address_id: uuid.UUID) -> uuid.UUID | None:
         return uuid.UUID(str(data.get("user_id")))
     except ValueError:
         return None
+
+
+async def _connect_pinned(host: str, port: int, username: str, known_host: str,
+                          kw: dict[str, Any]) -> asyncssh.SSHClientConnection:
+    """只接受釘選的那把主機金鑰（不符 → SSHHostKeyMismatch；見 ssh_tunnel.pinned_known_hosts）。"""
+    return await asyncssh.connect(
+        host, port=port, username=username,
+        **pinned_connect_options(known_host),  # type: ignore[arg-type]
+        agent_path=None,     # 不借用後端主機的 ssh-agent（跟 SSH 主控台一樣）
+        connect_timeout=_CONNECT_TIMEOUT,
+        **LEGACY_SSH_ALGS, **kw,
+    )
 
 
 async def _connect_kwargs(
@@ -217,7 +278,12 @@ ACK_EVERY = 16 * 1024
 
 
 @router.websocket("/{address_id}/sftp/ws")
+@watch_console("sftp")
 async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") -> None:
+    from app.services.sftp_probe import PROBE_ADDRESS_ID
+    if address_id == PROBE_ADDRESS_ID:
+        await _run_probe(websocket, ticket)
+        return
     user_id = await _redeem(ticket, address_id)
     if user_id is None:
         await websocket.close(code=4401)
@@ -232,9 +298,18 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
             return
         allowed = await can_use_sftp(s, user=user, ip=ip)
         host = str(ip.ip).split("/")[0]
+        # 主機金鑰跟 SSH 主控台共用同一把釘選（同一台主機）
+        pinned = ip.ssh_host_key
+        # 單檔上限：系統設定（預設 100 MB）。連線當下讀一次，改了設定對新連線生效
+        from app.services.system_config import get_sftp_max_file_mb
+        max_bytes = await get_sftp_max_file_mb(s) * 1024 * 1024
         # 連線出口：直連或經由跳板（IP 覆寫 > 子網路 > 直連）
         route = await console_route.resolve_route(s, ip)
     if not allowed:
+        await websocket.close(code=4403)
+        return
+    # 目標位址不能是本機／link-local／保留位址（IP 記錄可以被有寫入權限的人自己建）
+    if await console_target_blocked(host):
         await websocket.close(code=4403)
         return
 
@@ -257,6 +332,7 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
 
     conn = None
     sftp = None
+    opened: float | None = None          # 真的開成功的時間（monotonic）；結束時記連了多久
     tunnel: console_route.Tunnel | None = None
     port = 22          # 先給預設值：錯誤處理會用到，設定還沒讀到就失敗時不能是未定義
     #: 上傳途中收到的指令（客戶端放棄這次上傳、直接送下一個要求）—— 留著下一輪處理
@@ -280,26 +356,52 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
                                                    address_id=address_id)
         # 經跳板時把目標換成本機轉發埠（直連時 open_route 是零成本的）
         try:
-            tunnel = await console_route.open_route(route, host, port)
+            tunnel = await console_route.open_route(route, host, port, user_id=user_id, purpose="sftp")
         except console_route.JumpHostError as exc:
             await send({"type": "error", **detail_of(exc, "jump_failed")})
             return
         dial_host, dial_port = tunnel.host, tunnel.port
-        conn = await asyncssh.connect(
-            dial_host, port=dial_port, username=username, known_hosts=None,
-            connect_timeout=_CONNECT_TIMEOUT,
-            **LEGACY_SSH_ALGS, **kw,
-        )
-        kw.clear()          # 憑證明文用完即丟
+        # 主機金鑰：以前完全不驗（known_hosts=None）—— 帳密會交給任何冒充這台的主機（2026-10-12）。
+        # 跟 SSH 主控台一樣：沒釘選先把指紋給人確認再釘選，之後只接受那一把。
+        known_host = pinned
+        if not known_host:
+            try:
+                hk = await fetch_host_key(dial_host, port=dial_port)
+            except SSHTunnelError as exc:
+                raise SftpError(f"無法連線取得主機金鑰：{exc}", code="console_host_key_fetch_failed",
+                                reason=str(exc)[:200]) from exc
+            await send({"type": "hostkey", "fingerprint": hk["fingerprint"]})
+            try:
+                ans = json.loads(await receive_text_within(websocket, PROMPT_TIMEOUT, what="host_key"))
+            except WsTimeout as exc:
+                await send({"type": "error", **detail_of(exc, "console_host_key_timeout")})
+                return
+            if ans.get("type") != "hostkey_accept":
+                await send({"type": "error", **ui_detail("console_host_key_rejected", "已取消（未信任主機金鑰）")})
+                return
+            known_host = hk["known_host"]
+            from app.api.v1.endpoints.ssh_console import _pin_host_key
+            await _pin_host_key(address_id, known_host, actor_user_id=str(user_id), actor_ip=actor_ip)
+        try:
+            conn = await _connect_pinned(dial_host, dial_port, username, known_host, kw)
+        except SSHHostKeyMismatch:
+            await send({"type": "error", **ui_detail(
+                "console_host_key_mismatch", "主機金鑰與先前釘選不符，可能遭中間人攻擊（連線中止）")})
+            return
+        finally:
+            kw.clear()          # 憑證明文用完即丟
         sftp = await conn.start_sftp_client()
         try:
             cwd = await sftp.realpath(".")
         except Exception:
             cwd = "/"
         await audit("sftp_open", {"host": host, "port": port, "username": username,
-                                  "via_jump_host": tunnel.via})
+                                  "via_jump_host": tunnel.via, "via_kind": tunnel.via_kind})
+        opened = time.monotonic()
         # 經跳板時要講出來：畫面上的位址是目標，實際路徑多了一跳
-        await send({"type": "ready", "cwd": str(cwd), "via_jump_host": tunnel.via})
+        # 上限一起告訴前端：超過的檔案當場就講，不用先等伺服器拒絕；大檔也要據此改成直接寫入磁碟
+        await send({"type": "ready", "cwd": str(cwd), "via_jump_host": tunnel.via, "via_kind": tunnel.via_kind,
+                    "max_file_bytes": max_bytes})
 
         while True:
             if carry_over is not None:
@@ -353,7 +455,8 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
                 elif op == "get":
                     path = failed_path = normalize_path(req.get("path"), cwd=str(cwd))
                     st = await sftp.stat(path)
-                    size = check_size(getattr(st, "size", None), what="download")
+                    size = check_size(getattr(st, "size", None), what="download",
+                                      max_bytes=max_bytes)
                     await reply({"type": "file_begin", "path": path,
                                 "name": path.rsplit("/", 1)[-1], "size": size})
                     async with sftp.open(path, "rb") as fh:
@@ -369,15 +472,21 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
 
                 elif op == "put":
                     path = failed_path = normalize_path(req.get("path"), cwd=str(cwd))
-                    size = check_size(req.get("size"), what="upload")
+                    size = check_size(req.get("size"), what="upload", max_bytes=max_bytes)
                     # ⚠️ 先把檔案開起來，成功了才叫對方送資料。
                     # 反過來（先說 put_ready 再開檔）在開檔失敗時會壞掉：客戶端已經
                     # 開始送二進位框，而伺服器跳去回報錯誤、回到主迴圈讀「文字訊息」，
                     # 讀到的卻是那些二進位框 → 協定錯位 → 整條連線死掉，連帶把後面
                     # 還沒上傳的檔案一起拖走。實機上就是這樣：第一個檔案因為遠端
                     # 回「找不到檔案或目錄」而失敗，第二個檔案顯示「連線已中斷」。
+                    # 同名檔案：沒指定 on_conflict 就先問（回 sftp_exists，在 put_ready 之前，一個位元組都還沒送）。
+                    # 一律寫到同目錄的暫存檔，完整寫完才換成正式檔名 —— 中途失敗原本的檔案不會受損
+                    # （以前 "wb" 一開檔就把同名檔清成 0 位元組、中斷時還會把它刪掉）
+                    from app.services.sftp import abort_upload, begin_upload, finish_upload
+                    target = await begin_upload(sftp, path, on_conflict=req.get("on_conflict"))
+                    path = failed_path = target.final_path
                     t_open = time.monotonic()
-                    fh = await sftp.open(path, "wb")
+                    fh = await sftp.open(target.tmp_path, "wb")
                     # 開檔成功了才通知對方可以送 —— 這一行在 0.5.225 改寫時被弄丟，
                     # 造成客戶端永遠等不到「可以送了」，上傳完全失效。
                     await reply({"type": "put_ready", "path": path})
@@ -389,82 +498,88 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
                     next_ack = 0
                     first_frame = True
                     stalled = False
-                    async with fh:
-                        while written < size:
-                            try:
-                                # ⚠️ 兩件事都要防：
-                                # (1) 逾時 —— 客戶端在 put_ready 之後沒把資料送完，
-                                #     沒有時限就會無限期佔住這條連線。
-                                # (2) **框的型別不如預期** —— 客戶端在資料還沒送完就
-                                #     改送下一個指令（放棄這次上傳卻沒告知）。這時候
-                                #     `receive_bytes()` 會丟 `KeyError: 'bytes'`，
-                                #     整個 handler 當掉、連線關閉。實機日誌抓到的就是
-                                #     這一行：使用者看到「連線已中斷」，而原因只是
-                                #     伺服器對一個文字框沒有防備。
-                                message = await asyncio.wait_for(
-                                    websocket.receive(), timeout=UPLOAD_STALL_TIMEOUT)
-                            except TimeoutError:
-                                stalled = True
-                                break
-                            if message.get("type") == "websocket.disconnect":
-                                # 上傳途中對方斷線 —— 「斷掉的當下已經寫了多少」是這裡
-                                # 唯一有用的資訊：0 代表對方根本沒開始送（問題在客戶端
-                                # 讀檔或送出），接近 size 代表是快傳完才死（問題在連線
-                                # 途中的某一段）。少了這行只知道「斷了」，等於沒線索。
-                                log.info("sftp put aborted by client",
-                                         session=session_tag, written=written, size=size,
-                                         code=message.get("code", 1005))
-                                raise WebSocketDisconnect(message.get("code", 1005))
-                            if first_frame:
-                                # 第一個框到底是什麼、隔了多久 —— 「送出了但沒收到」
-                                # 與「根本沒送」只有這一行分得出來
-                                first_frame = False
-                                log.info("sftp put first frame", session=session_tag,
-                                         kind=("bytes" if message.get("bytes") is not None
-                                               else message.get("type", "text")),
-                                         after_ms=round((time.monotonic() - t_open) * 1000))
-                            chunk = message.get("bytes")
-                            if chunk is None:
-                                # 對方改送指令了 → 這次上傳視同放棄，把那個指令留著
-                                # 等一下照常處理，不要把它丟掉也不要因此斷線。
-                                carry_over = message.get("text")
-                                stalled = True
-                                break
-                            # 用戶端多送的部分一律截斷 —— 宣告多少就寫多少，
-                            # 否則上限可以被「宣告小、實際送大」繞過
-                            take = chunk[: size - written]
-                            await fh.write(take)
-                            written += len(take)
-                            # 收到就回報。客戶端靠**第一個**確認判斷「資料真的走得過去」
-                            # ——實機遇過瀏覽器把整個檔案交出去、伺服器一個框都沒收到
-                            # 的情況（小的文字指令通得過、第一個大資料框就消失）。
-                            # 沒有這個回報，客戶端只能一直等到連線自己死掉。
-                            if written >= next_ack or written >= size:
-                                next_ack = written + ACK_EVERY
-                                await reply({"type": "put_ack", "bytes": written})
-                            # 每 4 MB 記一次：長時間上傳時，「還在動」與「卡住不動」
-                            # 在日誌上本來長得一模一樣（都是一片空白）
-                            if written // PUT_PROGRESS_EVERY != (written - len(take)) // PUT_PROGRESS_EVERY:
-                                log.info("sftp put progress", session=session_tag,
-                                         written=written, size=size)
+                    try:
+                        async with fh:
+                            while written < size:
+                                try:
+                                    # ⚠️ 兩件事都要防：
+                                    # (1) 逾時 —— 客戶端在 put_ready 之後沒把資料送完，
+                                    #     沒有時限就會無限期佔住這條連線。
+                                    # (2) **框的型別不如預期** —— 客戶端在資料還沒送完就
+                                    #     改送下一個指令（放棄這次上傳卻沒告知）。這時候
+                                    #     `receive_bytes()` 會丟 `KeyError: 'bytes'`，
+                                    #     整個 handler 當掉、連線關閉。實機日誌抓到的就是
+                                    #     這一行：使用者看到「連線已中斷」，而原因只是
+                                    #     伺服器對一個文字框沒有防備。
+                                    message = await asyncio.wait_for(
+                                        websocket.receive(), timeout=UPLOAD_STALL_TIMEOUT)
+                                except TimeoutError:
+                                    stalled = True
+                                    break
+                                if message.get("type") == "websocket.disconnect":
+                                    # 上傳途中對方斷線 —— 「斷掉的當下已經寫了多少」是這裡
+                                    # 唯一有用的資訊：0 代表對方根本沒開始送（問題在客戶端
+                                    # 讀檔或送出），接近 size 代表是快傳完才死（問題在連線
+                                    # 途中的某一段）。少了這行只知道「斷了」，等於沒線索。
+                                    log.info("sftp put aborted by client",
+                                             session=session_tag, written=written, size=size,
+                                             code=message.get("code", 1005))
+                                    raise WebSocketDisconnect(message.get("code", 1005))
+                                if first_frame:
+                                    # 第一個框到底是什麼、隔了多久 —— 「送出了但沒收到」
+                                    # 與「根本沒送」只有這一行分得出來
+                                    first_frame = False
+                                    log.info("sftp put first frame", session=session_tag,
+                                             kind=("bytes" if message.get("bytes") is not None
+                                                   else message.get("type", "text")),
+                                             after_ms=round((time.monotonic() - t_open) * 1000))
+                                chunk = message.get("bytes")
+                                if chunk is None:
+                                    # 對方改送指令了 → 這次上傳視同放棄，把那個指令留著
+                                    # 等一下照常處理，不要把它丟掉也不要因此斷線。
+                                    carry_over = message.get("text")
+                                    stalled = True
+                                    break
+                                # 用戶端多送的部分一律截斷 —— 宣告多少就寫多少，
+                                # 否則上限可以被「宣告小、實際送大」繞過
+                                take = chunk[: size - written]
+                                await fh.write(take)
+                                written += len(take)
+                                # 收到就回報。客戶端靠**第一個**確認判斷「資料真的走得過去」
+                                # ——實機遇過瀏覽器把整個檔案交出去、伺服器一個框都沒收到
+                                # 的情況（小的文字指令通得過、第一個大資料框就消失）。
+                                # 沒有這個回報，客戶端只能一直等到連線自己死掉。
+                                if written >= next_ack or written >= size:
+                                    next_ack = written + ACK_EVERY
+                                    await reply({"type": "put_ack", "bytes": written})
+                                # 每 4 MB 記一次：長時間上傳時，「還在動」與「卡住不動」
+                                # 在日誌上本來長得一模一樣（都是一片空白）
+                                if written // PUT_PROGRESS_EVERY != (written - len(take)) // PUT_PROGRESS_EVERY:
+                                    log.info("sftp put progress", session=session_tag,
+                                             written=written, size=size)
+                    except BaseException:
+                        # 中途斷線或任何錯誤：只刪暫存檔，原本的檔案不動
+                        with contextlib.suppress(Exception):
+                            await abort_upload(sftp, target)
+                        raise
                     log.info("sftp put done", session=session_tag,
                              written=written, size=size, stalled=stalled,
                              carry_over=carry_over is not None)
                     if stalled:
                         # 只讓這次上傳失敗，連線繼續可用 —— 一次上傳中斷不該逼人重連。
-                        # 檔案已經被建出來（可能是 0 位元組），把它清掉再回報，
-                        # 免得遠端留下一個看起來成功、其實是空的檔案。
-                        with contextlib.suppress(Exception):
-                            await sftp.remove(path)
+                        # 只刪暫存檔：同名的原檔從頭到尾沒動過（以前這裡 remove(path)，覆蓋中斷＝原檔被刪）
+                        await abort_upload(sftp, target)
                         await reply({"type": "error", "op": "put", "path": path,
                                      **ui_detail("put_stalled",
                                                  f"上傳中斷（已寫入 {written}/{size} 位元組，"
-                                                 f"檔案已移除）",
+                                                 f"遠端沒有任何變動）",
                                                  written=written, size=size)})
                         failed_path = None
                         continue
-                    await reply({"type": "ok", "op": "put", "path": path, "bytes": written})
-                    await audit("sftp_upload", {"path": path, "bytes": written})
+                    await finish_upload(sftp, target)
+                    await reply({"type": "ok", "op": "put", "path": path, "bytes": written,
+                                 "replaced": target.replaces})
+                    await audit("sftp_upload", {"path": path, "bytes": written, "replaced": target.replaces})
 
                 elif op == "mkdir":
                     path = failed_path = normalize_path(req.get("path"), cwd=str(cwd))
@@ -575,8 +690,10 @@ async def sftp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "")
         # 通道與 WS session 同生共死：連線關掉之後才還，否則轉發會在還有人用時被收掉
         if tunnel is not None:
             await tunnel.aclose()
+        # 跟其他主控台一樣記連了多久（使用者 2026-10-06 問到）；沒開成功的不記
         await _audit(actor_user_id=str(user_id), actor_ip=actor_ip, object_id=aid,
-                     action="sftp_close", diff={"host": host})
+                     action="sftp_close", diff={"host": host, **({"duration_seconds": round(time.monotonic() - opened, 1)}
+                                                                if opened is not None else {})})
         try:
             await websocket.close()
         except Exception:

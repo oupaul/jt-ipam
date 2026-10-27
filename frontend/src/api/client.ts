@@ -1,6 +1,8 @@
 import axios, { AxiosError } from "axios";
 import { triggerSessionExpired } from "@/utils/session";
+import { AUTH_COOKIE_HEADERS, getAccessToken, setAccessToken } from "@/api/token";
 import { i18n } from "@/i18n";
+import { formatValidationErrors } from "@/utils/validationErrors";
 
 // 後端常見英文錯誤訊息 → 在地化（元件多半直接顯示 response.data.detail）
 const DETAIL_I18N: Record<string, string> = {
@@ -12,6 +14,28 @@ const DETAIL_I18N: Record<string, string> = {
   "Global resource requires full visibility": "errors.forbidden",
   "Forbidden": "errors.forbidden",
 };
+
+/**
+ * 下載類請求（responseType: "blob"）出錯時，錯誤內容也是 Blob —— 不先轉回 JSON，
+ * `detail` 讀不到，畫面只剩「伺服器錯誤」，後端講的原因使用者永遠看不到。
+ * 只轉 JSON 型態的；真的檔案內容原樣保留。
+ */
+export async function unwrapBlobError(error: AxiosError): Promise<void> {
+  const data: unknown = error.response?.data;
+  if (typeof Blob === "undefined" || !(data instanceof Blob) || !/json/i.test(data.type || "")) return;
+  try {
+    // Blob.text() 瀏覽器都有；測試環境（jsdom）沒有，退回 FileReader
+    const text = typeof (data as any).text === "function"
+      ? await data.text()
+      : await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result ?? ""));
+        r.onerror = () => reject(r.error);
+        r.readAsText(data);
+      });
+    (error.response as any).data = JSON.parse(text);
+  } catch { /* 不是合法 JSON 就維持原樣 */ }
+}
 
 function localizeDetail(error: AxiosError): void {
   const data: any = error.response?.data;
@@ -30,6 +54,15 @@ function localizeDetail(error: AxiosError): void {
     // 分支永遠不會成立 —— 所以另外掛一份在 detail_code 上。
     data.detail_code = detail.code;
     return;
+  }
+  // 欄位檢查失敗（422）：原因在 errors 清單，翻成「欄位：原因」（以前只顯示「Invalid request」）
+  if (error.response?.status === 422 && Array.isArray(data?.errors)) {
+    const te = (i18n.global as any).te;
+    const out = formatValidationErrors(t, (k: string) => te(k), data.errors);
+    if (out) {
+      data.detail = out;
+      return;
+    }
   }
   if (typeof detail === "string") {
     const key = DETAIL_I18N[detail];
@@ -85,7 +118,7 @@ export const apiClient = axios.create({
 
 apiClient.interceptors.request.use((config) => {
   config.headers.set("X-Request-ID", generateRequestId());
-  const token = localStorage.getItem("access_token");
+  const token = getAccessToken();
   if (token) {
     config.headers.set("Authorization", `Bearer ${token}`);
   }
@@ -95,22 +128,21 @@ apiClient.interceptors.request.use((config) => {
 // 一次同時收到多個 401 時，只觸發一次 refresh；其它等同一個 promise
 let refreshingPromise: Promise<string | null> | null = null;
 
-async function tryRefreshToken(): Promise<string | null> {
+/**
+ * 用 HttpOnly Cookie 裡的更新權杖換一把新的存取權杖（Cookie 本身由後端換新）。
+ * 同一時間多個 401 只換一次。也給「新分頁還沒有存取權杖」時用（stores/auth.ensureSession）。
+ */
+export async function tryRefreshToken(): Promise<string | null> {
   if (refreshingPromise) return refreshingPromise;
-  const refreshToken = localStorage.getItem("refresh_token");
-  if (!refreshToken) return null;
   refreshingPromise = (async () => {
     try {
       // 用 axios 裸請求避免拉 interceptor 連鎖
-      const resp = await axios.post("/api/v1/auth/refresh",
-        { refresh_token: refreshToken },
-        { headers: { "X-Request-ID": generateRequestId() }, timeout: 10_000 });
-      const data = resp.data as { access_token?: string; refresh_token?: string };
+      const resp = await axios.post(`${import.meta.env.VITE_API_BASE_URL || ""}/api/v1/auth/refresh`, null,
+        { headers: { "X-Request-ID": generateRequestId(), ...AUTH_COOKIE_HEADERS },
+          withCredentials: true, timeout: 10_000 });
+      const data = resp.data as { access_token?: string };
       if (data?.access_token) {
-        localStorage.setItem("access_token", data.access_token);
-        if (data.refresh_token) {
-          localStorage.setItem("refresh_token", data.refresh_token);
-        }
+        setAccessToken(data.access_token);
         return data.access_token;
       }
       return null;
@@ -131,7 +163,8 @@ apiClient.interceptors.response.use(
     const url = typeof config.url === "string" ? config.url : "";
     // 登入 / MFA / refresh 端點自己的 401 不算「逾時」(例如密碼錯誤)，照常往上拋
     const isAuthEndpoint =
-      url.includes("/auth/login") || url.includes("/auth/refresh") || url.includes("/auth/mfa");
+      url.includes("/auth/login") || url.includes("/auth/refresh") || url.includes("/auth/mfa")
+      || url.includes("/auth/logout");
     // 401 嘗試 refresh 一次 (避免 refresh 自己再 refresh 無限迴圈)
     if (error.response?.status === 401 && !config._retried && !isAuthEndpoint) {
       const newToken = await tryRefreshToken();
@@ -147,6 +180,7 @@ apiClient.interceptors.response.use(
       // 反正畫面正要被導向登入頁。
       return new Promise(() => {});
     }
+    await unwrapBlobError(error);
     localizeDetail(error);
     return Promise.reject(error);
   },

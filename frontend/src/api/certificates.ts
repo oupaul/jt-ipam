@@ -3,6 +3,7 @@
  */
 import { apiClient } from "@/api/client";
 import type { Paginated } from "@/api/admin";
+import { saveBlob } from "@/utils/saveFile";
 
 export interface CertVersion {
   id: string;
@@ -109,17 +110,15 @@ export async function listVersions(id: string): Promise<CertVersion[]> {
   return data;
 }
 export async function downloadVersionFile(certId: string, versionId: string, fmt: string, password = ""): Promise<void> {
-  const res = await apiClient.get(`/api/v1/certificates/${certId}/versions/${versionId}/file`, {
-    params: { fmt, ...(password ? { password } : {}) },
-    responseType: "blob",
-  });
+  // POST、密碼放 body：放在網址參數的話，PFX 密碼會原封不動寫進 nginx 存取日誌與瀏覽器歷史
+  // （0.6.43 ZAP 登入後掃描抓到；後端現在直接拒絕網址裡帶 password）
+  const res = await apiClient.post(`/api/v1/certificates/${certId}/versions/${versionId}/file`,
+    { fmt, password }, { responseType: "blob" });
   const cd = String(res.headers["content-disposition"] ?? "");
   const m = cd.match(/filename="?([^"]+)"?/);
   const filename = m ? m[1] : `cert.${fmt}`;
-  const url = URL.createObjectURL(res.data as Blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename; document.body.appendChild(a); a.click();
-  a.remove(); URL.revokeObjectURL(url);
+  // 伺服器端已記稽核（cert_export）
+  saveBlob(filename, res.data as Blob, "application/octet-stream", { source: "certificate", audited: true });
 }
 export async function uploadVersion(
   id: string, files: { cert: File; key: File; chain?: File | null }, allowExpired = false,
@@ -143,13 +142,24 @@ export async function setCertSource(id: string, payload: CertSourcePayload): Pro
   const { data } = await apiClient.put(`/api/v1/certificates/${id}/source`, payload);
   return data;
 }
-export async function fetchCertNow(id: string): Promise<{ status: string; error?: string; fingerprint?: string; not_after?: string }> {
+export async function fetchCertNow(id: string): Promise<{
+  status: string; error?: string; fingerprint?: string; not_after?: string;
+  code?: string | null; params?: Record<string, unknown>;
+}> {
   const { data } = await apiClient.post(`/api/v1/certificates/${id}/fetch-now`);
   return data;
 }
-export async function testCertSource(id: string, payload: CertSourcePayload): Promise<{ ok: boolean; message: string }> {
+export async function testCertSource(id: string, payload: CertSourcePayload): Promise<{
+  ok: boolean; message: string; code?: string | null; params?: Record<string, unknown>;
+  /** SFTP 主機金鑰的指紋（第一次連上時記住，之後每次都要相同） */
+  host_key_fingerprint?: string | null;
+}> {
   const { data } = await apiClient.post(`/api/v1/certificates/${id}/source/test`, payload);
   return data;
+}
+/** 「重新信任主機金鑰」：SFTP 主機重灌或換了金鑰時，確認新指紋後清掉記住的，下一次連線重新記住 */
+export async function forgetCertSourceHostKey(id: string): Promise<void> {
+  await apiClient.post(`/api/v1/certificates/${id}/source/forget-host-key`);
 }
 export async function genCertSourceSshKey(id: string, payload: CertSourcePayload): Promise<{ public_key: string; installed: boolean; message: string }> {
   const { data } = await apiClient.post(`/api/v1/certificates/${id}/source/ssh-keypair`, payload);
@@ -222,4 +232,62 @@ export interface CertAgentStatus {
 export async function getCertAgentStatus(): Promise<{ agents: CertAgentStatus[] }> {
   const { data } = await apiClient.get("/api/v1/cert-agents/status");
   return data;
+}
+
+// ── 憑證推送目標（0227）：伺服器主動把憑證推到防火牆 ──
+export type CertPushKind = "fortigate" | "opnsense" | "paloalto" | "pfsense";
+export interface CertPushStep { step: string; ok: boolean; code?: string; detail?: string }
+export interface CertPushTarget {
+  id: string; name: string; enabled: boolean; kind: CertPushKind;
+  certificate_id: string; certificate_name: string | null;
+  api_url: string; verify_tls: boolean; options: Record<string, any>;
+  verify_endpoint: string | null; auto_push: boolean; has_secret: boolean;
+  last_push_at: string | null; last_status: "ok" | "unverified" | "error" | "rolled_back" | null;
+  last_error: string | null; last_fingerprint: string | null; last_steps: CertPushStep[];
+  current_fingerprint: string | null; up_to_date: boolean;
+}
+export interface CertPushTargetIn {
+  name?: string; certificate_id?: string; kind?: CertPushKind; api_url?: string; verify_tls?: boolean;
+  options?: Record<string, any>; verify_endpoint?: string | null; auto_push?: boolean; enabled?: boolean;
+  secret?: { api_key: string; api_secret?: string } | null;
+}
+export async function listCertPushTargets(): Promise<CertPushTarget[]> {
+  const { data } = await apiClient.get<{ items: CertPushTarget[] }>("/api/v1/cert-push-targets");
+  return data.items;
+}
+export async function createCertPushTarget(body: CertPushTargetIn): Promise<CertPushTarget> {
+  const { data } = await apiClient.post<CertPushTarget>("/api/v1/cert-push-targets", body);
+  return data;
+}
+export async function updateCertPushTarget(id: string, body: CertPushTargetIn): Promise<CertPushTarget> {
+  const { data } = await apiClient.patch<CertPushTarget>(`/api/v1/cert-push-targets/${id}`, body);
+  return data;
+}
+export async function deleteCertPushTarget(id: string): Promise<void> {
+  await apiClient.delete(`/api/v1/cert-push-targets/${id}`);
+}
+export async function pushCertNow(id: string): Promise<{ task_id: string }> {
+  const { data } = await apiClient.post<{ task_id: string }>(`/api/v1/cert-push-targets/${id}/push`);
+  return data;
+}
+/** 設備上的一張憑證（OPNsense 選要替換哪一張；pfSense 唯讀看哪張在用） */
+export interface DeviceCert {
+  id: string; name: string; subject: string; in_use?: boolean; is_user?: boolean;
+  issuer?: string | null; valid_from?: string | null; valid_to?: string | null;
+}
+
+export async function listPushDeviceCerts(id: string): Promise<DeviceCert[]> {
+  const { data } = await apiClient.get<{ items: DeviceCert[] }>(
+    `/api/v1/cert-push-targets/${id}/device-certs`);
+  return data.items;
+}
+
+/** 還沒存檔就讀設備上的憑證：用表單上的帳密；編輯時帳密留空就帶 target_id 用已存的（10-22） */
+export async function previewPushDeviceCerts(body: {
+  kind: CertPushKind; api_url: string; verify_tls: boolean;
+  secret?: { api_key: string; api_secret: string } | null; target_id?: string | null;
+}): Promise<DeviceCert[]> {
+  const { data } = await apiClient.post<{ items: DeviceCert[] }>(
+    "/api/v1/cert-push-targets/device-certs/preview", body);
+  return data.items;
 }

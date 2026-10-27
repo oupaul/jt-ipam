@@ -35,6 +35,8 @@ export interface IPChangeFilter {
   until?: string;
   page?: number;
   page_size?: number;
+  sort?: string;                 // created_at（預設）/ ip / event_type / field / source / actor
+  order?: "asc" | "desc";
 }
 
 export interface HistoryFacet { value: string; count: number }
@@ -94,9 +96,15 @@ export async function getAddressSwitchPort(addressId: string): Promise<SwitchPor
 // 事件類型 / 來源 (與後端 EVENT_TYPES / CHANGE_SOURCES 對齊)
 export const IP_CHANGE_EVENT_TYPES = [
   "created", "deleted", "hostname_changed", "mac_changed",
-  "state_changed", "online", "offline", "arp_changed", "edited",
+  "state_changed", "online", "offline", "arp_changed", "os_changed", "kind_changed", "edited",
 ] as const;
 
+// 篩選選項：各整合寫入時用的來源名稱（以前只列 7 個，mikrotik、fortigate 等選不到）。
+// 「上線／失聯」翻轉的來源是讓它上線的那個整合；失聯是 system（系統判定證據過期，#49）
 export const IP_CHANGE_SOURCES = [
-  "manual", "scanner", "librenms", "dns", "proxmox", "opnsense", "system",
+  "manual", "user", "system", "scanner", "librenms", "dns",
+  "proxmox", "esxi", "hyperv", "openstack", "opnsense", "pfsense", "fortigate", "paloalto", "checkpoint", "mikrotik",
+  "wazuh", "zabbix", "ocs", "adguard", "kea_dhcp", "isc_dhcp", "isoinsight", "technitium", "windows_dhcp", "rustdesk",
+  // SNMP 收集（0217）：ARP 補 MAC 時寫的異動記錄
+  "snmp",
 ] as const;

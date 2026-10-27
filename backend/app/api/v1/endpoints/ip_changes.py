@@ -10,11 +10,13 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import String, and_, cast, func, or_, select
+from sqlalchemy import String, and_, case, cast, func, or_, select
+from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser
 from app.core.db import get_session
+from app.core.sqlin import in_values
 from app.models.ip_change_log import CHANGE_SOURCES, EVENT_TYPES, IPChangeLog
 from app.models.section import Section
 from app.models.subnet import Subnet
@@ -42,6 +44,9 @@ async def list_ip_changes(
     until: datetime | None = Query(None, description="結束時間（含）"),
     page: int = Query(1, ge=1, le=10_000),
     page_size: int = Query(50, ge=1, le=500),
+    sort: str | None = Query(None, max_length=32,
+        description="created_at（預設）／ip／event_type／field／source／actor"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
 ) -> Paginated[IPChangeLogRead]:
     stmt = select(IPChangeLog)
     count_stmt = select(func.count()).select_from(IPChangeLog)
@@ -51,7 +56,7 @@ async def list_ip_changes(
 
     def _apply(s: Any) -> Any:
         if sub_vis is not None:
-            s = s.where(IPChangeLog.subnet_id.in_(sub_vis)) if sub_vis else s.where(False)
+            s = s.where(in_values(IPChangeLog.subnet_id, sub_vis)) if sub_vis else s.where(False)
         if ip_id is not None:
             s = s.where(IPChangeLog.ip_id == ip_id)
         if subnet_id is not None:
@@ -87,7 +92,22 @@ async def list_ip_changes(
             ))
         return s
 
-    stmt = _apply(stmt).order_by(IPChangeLog.created_at.desc())
+    # 欄位標題排序（使用者 2026-10-12）：伺服器端分頁，排序也要在伺服器做。IP 照位址大小排
+    #（ip_text 是 host(ip) 快照；先確認長得像位址再轉型，萬一有怪資料也不會整個查詢失敗）；
+    # 沒有值的一律排最後；同值時新的在前
+    ip_inet = case((IPChangeLog.ip_text.op("~")(r"^[0-9A-Fa-f:.]+(/[0-9]{1,3})?$"),
+                    cast(IPChangeLog.ip_text, INET)), else_=None)
+    sort_cols: dict[str, Any] = {
+        "created_at": IPChangeLog.created_at, "ip": ip_inet, "event_type": IPChangeLog.event_type,
+        "field": IPChangeLog.field, "source": IPChangeLog.source,
+        "actor": select(User.username).where(User.id == IPChangeLog.actor_user_id).scalar_subquery(),
+    }
+    if sort in sort_cols:
+        col = sort_cols[sort]
+        stmt = _apply(stmt).order_by((col.desc() if order == "desc" else col.asc()).nulls_last(),
+                                     IPChangeLog.created_at.desc(), IPChangeLog.id)
+    else:
+        stmt = _apply(stmt).order_by(IPChangeLog.created_at.desc(), IPChangeLog.id)
     count_stmt = _apply(count_stmt)
 
     total = (await session.execute(count_stmt)).scalar_one()
@@ -100,7 +120,7 @@ async def list_ip_changes(
     name_map: dict[uuid.UUID, str] = {}
     if actor_ids:
         for uid, uname in (await session.execute(
-            select(User.id, User.username).where(User.id.in_(actor_ids))
+            select(User.id, User.username).where(User.id.in_(actor_ids))  # bounded: actors on one page
         )).all():
             name_map[uid] = uname
 

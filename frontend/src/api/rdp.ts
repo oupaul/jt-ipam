@@ -20,6 +20,7 @@ export interface RdpCredential {
   has_private_key: boolean;
   last_used_at: string | null;
   created_at: string;
+  device_changed?: boolean;   // 存下之後位址換了設備：不自動帶入（utils/savedCreds）
 }
 export async function listRdpCredentials(targetIpId?: string): Promise<RdpCredential[]> {
   const { data } = await apiClient.get<RdpCredential[]>("/api/v1/ssh-credentials", {
@@ -46,6 +47,8 @@ export interface RdpTicket {
   default_size: { width: number; height: number };
   has_saved_creds: boolean;
   clipboard_paste?: boolean;   // 管理者是否允許「控制端貼上文字到被控端」
+  /** 這次用哪個引擎（系統設定）；`guacd` 時畫面交給 GuacView */
+  engine?: string;
   ttl: number;
 }
 

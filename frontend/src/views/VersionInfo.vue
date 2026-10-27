@@ -42,7 +42,24 @@ const optionalTools = computed(() => {
   const ot = info.value?.host?.optional_tools;
   return ot ? Object.entries(ot).map(([name, v]) => ({ name, ...v })) : [];
 });
-const missingTools = computed(() => optionalTools.value.filter((x) => !x.present));
+// 備用引擎（aardwolf）沒裝是正常的：不列進警告（有的 Python 版本根本裝不起來）；
+// GeoIP 要管理員自己的 MaxMind 帳號（opt_in），沒設定也是正常的
+// FreeRDP 引擎沒選用（engine_off）：那組套件本來就不裝，不算缺（客戶 2026-10-08）
+const missingTools = computed(() => optionalTools.value.filter((x) => !x.present && !x.fallback && !x.opt_in
+                                                                      && !x.engine_off));
+// 下載來的資料庫各有自己的頁面（版本、更新、設定），這裡只列狀態並連過去
+const toolPages: Record<string, string> = { recog: "recog_admin", oui: "oui_admin", geoip: "system_settings" };
+// 必要相依（guacd：RDP／VNC 的預設引擎，必裝）：沒裝或沒在跑都要用紅色講清楚
+const requiredTools = computed(() => {
+  const rt = info.value?.host?.required_tools;
+  return rt ? Object.entries(rt).map(([name, v]) => ({ name, ...v })) : [];
+});
+const brokenRequired = computed(() => requiredTools.value.filter((x) => !x.running));
+/** 「1.6.1-pre.d9ec474 (build 3) for Ubuntu 24.04.4 LTS (amd64)」→ 去掉「for …」：OS 上面已經有了，
+ *  整串放在卡片右邊會把名稱欄擠成一行一個字（0.6.49 實機回報） */
+function shortVersion(v: string | null | undefined): string {
+  return (v || "").replace(/\s+for\s+.*$/, "").trim();
+}
 
 async function load() {
   loading.value = true;
@@ -134,6 +151,31 @@ onMounted(load);
         </div>
       </template>
 
+      <!-- 必要相依：缺了或沒在跑，對應功能就不能正常運作 -->
+      <template v-if="requiredTools.length">
+        <div class="ver-pkg-head">
+          <span class="ver-pkg-title">{{ t("version.section_required") }}</span>
+          <span class="ver-pkg-hint">{{ t("version.section_required_hint") }}</span>
+        </div>
+        <n-alert v-if="brokenRequired.length" type="error" :bordered="false" style="margin-bottom:10px">
+          {{ t("version.required_missing", { pkgs: brokenRequired.map(x => x.name).join(", ") }) }}
+        </n-alert>
+        <div class="ver-pkg-grid">
+          <!-- 右邊只放短的狀態字；版本放名稱下面自己一行（版本字串很長，放右邊會把名稱擠扁） -->
+          <div v-for="p in requiredTools" :key="p.name" class="ver-pkg">
+            <span class="ver-pkg__name">
+              {{ p.name }}
+              <span v-if="p.version" class="ver-req-version">{{ shortVersion(p.version) }}</span>
+              <span class="ver-opt-use">{{ p.used_by }}</span>
+            </span>
+            <span class="ver-pkg__ver" :style="p.running ? 'color:#18a058' : 'color:#d03050'">
+              {{ p.running ? t("version.required_running")
+                 : p.present ? t("version.required_not_running") : t("version.optional_absent") }}
+            </span>
+          </div>
+        </div>
+      </template>
+
       <!-- 選用相依（缺了只會讓對應功能不可用，不影響服務） -->
       <template v-if="optionalTools.length">
         <div class="ver-pkg-head">
@@ -145,9 +187,17 @@ onMounted(load);
         </n-alert>
         <div class="ver-pkg-grid">
           <div v-for="p in optionalTools" :key="p.name" class="ver-pkg">
-            <span class="ver-pkg__name">{{ p.name }}<span class="ver-opt-use">{{ p.used_by }}</span></span>
-            <span class="ver-pkg__ver" :style="p.present ? '' : 'color:#d03050'">
-              {{ p.present ? t("version.optional_present") : t("version.optional_absent") }}
+            <!-- Recog／OUI／GeoIP 的詳細資訊與更新在各自的頁面，這裡只列版本並連過去 -->
+            <span class="ver-pkg__name">
+              <router-link v-if="toolPages[p.name]" :to="{ name: toolPages[p.name] }" class="ver-link"
+                           :data-testid="`version-${p.name}-link`">{{ p.name }}</router-link>
+              <template v-else>{{ p.name }}</template>
+              <span class="ver-opt-use">{{ p.used_by }}</span>
+            </span>
+            <span class="ver-pkg__ver" :style="p.present || p.fallback || p.opt_in || p.engine_off ? '' : 'color:#d03050'">
+              {{ p.present ? (p.version ? p.version : t("version.optional_present"))
+                : (p.engine_off ? t("version.optional_engine_off")
+                  : (p.opt_in ? t("version.optional_not_configured") : t("version.optional_absent"))) }}
             </span>
           </div>
         </div>
@@ -229,7 +279,12 @@ onMounted(load);
   border: 1px solid var(--n-border-color, rgba(128,128,128,.16));
   border-radius: 9px;
 }
-.ver-pkg__name { font-size: 13.5px; opacity: .85; }
+/* min-width:0 + 自己吃掉剩下的寬度：右邊的值再長，名稱欄也不會被擠成一行一個字 */
+.ver-pkg__name { font-size: 13.5px; opacity: .85; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.ver-req-version {
+  display: block; margin-top: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
+}
 .ver-pkg__ver {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 13px; font-weight: 600;

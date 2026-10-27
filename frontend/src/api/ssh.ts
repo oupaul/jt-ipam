@@ -18,6 +18,7 @@ export interface SshCredential {
   has_private_key: boolean;
   last_used_at: string | null;
   created_at: string;
+  device_changed?: boolean;   // 存下之後位址換了設備：不自動帶入（utils/savedCreds）
 }
 export async function listSshCredentials(targetIpId?: string): Promise<SshCredential[]> {
   const { data } = await apiClient.get<SshCredential[]>("/api/v1/ssh-credentials", {
@@ -42,12 +43,22 @@ export interface SshTicket {
   host_key_pinned: boolean;
   default_port: number;
   ttl: number;
+  /** 這次用哪個引擎（系統設定）；`guacd` 時畫面交給 GuacView */
+  engine?: string;
 }
 
 // 換發短期一次性 ticket（之後用它開 WebSocket）。注意帶 /api/v1 首碼。
 export async function requestSshTicket(addressId: string): Promise<SshTicket> {
   const { data } = await apiClient.post<SshTicket>(
     `/api/v1/addresses/${addressId}/ssh/ticket`,
+  );
+  return data;
+}
+
+// 清掉記住的主機金鑰（位址換給另一台設備、或對方重新產生金鑰之後）。要子網路寫入權限。
+export async function resetSshHostKey(addressId: string): Promise<{ cleared: boolean }> {
+  const { data } = await apiClient.delete<{ cleared: boolean }>(
+    `/api/v1/addresses/${addressId}/ssh/host-key`,
   );
   return data;
 }

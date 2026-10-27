@@ -20,10 +20,25 @@ import { autoSort } from "@/composables/useTableSort";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
+import { auditSinceFromQuery } from "@/utils/dashboardKpiTarget";
 const { t } = useI18n();
 
 const router = useRouter();
+const route = useRoute();
+// 從儀表板「24h 稽核事件」點進來：?since=24h 只看最近 24 小時（可以按 × 拿掉）
+const sinceLabel = ref<string | null>(auditSinceFromQuery(route.query.since)?.label ?? null);
+function sinceIso(): string | undefined {
+  return sinceLabel.value ? auditSinceFromQuery(sinceLabel.value)?.since : undefined;
+}
+function clearSince() {
+  sinceLabel.value = null;
+  const q = { ...route.query };
+  delete q.since;
+  router.replace({ query: q }).catch(() => {});
+  offset.value = 0;
+  void refresh();
+}
 
 // 把 audit (object_type, object_id) → 可點連結
 function renderObjectLink(objectType: string | null, objectId: string | null, label?: string | null) {
@@ -54,12 +69,19 @@ function renderObjectLink(objectType: string | null, objectId: string | null, la
     // 整合實例 → 點進對應的設定頁（標籤已由後端解析成實例名稱）
     case "fortigate_firewall":  return go("fortigate");
     case "paloalto_firewall":   return go("paloalto");
+    case "checkpoint_server":   return go("checkpoint");
+    case "checkpoint_gaia_target": return go("checkpoint", undefined, { tab: "gateways" });
     case "pfsense_firewall":    return go("pfsense");
     case "opnsense_firewall":   return go("firewall_admin");
     case "librenms_instance":   return go("librenms");
     case "wazuh_instance":      return go("wazuh");
     case "adguard_instance":    return go("adguard");
     case "windows_dhcp_server": return go("windows_dhcp");
+    case "kea_dhcp_server":     return go("kea_dhcp");
+    case "technitium_dhcp_server": return go("technitium_dhcp");
+    case "isc_dhcp_server":     return go("isc_dhcp");
+    case "isoinsight_source":   return go("isoinsight");
+    case "rustdesk_server":     return go("rustdesk");
     case "proxmox_instance":
     case "virt_cluster":        return go("virt_admin");
     case "dns_server":          return go("dns");
@@ -70,7 +92,8 @@ function renderObjectLink(objectType: string | null, objectId: string | null, la
   }
 }
 
-const { visibleKeys: auditVis, setVisible: auditSet, reset: auditReset } = useColumnPrefs(
+const { visibleKeys: auditVis, setVisible: auditSet, reset: auditReset,
+  order: auditOrder, setOrder: auditSetOrder, orderColumns: auditOrderCols } = useColumnPrefs(
   "audit",
   ["id", "ts", "actor", "actor_ip", "object_type", "object_link", "action", "diff", "this_hash_hex"],
   // 預設不顯示 ID 與雜湊（要稽核鏈驗證時再自行於「欄位」開）
@@ -165,7 +188,7 @@ const allColumns = computed<DataTableColumns<AuditLog>>(() => autoSort([
     render: (r) => renderObjectLink(r.object_type, r.object_id, r.object_label),
   },
   {
-    title: t("audit.action"), key: "action", width: 120,
+    title: t("audit.action"), key: "action", width: 230,
     render: (r) => h_tag(r.action, action_color(r.action)),
   },
   {
@@ -179,7 +202,7 @@ const allColumns = computed<DataTableColumns<AuditLog>>(() => autoSort([
 ]));
 
 const columns = computed<DataTableColumns<AuditLog>>(() =>
-  allColumns.value.filter((c: any) => auditVis.value.includes(c.key)),
+  auditOrderCols(allColumns.value.filter((c: any) => auditVis.value.includes(c.key))),
 );
 
 // 匯出全部：用相同篩選分頁抓完整資料集
@@ -191,6 +214,7 @@ async function fetchAllForExport(): Promise<AuditLog[]> {
     const res = await listAudit({
       object_type: filterObjType.value || undefined,
       action: filterActions.value.length ? filterActions.value : undefined,
+      since: sinceIso(),
       limit: big, offset: off,
     });
     all.push(...res.items);
@@ -206,6 +230,7 @@ async function refresh() {
     const res = await listAudit({
       object_type: filterObjType.value || undefined,
       action: filterActions.value.length ? filterActions.value : undefined,
+      since: sinceIso(),
       limit: limit.value, offset: offset.value,
     });
     rows.value = res.items;
@@ -243,8 +268,10 @@ function action_color(action: string): "default" | "success" | "warning" | "erro
   return "default";
 }
 
+// 標籤不會自己縮：比欄寬長的動作名（rustdesk.web_session_close…）會整段蓋到右邊的欄位。
+// 限制在欄寬內、超出的用 … 收起來，滑過去看完整名稱。
 function h_tag(text: string, type: "default" | "success" | "warning" | "error" | "info" = "default") {
-  return h(NTag, { type, size: "small", bordered: false }, () => text);
+  return h(NTag, { type, size: "small", bordered: false, class: "audit-tag", title: text }, () => text);
 }
 
 // 差異欄：整理成好讀文字（field: 舊 → 新；或 field: 值），不直接吐 JSON。
@@ -274,6 +301,9 @@ onMounted(() => {
       </n-space>
     </template>
     <n-space style="margin-bottom: 12px" align="center">
+      <n-tag v-if="sinceLabel" type="warning" closable data-testid="audit-since" @close="clearSince">
+        {{ t("audit.since_tag", { range: sinceLabel.endsWith("d") ? t("audit.since_days", { n: parseInt(sinceLabel) }) : t("audit.since_hours", { n: parseInt(sinceLabel) }) }) }}
+      </n-tag>
       <n-select v-model:value="filterObjType" :options="objTypeOptions" filterable clearable
                 :placeholder="t('audit.filter_object_type')"
                 @update:value="refresh"
@@ -292,7 +322,8 @@ onMounted(() => {
         {{ t("audit.verify_chain") }}
       </n-button>
       <ColumnPicker :all="auditPickerItems" :visible="auditVis"
-                    @update:visible="auditSet" @reset="auditReset" />
+                    @update:visible="auditSet" @reset="auditReset"
+                    :order="auditOrder" @update:order="auditSetOrder" />
       <ExportButton :columns="columns" :rows="rows" :fetch-all="fetchAllForExport"
                     filename="audit" :title="t('audit.title')" />
       <span style="opacity: 0.6">{{ t("common.total_n", { n: total }) }}</span>
@@ -350,6 +381,13 @@ onMounted(() => {
     </n-modal>
   </n-card>
 </template>
+
+<!-- 表格儲存格是 NDataTable 自己渲染的，scoped 樣式套不到 render 函式產生的標籤 -->
+<style>
+.audit-tag { max-width: 100%; }
+/* 只裁水平方向：overflow:hidden 會連底線（_）往下突出的那一截一起切掉，看起來像空白 */
+.audit-tag .n-tag__content { min-width: 0; overflow-x: clip; overflow-y: visible; text-overflow: ellipsis; }
+</style>
 
 <style scoped>
 .audit-meta { width: 100%; border-collapse: collapse; font-size: 13px; }

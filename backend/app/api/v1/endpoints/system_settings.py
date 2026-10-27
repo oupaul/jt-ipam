@@ -6,10 +6,11 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -422,6 +423,66 @@ async def put_ui_display(
     return UiDisplayOut(change_log_dim_days=days)
 
 
+class SearchTypeSetting(StrictModel):
+    type: Annotated[str, Field(max_length=32)]
+    enabled: bool = True
+    fields: Annotated[list[Annotated[str, Field(max_length=32)]], Field(max_length=20)] = Field(default_factory=list)
+
+
+class SearchSettingsIn(StrictModel):
+    # 隨打即找（邊打邊出結果）；關掉就按 Enter 才搜尋
+    instant: bool = True
+    # 順序＝結果的排列順序；沒列到的類型照預設接在後面
+    types: Annotated[list[SearchTypeSetting], Field(max_length=50)] = Field(default_factory=list)
+
+
+class SearchSettingsOut(SearchSettingsIn):
+    # 每個類型可以比對的欄位（允許清單）
+    catalog: dict[str, list[str]] = Field(default_factory=dict)
+
+
+def _search_settings_out(s: dict[str, Any]) -> SearchSettingsOut:
+    from app.services.search_settings import CATALOG
+    return SearchSettingsOut(instant=s["instant"], types=[SearchTypeSetting(**x) for x in s["types"]],
+                             catalog={t: list(f) for t, f in CATALOG.items()})
+
+
+@public_router.get("/search-settings", response_model=SearchSettingsOut)
+async def get_search_settings_endpoint(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SearchSettingsOut:
+    """全站搜尋的設定（使用者 2026-10-13）。任何登入的人都讀得到：搜尋框要知道要不要隨打即找、怎麼排。"""
+    from app.services.search_settings import get_search_settings
+    return _search_settings_out(await get_search_settings(session))
+
+
+@router.put("/search-settings", response_model=SearchSettingsOut)
+async def put_search_settings(
+    payload: SearchSettingsIn,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> SearchSettingsOut:
+    from app.core.ui_error import UiError, detail_of
+    from app.services.search_settings import set_search_settings
+    try:
+        s = await set_search_settings(session, payload.model_dump(), updated_by_user_id=user.id)
+    except UiError as exc:
+        raise HTTPException(status_code=422, detail=detail_of(exc, "search_settings_invalid")) from exc
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "global_search", "instant": s["instant"],
+              "types": [f"{x['type']}{'' if x['enabled'] else ' (off)'}: {','.join(x['fields'])}" for x in s["types"]]},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return _search_settings_out(s)
+
+
 class DevicePortFilterOut(StrictModel):
     # 匯入裝置連接埠時，過濾掉符合這些名稱樣式（正則）的偽介面（Windows NDIS / WAN Miniport
     # 等）。filter_pseudo 是總開關；關閉時匯入不過濾也不清除。
@@ -467,8 +528,18 @@ class ConsoleSecurityIn(StrictModel):
 
     # 允許 RDP 控制端把文字貼到被控端（剪貼簿單向重導；預設關閉）
     rdp_clipboard_paste: bool = False
-    # RDP 連線引擎：aardwolf（預設，純 Python）或 freerdp（相容性較好，需外部行程）
-    rdp_engine: Literal["aardwolf", "freerdp"] = "aardwolf"
+    # RDP 連線引擎：guacd（預設，jt-ipam-guacd 服務，見 app/services/guacd.py）、
+    # aardwolf（純 Python）、freerdp（相容性較好，需外部行程）。
+    # 沒帶＝維持原值（以前預設成 aardwolf：沒帶這個欄位的舊頁面一存就把引擎改回去）
+    rdp_engine: Literal["aardwolf", "freerdp", "guacd"] | None = None
+    # VNC／SSH 連線引擎：builtin（一路以來的實作）或 guacd（VNC 的預設）。
+    # 沒帶＝維持原值：還開著舊版頁面的人按儲存，不可以把別人剛設好的引擎改回去
+    vnc_engine: Literal["builtin", "guacd"] | None = None
+    ssh_engine: Literal["builtin", "guacd"] | None = None
+    # SFTP 單檔上下傳上限（MB）；沒帶＝維持原值（理由同上）。上界見 SFTP_MAX_FILE_MB_LIMIT
+    sftp_max_file_mb: Annotated[int, Field(ge=1, le=102_400)] | None = None
+    # 允許主控台經由掃描代理中繼（issue #24 階段二，預設關）；沒帶＝維持原值
+    console_relay: bool | None = None
 
 
 class ConsoleSecurityOut(ConsoleSecurityIn):
@@ -480,7 +551,17 @@ class ConsoleSecurityOut(ConsoleSecurityIn):
 
     freerdp_available: bool = False
     freerdp_missing: list[str] = []
+    #: aardwolf（預設引擎與 VNC 主控台都靠它）有沒有裝起來，以及這台的 Python 版本 ——
+    #: 裝不起來最常見的原因是 Python 太新、沒有預編譯套件（issue #39）
+    aardwolf_available: bool = False
+    python_version: str = ""
     freerdp_install_cmd: str = ""
+    #: guacd：服務有沒有在跑、哪些協定的外掛載得到（設定頁要看得到，選了才發現不能用更糟）
+    guacd_available: bool = False
+    guacd_protocols: dict[str, bool] = {}
+    guacd_address: str = ""
+    guacd_error: str = ""
+    guacd_install_cmd: str = ""
 
 
 @public_router.get("/console-security", response_model=ConsoleSecurityOut)
@@ -488,10 +569,21 @@ async def get_console_security(
     _user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ConsoleSecurityOut:
-    from app.services.system_config import get_rdp_clipboard_paste, get_rdp_engine
-    return _console_security_out(
+    from app.services.system_config import (
+        get_console_relay_enabled,
+        get_rdp_clipboard_paste,
+        get_rdp_engine,
+        get_sftp_max_file_mb,
+        get_ssh_engine,
+        get_vnc_engine,
+    )
+    return await _console_security_out(
         rdp_clipboard_paste=await get_rdp_clipboard_paste(session),
         rdp_engine=await get_rdp_engine(session),
+        vnc_engine=await get_vnc_engine(session),
+        ssh_engine=await get_ssh_engine(session),
+        sftp_max_file_mb=await get_sftp_max_file_mb(session),
+        console_relay=await get_console_relay_enabled(session),
     )
 
 
@@ -502,7 +594,19 @@ async def put_console_security(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ConsoleSecurityOut:
-    from app.services.system_config import set_rdp_clipboard_paste, set_rdp_engine
+    from app.services.system_config import (
+        get_console_relay_enabled,
+        get_rdp_engine,
+        get_sftp_max_file_mb,
+        get_ssh_engine,
+        get_vnc_engine,
+        set_console_relay_enabled,
+        set_rdp_clipboard_paste,
+        set_rdp_engine,
+        set_sftp_max_file_mb,
+        set_ssh_engine,
+        set_vnc_engine,
+    )
     await append_audit(
         session, actor_user_id=str(user.id),
         actor_ip=request.client.host if request.client else None,
@@ -511,28 +615,85 @@ async def put_console_security(
         # 換引擎會改變「連得上／連不上」，稽核要看得出是誰換的
         diff={"target": "console_security",
               "rdp_clipboard_paste": payload.rdp_clipboard_paste,
-              "rdp_engine": payload.rdp_engine},
+              "rdp_engine": payload.rdp_engine,
+              "vnc_engine": payload.vnc_engine, "ssh_engine": payload.ssh_engine,
+              "sftp_max_file_mb": payload.sftp_max_file_mb,
+              "console_relay": payload.console_relay},
         request_id=getattr(request.state, "request_id", None),
     )
     enabled = await set_rdp_clipboard_paste(
         session, enabled=payload.rdp_clipboard_paste, updated_by_user_id=user.id)
-    engine = await set_rdp_engine(
-        session, engine=payload.rdp_engine, updated_by_user_id=user.id)
-    return _console_security_out(rdp_clipboard_paste=enabled, rdp_engine=engine)
+    engine = (await set_rdp_engine(session, engine=payload.rdp_engine, updated_by_user_id=user.id)
+              if payload.rdp_engine else await get_rdp_engine(session))
+    vnc_engine = (await set_vnc_engine(session, engine=payload.vnc_engine, updated_by_user_id=user.id)
+                  if payload.vnc_engine else await get_vnc_engine(session))
+    ssh_engine = (await set_ssh_engine(session, engine=payload.ssh_engine, updated_by_user_id=user.id)
+                  if payload.ssh_engine else await get_ssh_engine(session))
+    sftp_mb = (await set_sftp_max_file_mb(session, mb=payload.sftp_max_file_mb, updated_by_user_id=user.id)
+               if payload.sftp_max_file_mb is not None else await get_sftp_max_file_mb(session))
+    relay = (await set_console_relay_enabled(session, enabled=payload.console_relay, updated_by_user_id=user.id)
+             if payload.console_relay is not None else await get_console_relay_enabled(session))
+    return await _console_security_out(rdp_clipboard_paste=enabled, rdp_engine=engine,
+                                       vnc_engine=vnc_engine, ssh_engine=ssh_engine,
+                                       sftp_max_file_mb=sftp_mb, console_relay=relay)
 
 
-def _console_security_out(*, rdp_clipboard_paste: bool, rdp_engine: str) -> ConsoleSecurityOut:
-    from app.services.rdp_freerdp import FREERDP_APT_HINT, availability
+async def _console_security_out(*, rdp_clipboard_paste: bool, rdp_engine: str,
+                                vnc_engine: str = "guacd", ssh_engine: str = "builtin",
+                                sftp_max_file_mb: int = 100,
+                                console_relay: bool = False) -> ConsoleSecurityOut:
+    from app.services import guacd as guac
+    from app.services.rdp_freerdp import availability, freerdp_apt_hint
 
     av = availability()
     missing = list(av["missing_packages"]) + list(av["missing_modules"])
+    from app.api.v1.endpoints.rdp_console import RDP_AVAILABLE, python_version
+    gst = await guac.probe(use_cache=False)
     return ConsoleSecurityOut(
         rdp_clipboard_paste=rdp_clipboard_paste,
         rdp_engine=rdp_engine,  # type: ignore[arg-type]
+        vnc_engine=vnc_engine,  # type: ignore[arg-type]
+        ssh_engine=ssh_engine,  # type: ignore[arg-type]
+        sftp_max_file_mb=sftp_max_file_mb,
+        console_relay=console_relay,
         freerdp_available=bool(av["ok"]),
         freerdp_missing=missing,
-        freerdp_install_cmd="" if av["ok"] else FREERDP_APT_HINT,
+        freerdp_install_cmd="" if av["ok"] else freerdp_apt_hint(),
+        aardwolf_available=RDP_AVAILABLE,
+        python_version=python_version(),
+        guacd_available=bool(gst["ok"]),
+        guacd_protocols=dict(gst["protocols"]),
+        guacd_address=str(gst["address"]),
+        guacd_error=str(gst.get("error") or ""),
+        guacd_install_cmd="" if gst["ok"] else "sudo /opt/jt-ipam/scripts/jt-ipam.sh upgrade --with-guacd",
     )
+
+
+@router.post("/sftp-probe/ticket")
+async def issue_sftp_probe_ticket(user: CurrentUser, request: Request) -> dict[str, Any]:
+    """SFTP 傳輸路徑測試的票證（管理者限定，見 app/services/sftp_probe.py）。
+
+    測試要由瀏覽器發起、走跟 SFTP 同一條 WebSocket 路徑 —— 只有那樣才會經過前面的反向代理。
+    不寫稽核：不讀也不改任何資料，只把一段隨機資料來回送一次。
+    """
+    import json as _json
+    import secrets as _secrets
+
+    from app.api.v1.endpoints.sftp_console import _probe_ticket_key, _redis_client
+    from app.core.rate_limit import limit_per_ip
+    from app.services import sftp_probe
+
+    await limit_per_ip(request, name="ssh")
+    ticket = _secrets.token_urlsafe(32)
+    await _redis_client().set(_probe_ticket_key(ticket),
+                              _json.dumps({"user_id": str(user.id)}), ex=60)
+    return {
+        "ticket": ticket,
+        "ws_path": f"/api/v1/addresses/{sftp_probe.PROBE_ADDRESS_ID}/sftp/ws",
+        "up_bytes": sftp_probe.DEFAULT_TEST_BYTES,
+        "down_bytes": sftp_probe.DEFAULT_TEST_BYTES,
+        "ttl": 60,
+    }
 
 
 # 本機地圖圖磚代理（OSM）：讓「OpenStreetMap」供應商在維持嚴格 CSP（img-src 'self'）+ COEP require-corp
@@ -732,6 +893,7 @@ async def _liveness_candidates(
     """
     from sqlalchemy import func, select
 
+    from app.models.checkpoint_gaia import CheckPointGaiaTarget
     from app.models.firewall import OPNsenseFirewall
     from app.models.fortigate import FortiGateFirewall
     from app.models.librenms import LibreNMSInstance
@@ -747,6 +909,8 @@ async def _liveness_candidates(
 
     present = {
         "scanner": True,
+        # 「跟著所屬設備」是內建的（勾在 IP 上），跟掃描代理一樣永遠列出
+        "device": True,
         "librenms": await _has(LibreNMSInstance),
         "wazuh": await _has(WazuhInstance),
         "zabbix": await _has(ZabbixInstance),
@@ -755,6 +919,8 @@ async def _liveness_candidates(
         "fortigate": await _has(FortiGateFirewall),
         "paloalto": await _has(PaloAltoFirewall),
         "mikrotik": await _has(MikroTikRouter),
+        # Check Point 的 ARP／租約來自閘道的 Gaia API（第二階段），有設定閘道才算
+        "checkpoint": await _has(CheckPointGaiaTarget),
     }
     out: list[LivenessSourceOut] = []
     for key in LIVENESS_SOURCES:
@@ -784,7 +950,8 @@ async def put_online_grace(
     if row is None:
         row = SystemSetting(key="online_grace_minutes", value={}, updated_by=user.id)
         session.add(row)
-    row.value = {"minutes": m, "sources": srcs}
+    # known：存的當下畫面上有哪些來源 —— 之後新增的來源才分得出「沒看過」與「看過、沒勾」
+    row.value = {"minutes": m, "sources": srcs, "known": list(LIVENESS_SOURCES)}
     row.updated_by = user.id
     flag_modified(row, "value")
     await append_audit(
@@ -860,7 +1027,11 @@ async def update_geoip_now(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     """立即下載/更新本地 mmdb（手動觸發；排程由 systemd timer 跑）。"""
-    from app.services.geoip import get_geoip_config, update_databases
+    from datetime import UTC, datetime
+
+    from app.services.background_tasks import record_finished_task
+    from app.services.geoip import get_geoip_config, update_databases, update_outcome
+    started = datetime.now(UTC)
     result = await update_databases(session)
     await append_audit(
         session, actor_user_id=str(user.id),
@@ -871,6 +1042,9 @@ async def update_geoip_now(
         request_id=getattr(request.state, "request_id", None),
     )
     await session.commit()
+    ok, err = update_outcome(result)
+    await record_finished_task(session, kind="geoip.refresh", ok=ok, actor_user_id=user.id,
+                               started_at=started, summary=result, error=err)
     cfg = await get_geoip_config(session)
     return {"result": result, "config": cfg}
 
@@ -889,6 +1063,9 @@ class LLMConfigOut(StrictModel):
     num_ctx: int | None = None
     mcp_external_enabled: bool = False
     mcp_api_key_set: bool = False        # 是否已產生對外 MCP 金鑰（不回明文）
+    mcp_api_key_expires_at: datetime | None = None   # 到期時間（過期的金鑰會被拒絕）
+    mcp_api_key_last_used_at: datetime | None = None  # 目前這把金鑰最後一次被 MCP 用戶端使用（重產後歸零）
+    mcp_api_key_last_used_ip: str | None = None
     ai_audit_enabled: bool = False
     ai_audit_times: list[str] = []       # 執行時刻（"HH:MM"，伺服器本地時區）
     # 排程的「哪幾天」：daily / weekly（配 weekdays）／monthly（配 month_day）
@@ -897,6 +1074,10 @@ class LLMConfigOut(StrictModel):
     ai_audit_month_day: int = 1          # 1–31；短月自動落在該月最後一天
     ai_audit_model: str | None = None    # None＝沿用對話模型
     ai_audit_num_ctx: int | None = None  # None＝沿用對話模型的上下文長度
+    # AI 判讀（未授權 IP 判讀／IP 調查／防火牆規則異動解讀）；None＝沿用對話模型
+    ai_interpret_model: str | None = None
+    ai_interpret_num_ctx: int | None = None
+    chat_thinking: bool = True           # AI 對話允許模型先思考（False＝送關閉思考的參數）
     server_timezone: str = ""            # 排程時刻是照這個時區算的，UI 要講清楚
 
 
@@ -925,6 +1106,10 @@ class LLMConfigPatch(StrictModel):
     ai_audit_model: Annotated[str | None, Field(max_length=128)] = None
     # 巡檢專用上下文長度；0＝清掉，回去沿用對話模型的設定
     ai_audit_num_ctx: Annotated[int | None, Field(ge=0, le=131072)] = None
+    # AI 判讀專用模型／上下文長度；空字串／0 ＝清掉，回去沿用對話模型
+    ai_interpret_model: Annotated[str | None, Field(max_length=128)] = None
+    ai_interpret_num_ctx: Annotated[int | None, Field(ge=0, le=131072)] = None
+    chat_thinking: bool | None = None
 
 
 def _server_tz() -> str:
@@ -934,8 +1119,9 @@ def _server_tz() -> str:
     return str(getattr(tz, "key", None) or tz or "")
 
 
-def _llm_out(cfg: Any) -> LLMConfigOut:
+def _llm_out(cfg: Any, usage: tuple[Any, Any] = (None, None)) -> LLMConfigOut:
     return LLMConfigOut(
+        mcp_api_key_last_used_at=usage[0], mcp_api_key_last_used_ip=usage[1],
         enabled=cfg.enabled, url=cfg.url,
         embedding_model=cfg.embedding_model,
         embedding_base_url=getattr(cfg, "embedding_base_url", None) or "",
@@ -944,6 +1130,7 @@ def _llm_out(cfg: Any) -> LLMConfigOut:
         num_ctx=cfg.num_ctx,
         mcp_external_enabled=cfg.mcp_external_enabled,
         mcp_api_key_set=bool(cfg.mcp_api_key),
+        mcp_api_key_expires_at=cfg.mcp_api_key_expires_at if cfg.mcp_api_key else None,
         ai_audit_enabled=cfg.ai_audit_enabled,
         ai_audit_times=cfg.ai_audit_times,
         ai_audit_frequency=cfg.ai_audit_frequency,
@@ -951,6 +1138,9 @@ def _llm_out(cfg: Any) -> LLMConfigOut:
         ai_audit_month_day=cfg.ai_audit_month_day,
         ai_audit_model=cfg.ai_audit_model,
         ai_audit_num_ctx=cfg.ai_audit_num_ctx,
+        ai_interpret_model=cfg.ai_interpret_model,
+        ai_interpret_num_ctx=cfg.ai_interpret_num_ctx,
+        chat_thinking=cfg.chat_thinking,
         server_timezone=_server_tz(),
     )
 
@@ -960,7 +1150,8 @@ async def get_llm(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> LLMConfigOut:
     cfg = await get_llm_config(session)
-    return _llm_out(cfg)
+    from app.services.system_config import get_mcp_key_usage
+    return _llm_out(cfg, await get_mcp_key_usage(session, cfg.mcp_api_key_id))
 
 
 @router.patch("/llm", response_model=LLMConfigOut)
@@ -990,6 +1181,9 @@ async def patch_llm(
         ai_audit_month_day=changes.get("ai_audit_month_day"),
         ai_audit_model=changes.get("ai_audit_model"),
         ai_audit_num_ctx=changes.get("ai_audit_num_ctx"),
+        ai_interpret_model=changes.get("ai_interpret_model"),
+        ai_interpret_num_ctx=changes.get("ai_interpret_num_ctx"),
+        chat_thinking=changes.get("chat_thinking"),
         updated_by_user_id=user.id,
     )
     await append_audit(
@@ -1005,17 +1199,34 @@ async def patch_llm(
     )
     await session.commit()
     cfg = await get_llm_config(session)
-    return _llm_out(cfg)
+    from app.services.system_config import get_mcp_key_usage
+    return _llm_out(cfg, await get_mcp_key_usage(session, cfg.mcp_api_key_id))
 
 
 @router.get("/llm/mcp-key")
 async def reveal_mcp_key(
-    _user: CurrentUser,
+    user: CurrentUser,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    """檢視目前的對外 MCP 金鑰明文（管理員專用；尚未產生回 null）。"""
+    """檢視目前的對外 MCP 金鑰明文（管理員專用；尚未產生回 null）。每次檢視都留稽核。"""
     cfg = await get_llm_config(session)
+    if cfg.mcp_api_key:
+        await append_audit(
+            session, actor_user_id=str(user.id),
+            actor_ip=request.client.host if request.client else None,
+            actor_user_agent=request.headers.get("user-agent"),
+            object_type="system_setting", object_id=None, action="secret_view",
+            diff={"setting": "mcp_api_key"},
+            request_id=getattr(request.state, "request_id", None),
+        )
+        await session.commit()
     return {"api_key": cfg.mcp_api_key}
+
+
+class McpKeyRotateIn(StrictModel):
+    #: 有效天數（1–365）；不送 body 時用預設 90 天
+    expires_in_days: int = Field(default=90, ge=1, le=365)
 
 
 @router.post("/llm/mcp-key/rotate")
@@ -1023,21 +1234,26 @@ async def rotate_mcp_key(
     user: CurrentUser,
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
+    payload: Annotated[McpKeyRotateIn | None, Body()] = None,
 ) -> dict[str, Any]:
-    """產生 / 更換對外 MCP 金鑰（唯讀），綁定目前管理員身份；回傳明文（僅此一次完整顯示）。"""
+    """產生 / 更換對外 MCP 金鑰（唯讀），綁定目前管理員身份；回傳明文（僅此一次完整顯示）與到期時間。"""
     from app.services.system_config import rotate_mcp_api_key
-    key = await rotate_mcp_api_key(session, principal_user_id=user.id, updated_by_user_id=user.id)
+    days = (payload or McpKeyRotateIn()).expires_in_days
+    key = await rotate_mcp_api_key(session, principal_user_id=user.id, updated_by_user_id=user.id,
+                                   expires_in_days=days)
     await append_audit(
         session,
         actor_user_id=str(user.id),
         actor_ip=request.client.host if request.client else None,
         actor_user_agent=request.headers.get("user-agent"),
         object_type="system_setting", object_id=None,
-        action="update", diff={"changes": {"mcp_api_key": "rotated"}},
+        action="update", diff={"changes": {"mcp_api_key": "rotated"}, "expires_in_days": days},
         request_id=getattr(request.state, "request_id", None),
     )
     await session.commit()
-    return {"api_key": key}
+    cfg = await get_llm_config(session)
+    exp = cfg.mcp_api_key_expires_at
+    return {"api_key": key, "expires_at": exp.isoformat() if exp else None}
 
 
 @router.get("/llm/models")
@@ -1156,6 +1372,7 @@ async def preview_autolink(
 import uuid as _uuid
 from typing import Literal as _Literal
 
+from sqlalchemy import func as _func
 from sqlalchemy import select as _select
 
 from app.models.permission import Permission as _Permission
@@ -1180,6 +1397,25 @@ class PermissionGrantCreate(StrictModel):
     principal_type: _Literal["user", "group"]
     principal_id: _uuid.UUID
     level: _Literal["read", "write", "admin"]
+
+
+@router.get("/permissions/summary")
+async def permissions_summary(session: Annotated[AsyncSession, Depends(get_session)]) -> dict[str, Any]:
+    """權限指派清單用：每個帳號掛了哪些角色、有幾筆直接的物件授權（2026-10-22）。
+    一次算全部帳號（兩個 GROUP BY），清單不必逐一打開每個人。"""
+    from app.models.user import Group as _Group
+    from app.models.user import UserGroupMember as _Member
+
+    out: dict[str, Any] = {}
+    for uid, name in (await session.execute(
+            _select(_Member.user_id, _Group.name).join(_Group, _Group.id == _Member.group_id)
+            .order_by(_Group.name))).all():
+        out.setdefault(str(uid), {"roles": [], "grants": 0})["roles"].append(name)
+    for pid, n in (await session.execute(
+            _select(_Permission.principal_id, _func.count()).where(_Permission.principal_type == "user")
+            .group_by(_Permission.principal_id))).all():
+        out.setdefault(str(pid), {"roles": [], "grants": 0})["grants"] = int(n)
+    return out
 
 
 @router.get("/permissions", response_model=list[PermissionGrantOut])
@@ -1325,11 +1561,11 @@ def _gather_version_info() -> dict[str, Any]:
         "fastapi", "starlette", "sqlalchemy", "pydantic", "pydantic-settings",
         "asyncpg", "alembic", "uvicorn", "httpx", "redis", "celery",
         "argon2-cffi", "cryptography", "defusedxml", "pyjwt", "pyotp",
-        "python-multipart", "email-validator",
+        "python-multipart", "email-validator", "urllib3", "multidict", "aiohttp",
         "authlib", "python3-saml", "ldap3", "pyrad",
         "pymysql", "asyncssh", "dnspython", "pywinrm", "geoip2",
-        "strawberry-graphql", "pgvector", "mcp",
-        "aardwolf", "websockets", "pillow",
+        "pgvector", "mcp",
+        "aardwolf", "websockets", "pillow", "fpdf2", "certifi",
         "structlog", "python-json-logger",
     ]
     versions: dict[str, str | None] = {}
@@ -1349,7 +1585,9 @@ def _gather_version_info() -> dict[str, Any]:
               "vue-i18n", "axios", "@xterm/xterm", "@xterm/addon-fit",
               "@xterm/addon-unicode11", "@xterm/addon-web-links",
               "@novnc/novnc", "@iconoir/vue", "@vueuse/core",
-              "cytoscape", "cytoscape-cose-bilkent", "qrcode", "vfonts", "zod"]:
+              "cytoscape", "cytoscape-cose-bilkent", "fzstd", "qrcode", "tweetnacl", "vfonts", "zod",
+              "@fontsource-variable/inter", "@fontsource-variable/exo-2", "@fontsource-variable/orbitron",
+              "@fontsource/audiowide", "@fontsource/rajdhani", "@fontsource/share-tech-mono"]:
         ver: str | None = None
         try:
             ver = json.loads((fe_root / p / "package.json").read_text(encoding="utf-8")).get("version")
@@ -1414,6 +1652,28 @@ async def system_doctor(
     return (await run_checks(session)).as_dict()
 
 
+@router.get("/doctor/stats", dependencies=[Depends(require_admin)])
+async def system_doctor_stats(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """系統診斷的「資料統計」：各類資料各有幾筆（admin）。只在本機計算，不回傳、不蒐集。"""
+    from datetime import UTC, datetime
+
+    from app.services.data_stats import collect
+    return {"generated_at": datetime.now(UTC).isoformat(), "groups": await collect(session)}
+
+
+@router.get("/doctor/storage", dependencies=[Depends(require_admin)])
+async def system_doctor_storage(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    refresh: bool = Query(False, description="重新量主機上的目錄（預設用幾分鐘內的結果）"),
+) -> dict[str, Any]:
+    """系統診斷的「容量用量」（admin）：資料庫依功能分類、最大的資料表、主機上 jt-ipam 的各個目錄。
+    只在本機計算，不回傳、不蒐集。"""
+    from app.services.storage_usage import collect
+    return await collect(session, refresh=refresh)
+
+
 @router.get("/doctor/report", response_class=PlainTextResponse,
             dependencies=[Depends(require_admin)])
 async def system_doctor_report(
@@ -1462,24 +1722,180 @@ async def get_version_info() -> dict[str, Any]:
     # 的地方 —— 選了 FreeRDP 卻連不上時，第一個該看的就是這裡，而不是去翻日誌。
     import shutil as _shutil
 
-    from app.services.rdp_freerdp import REQUIRED_BINARIES
+    from app.services.rdp_freerdp import binary_present, required_binaries
+    # 預設引擎是 guacd：FreeRDP 那組套件（約 150 MB）只有選了這個引擎才裝（升級也只在選了時補）。
+    # 沒選時標 engine_off：列出來但不進「缺少」警告（客戶 2026-10-08 在 Ubuntu 26.04 上被紅字嚇到）
+    try:
+        from app.core.db import SessionLocal as _SL
+        from app.services.system_config import get_rdp_engine
+        async with _SL() as _s:
+            _freerdp_on = (await get_rdp_engine(_s)) == "freerdp"
+    except SQLAlchemyError:
+        _freerdp_on = False
     _rdp_used_by = {
         "xfreerdp": "RDP console (FreeRDP engine)",
         "Xvfb": "RDP console (FreeRDP engine) — virtual display",
         "ffmpeg": "RDP console (FreeRDP engine) — screen capture",
     }
-    for exe, pkg in REQUIRED_BINARIES.items():
+    for exe, pkg in required_binaries().items():
         info["host"]["optional_tools"][exe] = {
-            "present": _shutil.which(exe) is not None,
+            # xfreerdp＝RDP 用戶端，FreeRDP 2（xfreerdp）或 3（xfreerdp3）任一個都算
+            "present": binary_present(exe),
             "package": pkg,
             "used_by": _rdp_used_by.get(exe, "RDP console (FreeRDP engine)"),
+            "engine_off": not _freerdp_on,
         }
+    # SNMP 收集（0217）：本機掃描代理（收集者「伺服器」）要 net-snmp 用戶端工具；install／upgrade 的
+    # ensure_runtime_deps 會裝，裝不起來時這裡看得到。遠端代理的工具盤點在掃描代理頁
+    info["host"]["optional_tools"]["snmpbulkwalk"] = {
+        "present": _shutil.which("snmpbulkwalk") is not None and _shutil.which("snmpget") is not None,
+        "package": "snmp",
+        "used_by": "SNMP collection by the local scan agent (ARP / MAC table / LLDP / CDP / interfaces)",
+    }
+    # PDF 報告的中文字型（fonts-noto-cjk）：沒有的話 PDF 匯出會回 report_pdf_no_font
+    from app.services.report_pdf import font_status
+    _font = font_status()
+    info["host"]["optional_tools"]["cjk_font"] = {
+        "present": _font["present"],
+        "package": "fonts-noto-cjk",
+        "used_by": "PDF reports (IP change assessment): Chinese / Japanese text",
+        "version": _font["name"],
+    }
     info["host"]["optional_tools"]["xclip"] = {
         "present": _shutil.which("xclip") is not None,
         "package": "xclip",
         "used_by": "RDP console (FreeRDP engine) — clipboard paste",
+        "engine_off": not _freerdp_on,
     }
+    # aardwolf：以前是 RDP 的預設引擎、VNC 唯一的引擎；2026-09-27 起只是選用的備用引擎
+    # （guacd 連不到時才用）。Python 3.14 上它會當掉（GitHub issue #42），缺了不影響服務。
+    from app.api.v1.endpoints.rdp_console import RDP_AVAILABLE
+    info["host"]["optional_tools"]["aardwolf"] = {
+        "present": RDP_AVAILABLE,
+        "package": "aardwolf (pip: .[rdp])",
+        "used_by": "RDP / VNC console — fallback engine when guacd is down",
+        # 備用：沒裝不發警告（Python 3.14 根本裝不起來，「upgrade 會補上」也不成立）
+        "fallback": True,
+    }
+    info["host"]["required_tools"] = await _required_tools()
+    # Recog 指紋庫（選用資料庫）：列進選用相依，沒裝時跟缺套件一樣會出現在警告裡
+    try:
+        from app.core.db import SessionLocal
+        from app.services import recog
+        async with SessionLocal() as s:
+            info["recog"] = await recog.status(s)
+        info["host"]["optional_tools"]["recog"] = {
+            "present": info["recog"]["installed"],
+            "package": "Recog fingerprint database (github.com/rapid7/recog)",
+            "used_by": "IP probe — recognises devices / OS from banners, page titles and certificates",
+            "version": info["recog"]["release"],
+        }
+    except SQLAlchemyError:
+        info["recog"] = None
+    # MAC 製造商資料庫（Wireshark manuf，每月排程更新）：跟 Recog 一樣是下載來的資料庫。
+    # 表是空的時候 IP 清單、MAC 歷程、異常偵測的製造商欄全部空白，卻沒有地方講（2026-10-06 使用者）。
+    try:
+        from app.services import oui
+        async with SessionLocal() as s:
+            st = await oui.stats(s)
+        info["host"]["optional_tools"]["oui"] = {
+            "present": st["count"] > 0,
+            "package": "MAC vendor database (Wireshark manuf)",
+            "used_by": "MAC vendor names in IP lists, MAC history, anomaly detection and the IP probe",
+            "version": st["last_updated"][:10] if st["last_updated"] else None,
+        }
+    except SQLAlchemyError:
+        pass
+    # GeoIP：本機 mmdb 優先、沒有就走 MaxMind web service；兩者都要管理員自己的帳號，
+    # 沒設定是正常狀態 → opt_in：列出來但不進「缺少」警告
+    try:
+        from app.services import geoip
+        dbs = geoip.local_databases()
+        async with SessionLocal() as s:
+            acct, key = await geoip.get_geoip_creds(s)
+        if dbs:
+            geo_ver: str | None = max(ts for _, ts in dbs).date().isoformat()
+        else:
+            geo_ver = "web service" if acct and key else None
+        info["host"]["optional_tools"]["geoip"] = {
+            "present": bool(dbs) or bool(acct and key),
+            "package": "GeoIP database (MaxMind GeoLite2 / GeoIP2)",
+            "used_by": "Tools → GeoIP and the AI GeoIP tool: country, city and ASN of public IPs",
+            "version": geo_ver,
+            "opt_in": True,
+        }
+    except SQLAlchemyError:
+        pass
     return info
+
+
+@router.get("/recog/status")
+async def recog_status(session: Annotated[AsyncSession, Depends(get_session)]) -> dict[str, Any]:
+    """Recog 指紋庫的狀態與每個指紋檔的筆數（Recog 頁；版本頁只列版本）。"""
+    from sqlalchemy import func, select
+
+    from app.models.recog import RecogDatabase
+    from app.services import recog
+    out = await recog.status(session)
+    out["database_list"] = [
+        {"key": k, "protocol": proto, "database_type": dtype, "fingerprints": int(n or 0)}
+        for k, proto, dtype, n in (await session.execute(
+            select(RecogDatabase.key, RecogDatabase.protocol, RecogDatabase.database_type,
+                   func.jsonb_array_length(RecogDatabase.fingerprints)).order_by(RecogDatabase.key))).all()
+    ]
+    return out
+
+
+@router.post("/recog/update")
+async def update_recog_now(
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """立即檢查 Recog 指紋庫有沒有新版，有就下載安裝（手動觸發；排程是每週的 jt-ipam-recog-refresh.timer）。"""
+    from datetime import UTC, datetime
+
+    from app.services import recog
+    from app.services.background_tasks import record_finished_task
+    started = datetime.now(UTC)
+    result = await recog.check_and_update(session)
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "recog_db_update", "result": {k: v for k, v in result.items() if k != "error"},
+              "error": result.get("error")},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    await record_finished_task(
+        session, kind="recog.refresh", ok=result.get("status") != "error", actor_user_id=user.id,
+        started_at=started, error=result.get("error"),
+        summary={k: result.get(k) for k in ("status", "release", "previous", "latest",
+                                            "databases", "fingerprints", "skipped")})
+    return {"result": result, "status": await recog.status(session)}
+
+
+async def _required_tools() -> dict[str, dict[str, Any]]:
+    """必要相依（缺了對應功能就不能正常運作）。
+
+    guacd：RDP 與 VNC 的預設引擎，2026-09-27 起必裝（GitHub issue #42）。不是 pip 套件，
+    是安裝腳本裝的 jt-ipam-guacd 服務 —— 版本頁要看得到「有沒有裝、有沒有在跑、哪個版本」。
+    """
+    from app.services import guacd as guac
+    st = await guac.probe()
+    ver = guac.installed_version()
+    return {"guacd": {
+        "present": ver is not None or bool(st["ok"]),
+        "running": bool(st["ok"]),
+        "version": ver,
+        "protocols": st.get("protocols") or {},
+        "address": st.get("address"),
+        "error": st.get("error") or "",
+        "package": "jt-ipam-guacd (jt-ipam.sh install / upgrade)",
+        "used_by": "RDP / VNC console (default engine); SSH when selected",
+    }}
 
 
 def _ver_tuple(v: str | None) -> tuple[int, ...]:
@@ -1707,6 +2123,50 @@ async def put_notification_channels_ep(
     return _channels_payload(cfg)
 
 
+@router.get("/notification-matrix", dependencies=[Depends(require_admin)])
+async def get_notification_matrix_ep(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """通知矩陣：哪些事件走哪些管道（站內 / Email）。回傳目前設定 + 事件登錄順序。"""
+    from app.services.system_config import (
+        NOTIFY_EVENTS,
+        NOTIFY_IM_CHANNELS,
+        get_notification_matrix,
+    )
+    return {
+        "matrix": await get_notification_matrix(session),
+        "events": [e[0] for e in NOTIFY_EVENTS],
+        "channels": list(NOTIFY_IM_CHANNELS),   # 通訊軟體欄（畫面只顯示已啟用的）
+    }
+
+
+@router.put("/notification-matrix", dependencies=[Depends(require_admin)])
+async def put_notification_matrix_ep(
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    payload: Annotated[dict[str, Any], Body()],
+) -> dict[str, Any]:
+    from app.services.system_config import (
+        NOTIFY_EVENTS,
+        NOTIFY_IM_CHANNELS,
+        set_notification_matrix,
+    )
+    data = payload.get("matrix", payload) if isinstance(payload, dict) else {}
+    mx = await set_notification_matrix(session, data=data, updated_by_user_id=user.id)
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system_setting", object_id=None, action="update",
+        diff={"notification_matrix": mx},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return {"matrix": mx, "events": [e[0] for e in NOTIFY_EVENTS], "channels": list(NOTIFY_IM_CHANNELS)}
+
+
 @router.post("/notification-channels/test-email", dependencies=[Depends(require_admin)])
 async def test_notification_email(
     payload: TestEmailIn,
@@ -1754,11 +2214,11 @@ async def test_notification_channel(
         raise HTTPException(400, detail="unknown channel")
     cfg = await get_notification_channels(session)
     try:
-        await send_one(
-            cfg, payload.channel,
-            "jt-ipam 測試通知 / test notification",
-            "這是一則來自 jt-ipam 的測試通知；若你收到，代表此管道設定正確。",
-        )
+        from app.services.notify_channels import make_rich
+        subject, text = "jt-ipam 測試通知 / test notification", "這是一則來自 jt-ipam 的測試通知；若你收到，代表此管道設定正確。"
+        # 聊天型管道用正式通知的版面（🧪、引用、資訊列、連結），按一下就能預覽之後通知長什麼樣子
+        await send_one(cfg, payload.channel, subject, text,
+                       rich=make_rich(subject, text, link="/notification-channels", severity="info", emoji="🧪"))
     except Exception as exc:
         raise HTTPException(502, detail=f"send failed: {str(exc)[:300]}") from exc
     return {"ok": True}
@@ -1769,24 +2229,39 @@ async def test_notification_channel(
 async def integration_presence(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, bool]:
-    """各整合是否至少有一個實例。
+    """各整合是否至少設定了一台。
 
     「進階」選單裡的整合唯讀檢視頁（防火牆 / 虛擬化 / DNS 記錄 / 憑證派送），
     在該整合完全沒設定時只會顯示「尚未設定 X」，等於是空選項 —— 前端據此隱藏。
+    管理選單的「外部系統整合」子樹也用它在已設定的整合名稱後面加圖示（使用者 2026-10-07）。
     只回布林值、不回任何實例內容，所以掛 global_read 就夠（無需 admin），
     否則具全域讀取的非 admin 會看不到自己有權限看的選單。
     """
-    from sqlalchemy import func, select
+    from sqlalchemy import select
 
+    from app.models.adguard import AdGuardInstance
     from app.models.certificate import CertAgent
+    from app.models.checkpoint import CheckPointServer
+    from app.models.dhcp_standalone import IscDhcpServer, KeaDhcpServer
     from app.models.dns import DNSServer
     from app.models.esxi import ESXiInstance
     from app.models.firewall import OPNsenseFirewall
     from app.models.fortigate import FortiGateFirewall
+    from app.models.hyperv import HyperVInstance
+    from app.models.isoinsight import IsoInsightSource
+    from app.models.librenms import LibreNMSInstance
     from app.models.mikrotik import MikroTikRouter
+    from app.models.ocs import OcsServer
+    from app.models.openstack import OpenStackInstance
     from app.models.paloalto import PaloAltoFirewall
     from app.models.pfsense import PfSenseFirewall
+    from app.models.rustdesk import RustDeskServer
+    from app.models.snmp import SnmpTarget
+    from app.models.technitium import TechnitiumDhcpServer
     from app.models.virt import ProxmoxInstance
+    from app.models.wazuh import WazuhInstance
+    from app.models.windows_dhcp import WindowsDhcpServer
+    from app.models.zabbix import ZabbixInstance
     from app.models.zyxel import ZyxelFirewall
 
     out: dict[str, bool] = {}
@@ -1796,12 +2271,126 @@ async def integration_presence(
         ("fortigate", FortiGateFirewall),
         ("zyxel", ZyxelFirewall),
         ("paloalto", PaloAltoFirewall),
+        ("checkpoint", CheckPointServer),
         ("mikrotik", MikroTikRouter),
         ("dns", DNSServer),
         ("cert_agents", CertAgent),
         ("proxmox", ProxmoxInstance),
         ("esxi", ESXiInstance),
+        ("hyperv", HyperVInstance),
+        ("openstack", OpenStackInstance),
+        ("adguard", AdGuardInstance),
+        ("librenms", LibreNMSInstance),
+        ("windows_dhcp", WindowsDhcpServer),
+        ("kea_dhcp", KeaDhcpServer),
+        ("isc_dhcp", IscDhcpServer),
+        ("isoinsight", IsoInsightSource),
+        ("technitium", TechnitiumDhcpServer),
+        ("rustdesk", RustDeskServer),
+        ("wazuh", WazuhInstance),
+        ("zabbix", ZabbixInstance),
+        ("ocs", OcsServer),
+        # SNMP 收集（0217）：有收集目標才算已設定（只有憑證、沒有目標＝還沒開始收）
+        ("snmp", SnmpTarget),
     ):
-        n = await session.scalar(select(func.count()).select_from(model))
-        out[key] = bool(n)
+        # 只要知道有沒有：EXISTS 比 count 省（大站台的表可能很大）
+        out[key] = bool(await session.scalar(select(select(model.id).limit(1).exists())))
+    # Graylog DSV 查表不是一台台的整合，是一組設定：打開了就算已設定
+    from app.services.system_config import get_graylog_dsv
+    out["graylog"] = (await get_graylog_dsv(session))["enabled"]
     return out
+
+
+# ─────────────────── 登入安全（MFA 政策）───────────────────
+class AuthPolicyIO(StrictModel):
+    #: off＝不要求（個人自選）／admins＝管理員必須／all＝所有人必須
+    mfa_required: Literal["off", "admins", "all"] = "off"
+    #: SSO（OIDC／SAML）登入也套用：預設不套用，交給身分提供者自己的 MFA
+    mfa_apply_to_sso: bool = False
+
+
+@router.get("/auth-policy", response_model=AuthPolicyIO)
+async def get_auth_policy(session: Annotated[AsyncSession, Depends(get_session)]) -> AuthPolicyIO:
+    from app.services.mfa import get_policy
+    p = await get_policy(session)
+    return AuthPolicyIO(mfa_required=p.mfa_required, mfa_apply_to_sso=p.mfa_apply_to_sso)  # type: ignore[arg-type]
+
+
+@router.put("/auth-policy", response_model=AuthPolicyIO)
+async def put_auth_policy(
+    payload: AuthPolicyIO,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> AuthPolicyIO:
+    """改 MFA 政策。被要求但還沒設定的帳號不會被鎖在外面：下次登入時先完成 TOTP 設定。"""
+    from app.services.mfa import AuthPolicy, get_policy, set_policy
+    before = await get_policy(session)
+    await set_policy(session, AuthPolicy(payload.mfa_required, payload.mfa_apply_to_sso), updated_by=user.id)
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system_setting", object_id=None, action="update",
+        diff={"setting": "auth_policy",
+              "mfa_required": {"old": before.mfa_required, "new": payload.mfa_required},
+              "mfa_apply_to_sso": {"old": before.mfa_apply_to_sso, "new": payload.mfa_apply_to_sso}},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return payload
+
+
+# ─────────────────── 每日備份加密 ───────────────────
+class BackupEncryptionOut(StrictModel):
+    enabled: bool
+    set_at: str | None = None
+
+
+class BackupEncryptionIn(StrictModel):
+    #: 至少 12 個字元；忘記就解不開舊備份 —— 請存在這台主機以外的地方
+    passphrase: Annotated[str, Field(min_length=12, max_length=256)]
+
+
+@router.get("/backup-encryption", response_model=BackupEncryptionOut)
+async def get_backup_encryption_ep(session: Annotated[AsyncSession, Depends(get_session)]) -> BackupEncryptionOut:
+    from app.services.system_config import get_backup_encryption
+    cfg = await get_backup_encryption(session)
+    return BackupEncryptionOut(enabled=cfg["enabled"], set_at=cfg["set_at"])
+
+
+async def _audit_backup_enc(session: AsyncSession, user: Any, request: Request, change: str) -> None:
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system_setting", object_id=None, action="update",
+        diff={"setting": "backup_encryption", "change": change},     # 不記密碼本身
+        request_id=getattr(request.state, "request_id", None),
+    )
+
+
+@router.put("/backup-encryption", response_model=BackupEncryptionOut)
+async def put_backup_encryption(
+    payload: BackupEncryptionIn, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> BackupEncryptionOut:
+    """設定或更換備份加密密碼。之後的每日備份都會加密；舊備份仍要用當時的密碼解。"""
+    from app.services.system_config import get_backup_encryption, set_backup_encryption
+    had = (await get_backup_encryption(session))["enabled"]
+    await set_backup_encryption(session, payload.passphrase, updated_by=user.id)
+    await _audit_backup_enc(session, user, request, "changed" if had else "set")
+    await session.commit()
+    cfg = await get_backup_encryption(session)
+    return BackupEncryptionOut(enabled=cfg["enabled"], set_at=cfg["set_at"])
+
+
+@router.delete("/backup-encryption", status_code=204)
+async def delete_backup_encryption(
+    user: CurrentUser, request: Request, session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    """移除備份加密密碼（之後的備份回到明文目錄；系統診斷會提醒）。"""
+    from app.services.system_config import set_backup_encryption
+    await set_backup_encryption(session, None, updated_by=user.id)
+    await _audit_backup_enc(session, user, request, "removed")
+    await session.commit()

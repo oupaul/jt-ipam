@@ -16,6 +16,12 @@
  *       --base http://127.0.0.1:5200 --user admin --pass '...' \
  *       --out ../docs/shots
  *
+ * 拍出來是 2 倍解析度（deviceScaleFactor 2）。放進 docs/shots 之前要縮成 1600 寬、轉成 256 色調色盤
+ * （每張約 70–300 KB），例如 Pillow：`im.resize((1600, h)).quantize(256)`。
+ *
+ * 首頁輪播的三張（dashboard、warroom、hero-rack）要在 `demo_dataset.py --busy` 灌過的資料庫上拍，
+ * 其他的在沒有加 --busy 的資料上拍：`--only dashboard,warroom,hero-rack` 分開跑。
+ *
  * 需要 frontend/node_modules 裡的 @playwright/test（`pnpm exec playwright install chromium`
  * 已經裝過瀏覽器）。跑之前先記下既有的 chromium 行程，跑完只關自己開的 ——
  * 這台機器是共用的，別的專案可能正在跑它的 e2e。
@@ -60,8 +66,63 @@ const VIEWPORT = { width: 1600, height: 900 };
  */
 const SHOTS = [
   {
+    // 官網首頁輪播第一張。要在 `demo_dataset.py --busy --db-url ...` 灌過的資料庫上拍
+    // （連同 warroom、hero-rack：`--only dashboard,warroom,hero-rack`）：預設資料只有 39 筆 IP，
+    // 拍出來每一塊都是空的，看起來像沒人在用的系統。
     name: "dashboard",
-    async go(page) { await page.goto(`${BASE}/`); await settle(page, 2500); },
+    async go(page) {
+      await page.goto(`${BASE}/`);
+      await settle(page, 2500);
+      // 可用性追蹤的長條是另外抓的（釘選的 IP 逐一查）：等它畫出來，而且要是中型站台那份資料
+      await page.locator("text=/198\\.51\\.100\\.1\\b/").first().waitFor({ timeout: 15_000 });
+      const text = await page.locator("main, .n-layout-content").first().innerText();
+      if (!/\b1,\d{3}\b/.test(text)) throw new Error("儀表板的 IP 數不到一千：先跑 demo_dataset.py --busy");
+    },
+  },
+  {
+    // 首頁輪播第二張：戰情室（電視看板）。照電視的 1920×1080 拍，之後跟其他圖一樣縮成 1600 寬。
+    // 主題自動輪播（預設每 20 秒換一頁），所以進來就拍，不按任何鍵（按空白鍵暫停會在畫面上留下暫停標示）
+    name: "warroom",
+    viewport: { width: 1920, height: 1080 },
+    async go(page) {
+      await page.goto(`${BASE}/warroom`);
+      await page.locator('[data-testid="wr-group"]').first().waitFor({ timeout: 15_000 });
+      await page.locator('[data-testid="wr-prio"]').first().waitFor({ timeout: 15_000 });
+      await page.waitForTimeout(1500);
+      const text = await page.locator("body").innerText();
+      for (const n of ["Tokyo DC", "Taipei HQ", "Osaka Site"]) {
+        if (!text.includes(n)) throw new Error(`戰情室總覽缺 ${n}（先跑 demo_dataset.py --busy）`);
+      }
+    },
+  },
+  {
+    // 首頁輪播第三張：機房的整排機櫃。與 rack 那張不同：這張在中型站台資料上拍、整排縮小到
+    // 42U 整座看得完，平面圖捲出畫面外，三座機櫃佔滿整張圖
+    name: "hero-rack",
+    async go(page) {
+      await page.evaluate(() => localStorage.setItem("jt.rackRoomZoom", "0.6"));
+      await page.goto(`${BASE}/racks`);
+      await settle(page, 1500);
+      await page.locator(".n-base-selection").first().click();
+      await page.locator(".n-base-select-option", { hasText: "Tokyo DC" }).first().click();
+      await settle(page, 2500);
+      const row = page.locator(".rack-row").first();
+      const text = await row.innerText();
+      for (const n of ["TYO-R01", "TYO-R02", "TYO-R03", "TYO-R04", "vm-host-01", "spine-sw-01"]) {
+        if (!text.includes(n)) throw new Error(`機房沒有切換成功或資料不是中型站台（缺 ${n}）`);
+      }
+      // 把整排機櫃上方的工具列捲到畫面頂端（平面圖在它上面，捲出畫面外）
+      await page.evaluate(() => {
+        const r = document.querySelector(".rack-row");
+        const bar = r?.previousElementSibling || r;
+        bar.scrollIntoView({ block: "start" });
+      });
+      await page.waitForTimeout(900);
+    },
+    async after(page) {
+      // 縮放比例存在 localStorage：不清掉的話，同一輪後面的 rack 那張也會是縮小的
+      await page.evaluate(() => localStorage.removeItem("jt.rackRoomZoom"));
+    },
   },
   {
     name: "subnet",
@@ -149,6 +210,49 @@ const SHOTS = [
     async go(page) { await page.goto(`${BASE}/certificates`); await settle(page, 1500); },
   },
   {
+    // 瀏覽器連線管理（進階 → 連線管理）。連線目標要先用
+    // `demo_dataset.py --consoles --db-url ...` 灌：那個參數會多出幾筆 IP、讓別的畫面也
+    // 出現連線按鈕，所以這張在另外灌過的資料庫上單獨拍（--only ssh-rdp）。
+    name: "ssh-rdp",
+    async go(page) {
+      await page.goto(`${BASE}/advanced/connections`);
+      await settle(page, 1500);
+      const table = page.locator(".n-data-table").first();
+      const rows = table.locator(".n-data-table-tbody .n-data-table-tr");
+      await rows.first().waitFor();
+      // 每一種連線都要看得到按鈕 —— 少了哪一種就是資料沒灌齊，拍出來等於沒展示到。
+      // 按鈕文字是協定名，三種語言都一樣；圖示裡也有字（RDP 的「R」），所以取最後一行
+      const have = new Set((await table.locator(".n-data-table-tbody button").allInnerTexts())
+        .map((s) => s.trim().split("\n").pop().trim()));
+      for (const want of ["SSH", "RDP", "VNC", "noVNC", "xterm", "BMC", "RustDesk"]) {
+        if (!have.has(want)) {
+          throw new Error(`連線管理頁沒有 ${want} 按鈕（先跑 demo_dataset.py --consoles --db-url ...）`);
+        }
+      }
+      // 後端不保證順序：點「IP」標題照 IP 由小到大排（示範位址挑成字串序＝數值序）。
+      // naive-ui 第一下是由大到小、第二下才是由小到大，所以點到排好為止，每一下都讀回來確認 ——
+      // 點錯地方不會報錯，只會拍到一張亂序的表
+      const header = table.locator(".n-data-table-th", { hasText: /^\s*IP\s*$/ }).first();
+      const readIps = async () => (await rows.allInnerTexts())
+        .map((t) => (t.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/) || [""])[0]);
+      let ips = [];
+      for (let i = 0; i < 3; i++) {
+        await header.click();
+        await page.waitForTimeout(600);
+        ips = await readIps();
+        if (ips.join() === [...ips].sort().join()) break;
+      }
+      if (ips.length < 10 || ips[0] !== "192.0.2.101" || ips.join() !== [...ips].sort().join()) {
+        throw new Error(`連線清單沒有照 IP 排好：${ips.join(", ")}`);
+      }
+      // 整張表都要在畫面內（列數多了會被視窗切掉下半部）
+      const box = await table.boundingBox();
+      if (!box || box.y + box.height > page.viewportSize().height) {
+        throw new Error(`連線清單超出畫面（底部在 ${Math.round((box?.y || 0) + (box?.height || 0))}px）`);
+      }
+    },
+  },
+  {
     // ⚠️ docs/shots 裡這兩張目前是擁有者核准的**正式系統**截圖（見
     // backend/tests/test_docs_screenshots_provenance.py 的 OWNER_APPROVED_REAL_SHOTS）。
     // 用這裡重拍會換成虛構資料版 —— 那是更安全的方向，換了要順手刪掉那份核准清單的項目。
@@ -175,6 +279,37 @@ const SHOTS = [
         e.getBoundingClientRect().right - window.innerWidth));
       if (over > 2) throw new Error(`層架那一排比畫面寬 ${Math.round(over)}px，會被截掉`);
       // 那一排容器是整個內容區寬，卡片只佔左邊 —— 截卡片的聯集，右邊才不會留一大片空白
+      const clip = await row.evaluate((e) => {
+        const rs = [...e.children].map((c) => c.getBoundingClientRect()).filter((r) => r.width > 0);
+        const x = Math.min(...rs.map((r) => r.left)), y = Math.min(...rs.map((r) => r.top));
+        return { x, y, width: Math.max(...rs.map((r) => r.right)) - x,
+                 height: Math.max(...rs.map((r) => r.bottom)) - y };
+      });
+      return { clip };
+    },
+  },
+  {
+    // 三種新型態並排：角鋼層架（台灣最常見）、IKEA KALLAX、LackRack。
+    // 示範資料的 Taichung Office 只放這三座，跟 rack-shelves 一樣只截那一排卡片。
+    name: "rack-more-kinds",
+    // 角鋼層架 90 公分寬就佔了 500px，三座並排在 1600 寬會被截掉右邊
+    viewport: { width: 1800, height: 1900 },
+    async go(page) {
+      await page.goto(`${BASE}/racks`);
+      await settle(page, 1500);
+      await page.locator(".n-base-selection").first().click();
+      await page.locator(".n-base-select-option", { hasText: "Taichung Office" }).first().click();
+      await settle(page, 2500);
+      const row = page.locator(".rack-row").first();
+      const text = await row.innerText();
+      for (const n of ["TC-A01", "TC-K01", "TC-L01"]) {
+        if (!text.includes(n)) throw new Error(`機房沒有切換成功（缺 ${n}）`);
+      }
+      await row.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(900);
+      const over = await row.evaluate((e) => Math.max(e.scrollWidth - e.clientWidth,
+        e.getBoundingClientRect().right - window.innerWidth));
+      if (over > 2) throw new Error(`那一排比畫面寬 ${Math.round(over)}px，會被截掉`);
       const clip = await row.evaluate((e) => {
         const rs = [...e.children].map((c) => c.getBoundingClientRect()).filter((r) => r.width > 0);
         const x = Math.min(...rs.map((r) => r.left)), y = Math.min(...rs.map((r) => r.top));
@@ -222,7 +357,8 @@ async function api(page, path_, init = {}) {
       ...i,
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${localStorage.getItem("access_token")}`,
+        // 存取權杖在 sessionStorage（2026-10-09 起；以前在 localStorage，舊寫法拿到 null → 401）
+        Authorization: `Bearer ${sessionStorage.getItem("access_token")}`,
         ...(i.headers || {}),
       },
     });
@@ -290,6 +426,9 @@ try {
       } catch (e) {
         // 一張拍不到不該讓其他的也不拍 —— 但一定要說出是哪一張
         console.error(`  ! ${short}/${shot.name}: ${e.message.split("\n")[0]}`);
+      } finally {
+        // 拍完（或拍失敗）要還原的東西，例如這張改過的 localStorage
+        if (shot.after) await shot.after(page).catch(() => {});
       }
     }
     await ctx.close();

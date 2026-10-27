@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 import uuid
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator
 
@@ -35,6 +35,8 @@ class SubnetBase(StrictModel):
     # 是否納入異常偵測（預設納入）
     anomaly_enabled: bool = True
     scan_enabled: bool = False
+    #: 掃描範圍：auto／all／known／ranges（services/scan_plan.py）
+    scan_scope: Literal["auto", "all", "known", "ranges"] = "auto"
     scan_method: list[str] = Field(default_factory=lambda: ["icmp"])
     threshold_pct: Annotated[int | None, Field(ge=0, le=100)] = None
     auto_dns: bool = False
@@ -42,6 +44,8 @@ class SubnetBase(StrictModel):
     customer_id: uuid.UUID | None = None
     #: 主控台的連線出口（issue #24）：空＝繼承上層或直連
     jump_host_id: uuid.UUID | None = None
+    #: 或經由掃描代理中繼（階段二）：必須是這個子網路的掃描代理；與 jump_host_id 擇一
+    console_agent_id: uuid.UUID | None = None
     gateway: Annotated[str | None, Field(max_length=64)] = None
     dns_servers: Annotated[str | None, Field(max_length=512)] = None
     location_id: uuid.UUID | None = None
@@ -94,6 +98,7 @@ class SubnetUpdate(StrictModel):
     ai_audit_enabled: bool | None = None
     anomaly_enabled: bool | None = None
     scan_enabled: bool | None = None
+    scan_scope: Literal["auto", "all", "known", "ranges"] | None = None
     scan_method: list[str] | None = None
     threshold_pct: Annotated[int | None, Field(ge=0, le=100)] = None
     auto_dns: bool | None = None
@@ -101,6 +106,8 @@ class SubnetUpdate(StrictModel):
     customer_id: uuid.UUID | None = None
     #: 主控台的連線出口（issue #24）：空＝繼承上層或直連
     jump_host_id: uuid.UUID | None = None
+    #: 或經由掃描代理中繼（階段二）：必須是這個子網路的掃描代理；與 jump_host_id 擇一
+    console_agent_id: uuid.UUID | None = None
     gateway: Annotated[str | None, Field(max_length=64)] = None
     dns_servers: Annotated[str | None, Field(max_length=512)] = None
     location_id: uuid.UUID | None = None

@@ -192,7 +192,7 @@ async function submit() {
     const payload = {
       name: form.value.name,
       address: form.value.address || undefined,
-      description: form.value.description || undefined,
+      description: form.value.description ?? "",
       latitude: form.value.latitude,
       longitude: form.value.longitude,
       customer_id: form.value.customer_id ?? null,
@@ -208,16 +208,17 @@ async function del(r: Location) {
   catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
 
-const { visibleKeys, setVisible, reset } = useColumnPrefs(
+const { visibleKeys, setVisible, reset, order, setOrder, orderColumns } = useColumnPrefs(
   "locations",
-  ["name", "customer_name", "address", "coords", "description", "rack_count", "device_count", "actions"],
-  ["name", "customer_name", "address", "coords", "description", "rack_count", "device_count", "actions"],
+  ["name", "customer_name", "coords", "address", "description", "rack_count", "device_count", "actions"],
+  ["name", "customer_name", "coords", "address", "description", "rack_count", "device_count", "actions"],
 );
+// 選單順序與表格欄位一致：拖拉排序以選單上看到的順序為準
 const columnPickerItems = computed(() => [
   { key: "name", label: t("cols.name") },
   { key: "customer_name", label: t("cols.unit") },
-  { key: "address", label: t("cols.address") },
   { key: "coords", label: t("cols.coords") },
+  { key: "address", label: t("cols.address") },
   { key: "description", label: t("cols.description") },
   { key: "rack_count", label: t("cols.rack_count") },
   { key: "device_count", label: t("cols.device_count") },
@@ -263,7 +264,7 @@ const allCols = computed<DataTableColumns<Location>>(() => [
   },
 ]);
 const cols = computed<DataTableColumns<Location>>(() =>
-  allCols.value.filter((c: any) => c.type === "selection" || c.key === "actions" || visibleKeys.value.includes(c.key)),
+  orderColumns(allCols.value.filter((c: any) => c.type === "selection" || c.key === "actions" || visibleKeys.value.includes(c.key))),
 );
 onMounted(() => {
   void refresh();
@@ -291,7 +292,8 @@ onMounted(() => {
         {{ t("common.create") }}
       </n-button>
       <ColumnPicker :all="columnPickerItems" :visible="visibleKeys"
-                    @update:visible="setVisible" @reset="reset" />
+                    @update:visible="setVisible" @reset="reset"
+                    :order="order" @update:order="setOrder" />
       <ExportButton :columns="cols" :rows="rows" filename="locations" :title="t('nav.locations')" />
       <n-popover trigger="click" placement="bottom-end" :width="360">
         <template #trigger>

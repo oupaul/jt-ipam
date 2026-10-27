@@ -26,6 +26,21 @@ from app.services.subnet import find_first_free_address
 router = APIRouter()
 
 
+async def _gateway_of(session: AsyncSession, subnet_id: uuid.UUID) -> object:
+    s = await session.get(Subnet, subnet_id)
+    return s.gateway if s else None
+
+
+async def _apply_gateway(session: AsyncSession, subnet: Subnet, ip: str, payload: dict[str, object]) -> None:
+    """phpIPAM 的 is_gateway＝這個位址是子網路的閘道：jt-ipam 存在子網路的 gateway 欄位。"""
+    if "is_gateway" not in payload:
+        return
+    if _bool(payload["is_gateway"]):
+        subnet.gateway = ip  # type: ignore[assignment]
+    elif subnet.gateway is not None and str(subnet.gateway).split("/")[0] == ip:
+        subnet.gateway = None  # type: ignore[assignment]
+
+
 async def _ensure_subnet_read(session: AsyncSession, user: User, subnet_id: uuid.UUID) -> Subnet:
     s = await session.get(Subnet, subnet_id)
     if s is None:
@@ -53,7 +68,6 @@ async def get_address(
     return phpipam_response(success=True, data=address_to_phpipam(a), started=started)
 
 
-@router.get("/{app_id}/addresses/{ip}/{subnet_id}/")
 async def get_address_by_ip_subnet(
     app_id: str,
     ip: str,
@@ -94,7 +108,32 @@ async def search_by_ip(
             await _ensure_subnet_read(session, user, r.subnet_id)
         except HTTPException:
             continue
-        out.append(address_to_phpipam(r))
+        out.append(address_to_phpipam(r, await _gateway_of(session, r.subnet_id)))
+    return phpipam_response(success=True, data=out, started=started)
+
+
+@router.get("/{app_id}/addresses/search_mac/{mac}/")
+async def search_by_mac(
+    app_id: str,
+    mac: str,
+    user: Annotated[User, Depends(phpipam_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """依 MAC 找位址（PVE SDN 的 get_ips_from_mac 會呼叫）。MAC 任何寫法都可以。"""
+    from app.services.arp_precedence import normalize_mac
+    started = time.perf_counter()
+    key = normalize_mac(mac)
+    if not key:
+        return phpipam_response(success=False, code=400, message="Invalid MAC", started=started)
+    pretty = ":".join(key[i:i + 2] for i in range(0, 12, 2))
+    rows = list((await session.execute(select(IPAddress).where(IPAddress.mac == pretty))).scalars().all())
+    out = []
+    for r in rows:
+        try:
+            await _ensure_subnet_read(session, user, r.subnet_id)
+        except HTTPException:
+            continue
+        out.append(address_to_phpipam(r, await _gateway_of(session, r.subnet_id)))
     return phpipam_response(success=True, data=out, started=started)
 
 
@@ -225,6 +264,7 @@ async def create_address(
         obj.exclude_from_ping = _bool(payload["excludePing"])
     if "PTRignore" in payload:
         obj.ptr_ignore = _bool(payload["PTRignore"])
+    await _apply_gateway(session, subnet, str(obj.ip).split("/")[0], payload)
 
     await append_audit(
         session,
@@ -274,7 +314,24 @@ async def update_address(
     if "note" in payload:
         a.note = payload["note"]  # type: ignore[assignment]
     if "mac" in payload:
+        old_mac = a.mac
         a.mac = payload["mac"]  # type: ignore[assignment]
+        # 透過 API 明確寫入的 MAC 等同人工編輯：標成 manual（優先序最高）；清空時一併清掉來源
+        a.mac_source = "manual" if a.mac else None  # type: ignore[assignment]
+        if str(old_mac or "").lower() != str(a.mac or "").lower():
+            # 以前這條路徑改 MAC 不留異動記錄，也不清上一台的資料（2026-10-12）
+            from app.services.ip_history import log_change
+            await log_change(session, ip=a, event_type="mac_changed", field="mac",
+                             old=str(old_mac) if old_mac else None, new=str(a.mac) if a.mac else None,
+                             source="manual", actor_user_id=user.id)
+            if old_mac and a.mac:
+                from app.services.device_turnover import on_device_replaced
+                await on_device_replaced(session, ip=a, source="manual", actor_user_id=user.id)
+
+    if "is_gateway" in payload:
+        sub = await session.get(Subnet, a.subnet_id)
+        if sub is not None:
+            await _apply_gateway(session, sub, str(a.ip).split("/")[0], payload)
 
     await append_audit(
         session,
@@ -303,19 +360,41 @@ async def delete_address(
     a = await session.get(IPAddress, address_id)
     if a is None:
         raise HTTPException(404, detail="Address not found")
-    await _require_subnet_write(session, user, a.subnet_id)
-
-    await append_audit(
-        session,
-        actor_user_id=str(user.id),
-        actor_ip=request.client.host if request.client else None,
-        actor_user_agent=request.headers.get("user-agent"),
-        object_type="ip_address",
-        object_id=str(a.id),
-        action="delete",
-        diff={"before": {"ip": str(a.ip)}, "via": "phpipam"},
-        request_id=getattr(request.state, "request_id", None),
-    )
-    await session.delete(a)
+    # 跟 REST 一樣要子網路 admin，也走同一套刪除步驟（異動記錄、冷卻期）。以前只要寫入權、
+    # 而且直接刪掉：網路操作員自建一個 token 就能刪任何 IP，位址也馬上能再配給別人（2026-10-07 稽核）
+    s = await session.get(Subnet, a.subnet_id)
+    level = await _get_perm(session, user=user, object_type="subnet", object_id=a.subnet_id) if s else "none"
+    if not _has_perm(level, "admin"):
+        raise HTTPException(404, detail="Subnet not found")
+    # 別名照實說它會寫稽核（tests/test_audit_coverage.py 靠呼叫名稱判斷，跨檔的 helper 看不到裡面）
+    from app.api.v1.endpoints.addresses import _delete_ip as _delete_ip_and_audit
+    await _delete_ip_and_audit(session, a, user=user, request=request, bulk=False, via="phpipam")
     await session.commit()
     return phpipam_response(success=True, message="Address deleted", started=started)
+
+
+@router.post("/{app_id}/addresses/first_free/{subnet_id}/")
+async def allocate_first_free_address(
+    app_id: str,
+    subnet_id: uuid.UUID,
+    request: Request,
+    user: Annotated[User, Depends(phpipam_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    payload: Annotated[dict[str, object] | None, Body()] = None,
+) -> dict[str, object]:
+    """佔用子網路的下一個空位並回 IP 字串（phpIPAM 的 POST addresses/first_free；Proxmox VE SDN 幫 VM 配位址用）。
+
+    跟 POST addresses/ 不帶 ip 走同一條：同樣的寫入權、稽核與 IP 異動記錄。
+    """
+    body = dict(payload or {})
+    body["subnetId"] = str(subnet_id)
+    body.pop("ip", None)
+    r = await create_address(app_id, request, body, user, session)
+    data = r.get("data") or {}
+    return phpipam_response(success=True, code=201, message="Address created",
+                            data=data.get("ip") if isinstance(data, dict) else data)
+
+
+# 放最後：兩段的 {ip}/{subnet_id} 會吃掉 search/{ip}、search_mac/{mac}、first_free/{id} 這類路徑
+# （FastAPI 照註冊順序比對，比對到才驗 UUID，驗失敗就回 422 不再往下找）
+router.get("/{app_id}/addresses/{ip}/{subnet_id}/")(get_address_by_ip_subnet)

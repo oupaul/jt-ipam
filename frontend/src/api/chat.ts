@@ -1,4 +1,5 @@
 import { apiClient } from "@/api/client";
+import { getAccessToken } from "@/api/token";
 
 // AI chat 是多輪 tool-calling 迴圈 (max_iterations 輪 × 每輪一次本地 LLM 推論)，
 // 在大模型上單次可達數十秒，遠超 apiClient 預設 15s timeout(會誤報 Chat failed)。
@@ -39,7 +40,8 @@ export type ChatStreamEvent =
   | { type: "tool_round" }
   | { type: "pending_action"; actions: PendingAction[] }
   | { type: "done"; answer: string; trace_messages: ChatMessage[]; model?: string | null; elapsed_ms?: number | null; conversation_id?: string; pending_actions?: PendingAction[] }
-  | { type: "error"; detail: string };
+  // 錯誤：一般帳號只有 code（照語系翻）；管理員的 params.reason 是底層原因。detail 是退路文字
+  | { type: "error"; detail: string; code?: string; params?: Record<string, unknown> };
 
 // 使用者按下「確認」→ 真正執行該異動動作
 export async function confirmAction(tool: string, args: Record<string, unknown>): Promise<{ ok: boolean; tool: string; title: string; result: unknown }> {
@@ -67,7 +69,7 @@ export async function chatStream(
   conversationId?: string | null,
 ): Promise<void> {
   const base = import.meta.env.VITE_API_BASE_URL || "";
-  const token = localStorage.getItem("access_token");
+  const token = getAccessToken();
   const resp = await fetch(`${base}/api/v1/ai/chat/stream`, {
     method: "POST",
     headers: {

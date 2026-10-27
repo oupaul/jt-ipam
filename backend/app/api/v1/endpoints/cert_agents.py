@@ -173,7 +173,7 @@ async def _resolve_links(
     device_names: dict[str, str] = {}
     if dev_ids:
         rows = (await session.execute(
-            select(Device.id, Device.name).where(Device.id.in_(dev_ids))
+            select(Device.id, Device.name).where(Device.id.in_(dev_ids))  # bounded: cert agents
         )).all()
         device_names = {str(i): n for i, n in rows}
 
@@ -182,7 +182,7 @@ async def _resolve_links(
     if src_ips:
         rows = (await session.execute(
             select(IPAddress.id, IPAddress.ip, IPAddress.device_id)
-            .where(func.host(IPAddress.ip).in_(list(src_ips)))
+            .where(func.host(IPAddress.ip).in_(list(src_ips)))  # bounded: cert agents
         )).all()
         for ip_id, ip_val, did in rows:
             by_ip.setdefault(str(ip_val), []).append((ip_id, did))
@@ -225,6 +225,8 @@ async def _agent_from_key(session: AsyncSession, key: str | None) -> CertAgent:
     )).scalar_one_or_none()
     if obj is None or not obj.enabled:
         raise HTTPException(401, detail="invalid agent key")
+    from app.core.rate_limit import limit_agent
+    await limit_agent("cert", obj.id)
     return obj
 
 
@@ -435,17 +437,23 @@ async def rotate_key(
 @router.get("/{agent_id}/key", dependencies=[Depends(require_ops_admin)])
 async def get_agent_key(
     agent_id: uuid.UUID,
+    user: CurrentUser,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, str]:
     """再次取得此代理的 enroll key（管理員）。金鑰 AES-GCM 加密保存，僅 admin 可解。
 
+    看到金鑰的人就能冒充這台代理領走憑證私鑰，所以每次檢視都留稽核（同 RustDesk 代理金鑰）。
     舊版建立、未保存明文的代理回 404，請改用輪替金鑰取得新的。"""
-    if await session.get(CertAgent, agent_id) is None:
+    obj = await session.get(CertAgent, agent_id)
+    if obj is None:
         raise HTTPException(404, detail="Not found")
     key = await _load_agent_key(session, agent_id)
     if key is None:
         raise HTTPException(404, detail=ui_detail("cert_agent_no_stored_key",
-                            "此代理未保存金鑰（可能建立於舊版），請輪替金鑰取得新的"))
+                            "此代理未儲存金鑰（可能建立於舊版），請輪替金鑰取得新的"))
+    await _agent_audit(session, user, request, obj=obj, action="cert_agent_key_view")
+    await session.commit()
     return {"enroll_key": key}
 
 
@@ -476,7 +484,7 @@ async def _current_versions_for_scope(session: AsyncSession, agent: CertAgent) -
     rows = (await session.execute(
         select(Certificate, CertVersion)
         .join(CertVersion, CertVersion.certificate_id == Certificate.id)
-        .where(CertVersion.is_current.is_(True), Certificate.id.in_([uuid.UUID(s) for s in scope]))
+        .where(CertVersion.is_current.is_(True), Certificate.id.in_([uuid.UUID(s) for s in scope]))  # bounded: one agent's certificates
     )).all()
     return [{
         "cert": cert.name, "cert_id": str(cert.id),

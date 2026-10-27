@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
+import json
 import secrets
 import time
 import uuid
@@ -11,8 +13,8 @@ from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from pydantic import Field
-from sqlalchemy import func, select
+from pydantic import Field, field_validator
+from sqlalchemy import func, select, text
 from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +23,8 @@ from app.api.v1.dependencies import CurrentUser, require_ops_admin
 from app.core import scan_probes
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.sqlin import in_values
+from app.core.ui_error import ui_detail
 from app.models.address import IPAddress
 from app.models.scan_agent import ScanAgent
 from app.models.subnet import Subnet
@@ -69,11 +73,17 @@ class ScanAgentCreate(StrictModel):
 
 
 class ScanAgentUpdate(StrictModel):
+    #: 可以改名（10-22）：名稱只是顯示用，代理靠金鑰辨識；名稱仍不可重複
+    name: Annotated[str | None, Field(min_length=1, max_length=128)] = None
     description: Annotated[str | None, Field(max_length=1024)] = None
     enabled: bool | None = None
     auto_create_ips: bool | None = None
     enabled_probes: list[str] | None = None
     probe_intervals: dict[str, int] | None = None
+    # 主控台中繼（issue #24 階段二）：允許這台代理中繼、同時中繼上限、允許的埠（"22,3389,5900-5910"）
+    relay_allowed: bool | None = None
+    relay_max_sessions: Annotated[int | None, Field(ge=1, le=64)] = None
+    relay_ports: Annotated[str | None, Field(max_length=200)] = None
 
 
 class ScanAgentRead(StrictModel):
@@ -96,10 +106,30 @@ class ScanAgentRead(StrictModel):
     # 相依工具盤點：[{name, installed, version, probes, package}]（哪些裝了/版本/缺）
     tools: list[dict[str, Any]] | None = None
     subnet_count: int = 0
+    # 最近一輪的負載摘要（services/scan_load.summary）：{ratio, level, duration_s, interval_s,
+    # heavy_backlog, truncated, at}；代理還沒回報過每輪統計（1.10.0 以前）就是 None
+    load: dict[str, Any] | None = None
+    # 主控台中繼：管理員的允許、上限、代理回報的能力（舊代理＝None）、目前中繼中的工作階段數
+    relay_allowed: bool = False
+    relay_max_sessions: int = 4
+    relay_ports: str = "22,3389,5900-5910"
+    relay_caps: dict[str, Any] | None = None
+    relay_active: int = 0
     last_seen_at: Any
     last_error: str | None
     created_at: Any
     updated_at: Any
+
+
+async def _with_relay_active(m: ScanAgentRead) -> ScanAgentRead:
+    """目前中繼中的工作階段數（Redis）。Redis 不通時當 0：這只是顯示，不能讓代理清單整頁壞掉。"""
+    if m.relay_allowed:
+        try:
+            from app.services.console_relay import active_count
+            m.relay_active = await active_count(m.id)
+        except Exception:
+            m.relay_active = 0
+    return m
 
 
 class ScanAgentCreated(ScanAgentRead):
@@ -124,6 +154,8 @@ _DEP_TOOL_META: dict[str, tuple[list[str], str]] = {
     "nmblookup": (["netbios"], "samba-common-bin"),
     "nbtscan": (["netbios"], "nbtscan"),
     "avahi-resolve": (["mdns"], "avahi-utils"),
+    # SNMP 收集（0217）：net-snmp 用戶端工具；不是逐子網路的探測，是「外部系統整合 → SNMP」的收集目標
+    "snmpbulkwalk": (["snmp"], "snmp"),
 }
 
 
@@ -160,6 +192,8 @@ def _to_read(obj: ScanAgent) -> ScanAgentRead:
     m.has_key = bool(obj.enroll_key_hash)
     m.server_agent_version = _server_agent_version()
     m.tools = _merge_tool_meta(obj.tools)
+    from app.services.scan_load import summary
+    m.load = summary(obj)
     return m
 
 
@@ -172,6 +206,8 @@ async def _agent_from_key(session: AsyncSession, key: str | None) -> ScanAgent:
     )).scalar_one_or_none()
     if obj is None or not obj.enabled:
         raise HTTPException(401, detail="invalid agent key")
+    from app.core.rate_limit import limit_agent
+    await limit_agent("scan", obj.id)
     return obj
 
 
@@ -194,13 +230,13 @@ async def list_agents(
     if rows:
         crows = (await session.execute(
             select(Subnet.scan_agent_id, func.count())
-            .where(Subnet.scan_agent_id.in_([r.id for r in rows]))
+            .where(Subnet.scan_agent_id.in_([r.id for r in rows]))  # bounded: scan agents
             .group_by(Subnet.scan_agent_id)
         )).all()
         counts = {sid: n for sid, n in crows}
     items = []
     for r in rows:
-        m = _to_read(r)
+        m = await _with_relay_active(_to_read(r))
         m.subnet_count = int(counts.get(r.id, 0))
         items.append(m)
     return Paginated[ScanAgentRead](items=items, total=total, page=page, page_size=page_size)
@@ -316,7 +352,28 @@ async def update_agent(
     if obj is None:
         raise HTTPException(404, detail="Agent not found")
 
-    before = {"enabled": obj.enabled, "auto_create_ips": obj.auto_create_ips}
+    before = {"name": obj.name, "enabled": obj.enabled, "auto_create_ips": obj.auto_create_ips,
+              "relay_allowed": obj.relay_allowed, "relay_max_sessions": obj.relay_max_sessions,
+              "relay_ports": obj.relay_ports}
+    if payload.relay_ports is not None:
+        from app.services.relay_scope import normalize_ports
+        try:
+            obj.relay_ports = normalize_ports(payload.relay_ports)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=ui_detail(
+                "relay_ports_invalid", f"允許中繼的埠格式不對：{exc}（例：22,3389,5900-5910）",
+                value=str(exc))) from None
+    if payload.relay_allowed is not None:
+        obj.relay_allowed = payload.relay_allowed
+    if payload.relay_max_sessions is not None:
+        obj.relay_max_sessions = payload.relay_max_sessions
+    if payload.name is not None and payload.name.strip() and payload.name.strip() != obj.name:
+        new_name = payload.name.strip()
+        if (await session.execute(select(ScanAgent.id).where(ScanAgent.name == new_name,
+                                                             ScanAgent.id != obj.id))).first():
+            raise HTTPException(409, detail=ui_detail("scan_agent_name_taken", "this name is already used",
+                                                      name=new_name[:60]))
+        obj.name = new_name
     if payload.description is not None:
         obj.description = payload.description
     if payload.enabled is not None:
@@ -334,16 +391,26 @@ async def update_agent(
         actor_ip=request.client.host if request.client else None,
         actor_user_agent=request.headers.get("user-agent"),
         object_type="scan_agent", object_id=str(obj.id), action="update",
-        diff={"before": before},
+        # 打開中繼＝這台代理變成通往客戶網路的跳點，改了什麼要看得到
+        diff={"before": before, "changes": payload.model_dump(exclude_none=True)},
         request_id=getattr(request.state, "request_id", None),
     )
     await session.commit()
     await session.refresh(obj)
-    return _to_read(obj)
+    return await _with_relay_active(_to_read(obj))
+
+
+class AgentSubnetItem(StrictModel):
+    id: uuid.UUID
+    cidr: str
+    description: str | None = None
+    scan_enabled: bool = False
 
 
 class AgentSubnetsOut(StrictModel):
     subnet_ids: list[uuid.UUID]
+    #: 給代理頁點子網路數字時彈出的清單（10-22）；PUT 回應不帶
+    subnets: list[AgentSubnetItem] | None = None
 
 
 class AgentSubnetsPatch(StrictModel):
@@ -356,13 +423,16 @@ async def get_agent_subnets(
     agent_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> AgentSubnetsOut:
-    """此 agent 目前負責掃描的子網路 id。"""
+    """此 agent 目前負責掃描的子網路（id，以及 CIDR／說明／是否啟用掃描，依 CIDR 排序）。"""
     if await session.get(ScanAgent, agent_id) is None:
         raise HTTPException(404, detail="Agent not found")
-    ids = (await session.execute(
-        select(Subnet.id).where(Subnet.scan_agent_id == agent_id)
-    )).scalars().all()
-    return AgentSubnetsOut(subnet_ids=list(ids))
+    rows = (await session.execute(
+        select(Subnet.id, Subnet.cidr, Subnet.description, Subnet.scan_enabled)
+        .where(Subnet.scan_agent_id == agent_id).order_by(Subnet.cidr)
+    )).all()
+    return AgentSubnetsOut(subnet_ids=[r.id for r in rows], subnets=[
+        AgentSubnetItem(id=r.id, cidr=str(r.cidr), description=r.description, scan_enabled=bool(r.scan_enabled))
+        for r in rows])
 
 
 @router.put("/{agent_id}/subnets", response_model=AgentSubnetsOut,
@@ -388,12 +458,12 @@ async def set_agent_subnets(
     to_clear = current - want
     if to_clear:
         await session.execute(
-            sa_update(Subnet).where(Subnet.id.in_(to_clear))
+            sa_update(Subnet).where(in_values(Subnet.id, to_clear))
             .values(scan_agent_id=None)
         )
     if want:
         await session.execute(
-            sa_update(Subnet).where(Subnet.id.in_(want))
+            sa_update(Subnet).where(in_values(Subnet.id, want))
             .values(scan_agent_id=agent_id, scan_enabled=True)
         )
     await append_audit(
@@ -442,6 +512,50 @@ class AgentPollOut(StrictModel):
     ip_overrides: dict[str, list[str]] = Field(default_factory=dict)
     agent_sha: str = ""             # server 端 agent.py 的 sha256；不同→agent 自動更新
     force_scan: bool = False        # 「立刻執行一次」：本輪所有探測強制到期立即跑
+    # 獨立 ISC DHCP Server（issue #45）：有來源指到這台代理時才帶 {source_id, interval_seconds}，
+    # 代理才會去讀本機的 dhcpd.conf／dhcpd.leases；沒有就是 None，代理完全不碰那兩個檔
+    dhcpd: dict[str, Any] | None = None
+    # 主控台中繼（issue #24 階段二）：網頁上允許的範圍（被指派的子網路、埠、同時上限）。代理只中繼範圍內的目標；
+    # 系統設定與掃描代理頁兩道開關都開才給，否則是空的（代理什麼都不中繼）
+    relay_cidrs: list[str] = Field(default_factory=list)
+    relay_ports: list[int] = Field(default_factory=list)
+    relay_max: int = 0
+    # SNMP 收集（0217，代理 1.19.0 起）：指派給這台代理的收集目標（含解密後的憑證，只給被指派的代理）與負載上限。
+    # 每筆 {target_id, ip, port, sections:{arp:300,...}, credential:{version, community | username/
+    # security_level/auth_protocol/auth_passphrase/priv_protocol/priv_passphrase, timeout_s, retries}}。
+    # 代理沒有 SNMP 能力（沒裝 net-snmp 用戶端工具）就是空的；舊代理不認得這兩個欄位，照舊忽略
+    snmp: list[dict[str, Any]] = Field(default_factory=list)
+    snmp_budget: dict[str, int] = Field(default_factory=dict)
+
+
+def parse_relay_header(raw: str | None) -> dict[str, Any] | None:
+    """`X-Agent-Relay: enabled=1;ports=22,3389,5900-5910;max=4;pinned=0` → 能力；格式不對回 None。
+
+    埠的範圍展開成清單（最多 256 個，代理端預設 13 個）。
+    """
+    if raw is None:
+        return None
+    out: dict[str, Any] = {"enabled": False, "ports": [], "max": 0, "pinned": False}
+    for part in raw.split(";")[:8]:
+        k, _, v = part.strip().partition("=")
+        k, v = k.strip().lower(), v.strip()
+        if k == "enabled":
+            out["enabled"] = v in ("1", "true", "yes")
+        elif k == "max" and v.isdigit():
+            out["max"] = min(int(v), 64)
+        elif k == "pinned":
+            out["pinned"] = v in ("1", "true", "yes")
+        elif k == "ports":
+            ports: list[int] = []
+            for tok in v.split(",")[:64]:
+                a, _, b = tok.strip().partition("-")
+                if not a.isdigit() or (b and not b.isdigit()):
+                    continue
+                lo, hi = int(a), int(b or a)
+                if 1 <= lo <= hi <= 65535 and hi - lo < 256:
+                    ports.extend(range(lo, hi + 1))
+            out["ports"] = sorted(set(ports))[:256]
+    return out
 
 
 @router.get("/poll", response_model=AgentPollOut)
@@ -452,6 +566,7 @@ async def agent_poll(
     x_agent_version: Annotated[str | None, Header()] = None,
     x_agent_probes: Annotated[str | None, Header()] = None,
     x_agent_tools: Annotated[str | None, Header()] = None,
+    x_agent_relay: Annotated[str | None, Header()] = None,
 ) -> AgentPollOut:
     """Agent 主動拉取「要掃哪些網段、各網段跑哪些探測、各探測間隔、逐 IP 略過」。"""
     agent = await _agent_from_key(session, x_agent_key)
@@ -470,28 +585,37 @@ async def agent_poll(
     # 相依工具盤點（裝了哪些 / 版本）→ 掃描代理頁「相依套件 N/M」
     if x_agent_tools is not None:
         agent.tools = _parse_tools_header(x_agent_tools)
+    # 中繼能力（代理 1.15.0 起）：舊代理不帶這個標頭 → 視為不支援
+    agent.relay_caps = parse_relay_header(x_agent_relay)
 
     cap = set(agent.enabled_probes or ["icmp"])   # 代理能力天花板
     rows = (await session.execute(
-        select(Subnet.id, Subnet.cidr, Subnet.scan_method).where(
+        select(Subnet.id, Subnet.cidr, Subnet.scan_method, Subnet.scan_scope).where(
             Subnet.scan_agent_id == agent.id,
             Subnet.scan_enabled.is_(True),
             Subnet.archived_at.is_(None),
         )
     )).all()
+    # 大子網路的掃描計畫（已知位址每輪掃＋其餘背景探索；services/scan_plan）。小子網路沒有計畫＝照舊全掃，
+    # 舊代理不認得 plan 欄位也是照舊全掃
+    from app.services.scan_plan import plans as _scan_plans
+    plan_by_id = await _scan_plans(session, rows)
     subnets_out: list[dict[str, Any]] = []
     sub_ids: list[Any] = []
-    for sid, cidr, methods in rows:
+    for sid, cidr, methods, _scope in rows:
         sub_ids.append(sid)
         probes = [p for p in scan_probes.normalize_probes(list(methods or [])) if p in cap]
-        subnets_out.append({"subnet_id": str(sid), "cidr": str(cidr), "probes": probes})
+        entry: dict[str, Any] = {"subnet_id": str(sid), "cidr": str(cidr), "probes": probes}
+        if plan_by_id.get(sid) is not None:
+            entry["plan"] = plan_by_id[sid]
+        subnets_out.append(entry)
 
     # 逐 IP 略過（只送有設定的，量小）
     ip_overrides: dict[str, list[str]] = {}
     if sub_ids:
         orows = (await session.execute(
             select(IPAddress.ip, IPAddress.excluded_probes).where(
-                IPAddress.subnet_id.in_(sub_ids),
+                in_values(IPAddress.subnet_id, sub_ids),
                 func.cardinality(IPAddress.excluded_probes) > 0,
             )
         )).all()
@@ -499,19 +623,34 @@ async def agent_poll(
             ip_overrides[str(ip)] = scan_probes.normalize_probes(list(excl or []))
 
     intervals = scan_probes.probe_intervals(agent.probe_intervals)
+    from app.models.dhcp_standalone import IscDhcpServer
+    isc = (await session.execute(select(IscDhcpServer).where(
+        IscDhcpServer.agent_id == agent.id, IscDhcpServer.enabled.is_(True)))).scalars().first()
+    dhcpd = ({"source_id": str(isc.id), "interval_seconds": isc.report_interval_seconds}
+             if isc is not None else None)
     # 「立刻執行一次」：有旗標就回 force_scan=True 並清掉（一次性消費）
     force_scan = agent.force_scan_at is not None
     if force_scan:
         agent.force_scan_at = None
+    from app.services.relay_scope import relay_scope
+    scope = await relay_scope(session, agent)
+    from app.services import snmp as snmp_svc
+    snmp_targets = await snmp_svc.poll_targets(session, agent)
     await session.commit()
     return AgentPollOut(
+        snmp=snmp_targets,
+        snmp_budget=dict(snmp_svc.BUDGET) if snmp_targets else {},
         agent=agent.name,
         subnets=subnets_out,
+        relay_cidrs=scope["cidrs"],
+        relay_ports=scope["ports"],
+        relay_max=scope["max"],
         interval_seconds=scan_probes.fast_interval(intervals),
         intervals=intervals,
         ip_overrides=ip_overrides,
         force_scan=force_scan,
         agent_sha=_agent_sha(),
+        dhcpd=dhcpd,
     )
 
 
@@ -523,8 +662,69 @@ class AgentReportItem(StrictModel):
     netbios: str | None = None       # NetBIOS 名稱（nmblookup -A）
     mdns: str | None = None          # mDNS 名稱（avahi-resolve，.local）
     os_guess: str | None = None      # OS 偵測原始字串
+    #: 代理 1.14.0 起：定期 OS 偵測的 nmap 結構化結果（埠、服務、banner、網頁標題、憑證、smb-os-discovery），
+    #: 伺服器用 IP 探測同一套判讀推出 OS 與設備類型（services/device_identity）。過大就丟掉、只用 os_guess
+    nmap: dict[str, Any] | None = None
     open_ports: list[int] | None = None
     probes_run: list[str] | None = None   # 這輪實際對此 IP 跑了哪些 probe（回填 last_run）
+    # False＝背景重量探測（反解／NetBIOS／mDNS／OS）補的資料，不是上線證據：不更新最後出現時間、
+    # 不自動新增 IP。反解是 DNS 回答的，不是主機本身；OS 指紋可能是幾分鐘前排進佇列的（代理 1.10.0 起）
+    liveness: bool = True
+
+    @field_validator("nmap")
+    @classmethod
+    def _cap_nmap(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        # 一台主機的精簡結果通常幾 KB；不正常的大小不拿來判讀，但也不讓整批回報失敗
+        if v is None:
+            return None
+        try:
+            return v if len(json.dumps(v, default=str)) <= _NMAP_REPORT_MAX else None
+        except (TypeError, ValueError):
+            return None
+
+
+_NMAP_REPORT_MAX = 64 * 1024
+_UNSET: Any = object()
+
+
+async def _virtual_guests(session: AsyncSession, items: list[Any]) -> dict[str, str]:
+    """這次回報裡、有 OS 偵測結果的位址中，哪些是虛擬化整合回報的虛擬機或容器網卡（依 IP 或 MAC）。
+
+    虛擬化讓 nmap 的 TCP/IP 指紋失準（PVE 的 LXC 容器被判成 HP NAS，2026-10-02），判讀時不拿指紋的類別。
+    一次查完：大量回報時不可以每台各查一次。"""
+    from sqlalchemy import String, or_
+
+    from app.models.virt import VMInterface
+    from app.services.arp_evidence import normalize as norm_mac
+    ips = {str(it.ip).split("/")[0] for it in items if it.nmap}
+    if not ips:
+        return set()
+    macs = {m for it in items if it.nmap and (m := norm_mac(it.mac))}
+    by_mac = {norm_mac(it.mac): str(it.ip).split("/")[0] for it in items if it.nmap and norm_mac(it.mac)}
+    host = func.host(VMInterface.primary_ip)
+    conds = [in_values(host, ips, type_=String())]
+    if macs:
+        conds.append(in_values(VMInterface.mac, macs))
+    from app.models.virt import VirtualMachine
+    from app.services.fw_lookup import PROXMOX_GUEST_OUI
+    mac_of = {str(it.ip).split("/")[0]: norm_mac(it.mac) for it in items if it.nmap}
+    out: dict[str, str] = {}
+    rows = (await session.execute(select(host, VMInterface.mac, VirtualMachine.kind)
+                                  .join(VirtualMachine, VirtualMachine.id == VMInterface.vm_id)
+                                  .where(or_(*conds)))).all()
+    for ip, mac, vm_kind in rows:
+        kind = "ct" if vm_kind == "ct" else "vm"
+        m = norm_mac(mac) if mac else None
+        if m and m in by_mac:
+            out[by_mac[m]] = kind
+        # 只有 IP 對到、兩邊 MAC 都知道卻不同 → DHCP 位址換了主人，不是這台（同 fw_lookup.vm_match_for）
+        elif ip and str(ip) in ips and not (m and mac_of.get(str(ip)) and mac_of[str(ip)] != m):
+            out.setdefault(str(ip), kind)
+    # Proxmox 指派的 MAC（bc:24:11）只會出現在 PVE 的虛擬機／容器上
+    for ip, m in mac_of.items():
+        if m and m.lower().startswith(PROXMOX_GUEST_OUI):
+            out.setdefault(ip, "vm")
+    return out
 
 
 class AgentDHCPServer(StrictModel):
@@ -543,6 +743,124 @@ class AgentDHCPServer(StrictModel):
 class AgentReportIn(StrictModel):
     results: Annotated[list[AgentReportItem], Field(max_length=100_000)]
     dhcp_servers: Annotated[list[AgentDHCPServer], Field(max_length=500)] = []
+    # 一輪結束時附上的統計（耗時、逐子網路位址數／在線數、背景待辦量），存到 scan_agents.last_cycle
+    cycle: dict[str, Any] | None = None
+
+
+class DhcpdPool(StrictModel):
+    subnet: Annotated[str | None, Field(max_length=64)] = None
+    start: Annotated[str, Field(max_length=64)]
+    end: Annotated[str, Field(max_length=64)]
+
+
+class DhcpdHost(StrictModel):
+    ip: Annotated[str, Field(max_length=64)]
+    mac: Annotated[str | None, Field(max_length=64)] = None
+    hostname: Annotated[str | None, Field(max_length=255)] = None
+    ends: Annotated[str | None, Field(max_length=64)] = None
+
+
+class DhcpdFile(StrictModel):
+    path: Annotated[str | None, Field(max_length=512)] = None
+    ok: bool = False
+    error: Annotated[str | None, Field(max_length=512)] = None
+    size: int | None = None
+    mtime: int | None = None
+
+
+class DhcpdReportIn(StrictModel):
+    """代理讀 dhcpd.conf／dhcpd.leases 的結果（只有解析後的結構化資料，沒有檔案原文）。"""
+    source_id: uuid.UUID
+    pools: Annotated[list[DhcpdPool], Field(max_length=5000)] = Field(default_factory=list)
+    reservations: Annotated[list[DhcpdHost], Field(max_length=20000)] = Field(default_factory=list)
+    leases: Annotated[list[DhcpdHost], Field(max_length=50000)] = Field(default_factory=list)
+    files: dict[str, DhcpdFile] = Field(default_factory=dict)
+
+
+@router.post("/dhcpd-report")
+async def agent_dhcpd_report(
+    payload: DhcpdReportIn,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    x_agent_key: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    """獨立 ISC DHCP Server 的回報（issue #45）。只收指派給這台代理、而且啟用中的來源；
+    別的來源一律 404（不透露存不存在）。"""
+    from app.models.dhcp_standalone import IscDhcpServer
+    from app.services.dhcp_standalone import ingest_isc_report
+
+    agent = await _agent_from_key(session, x_agent_key)
+    src = await session.get(IscDhcpServer, payload.source_id)
+    if src is None or src.agent_id != agent.id:
+        raise HTTPException(404, detail="Not found")
+    if not src.enabled:
+        return {"status": "disabled"}
+    agent.last_seen_at = datetime.now(UTC)
+    counts = await ingest_isc_report(session, src, payload.model_dump())
+    sid, sname, serr = src.id, src.name, src.last_error   # commit 之後屬性會過期
+    await session.commit()
+    # 作業頁：每個 ISC 來源一列；檔案讀不到算失敗（原因跟整合頁的最後錯誤一樣）
+    from app.services.background_tasks import upsert_scheduled_task
+    await upsert_scheduled_task(
+        session, kind="isc_dhcp.sync", target_type="isc_dhcp_server", target_id=sid,
+        target_label=sname, ok=not serr, error=serr, summary=dict(counts))
+    return {"status": "ok", **counts}
+
+
+class SnmpReportIn(StrictModel):
+    """代理的 SNMP 收集結果（只有解析後的列，沒有設備的原始輸出）。
+
+    sections 逐區段：{"status": ok|partial|error|absent, "error", "elapsed_ms", "truncated", "rows": [...]}
+    - arp.rows：[[ip, mac, ifIndex, state, type], ...]（state 只有 ipNetToPhysicalTable 有）
+    - fdb.rows：[[mac, 埠名, vlan], ...]
+    - interfaces.rows：[{if_index, name, descr, alias, type, mac, admin, oper}]；interfaces.addresses：[{ip, if_index}]
+    - neighbors.rows：[{protocol, local_port, remote_sysname, remote_port, remote_chassis_id, remote_mac,
+      remote_mgmt_address, remote_platform}]
+    列數上限在 services/snmp_collect（MAX_ROWS）；這裡不逐列驗證（十萬列的 Pydantic 模型太慢）。
+    """
+    target_id: uuid.UUID
+    job_id: uuid.UUID | None = None
+    credential_id: uuid.UUID | None = None
+    elapsed_ms: int | None = None
+    system: dict[str, Any] | None = None
+    error: Annotated[str | None, Field(max_length=1000)] = None
+    error_code: Annotated[str | None, Field(max_length=64)] = None
+    sections: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+@router.post("/snmp-report")
+async def agent_snmp_report(
+    payload: SnmpReportIn,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    x_agent_key: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    """SNMP 收集的回報（0217）。只收**目前判定由這台代理收集**、而且啟用中的目標；別的一律 404（不透露存不存在）。
+    比對與寫入全在伺服器（services/snmp_collect）。"""
+    from app.models.snmp import SnmpTarget
+    from app.services import snmp as snmp_svc
+    from app.services.snmp_collect import ingest_report
+
+    agent = await _agent_from_key(session, x_agent_key)
+    target = await session.get(SnmpTarget, payload.target_id)
+    if target is None:
+        raise HTTPException(404, detail="Not found")
+    res = await snmp_svc.resolve(session, target)
+    if res.agent_id != agent.id:
+        raise HTTPException(404, detail="Not found")
+    if not target.enabled and payload.job_id is None:
+        return {"status": "disabled"}
+    # 跟掃描回報排同一個隊（同一台代理）：SNMP 的 ARP 與掃描結果會改到同一批 IP 記錄，交錯時會死結
+    await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": report_lock_key(agent.id)})
+    agent.last_seen_at = datetime.now(UTC)
+    out = await ingest_report(session, agent, target, payload.model_dump(mode="json"))
+    await session.commit()
+    return {"status": "ok", "result": out["result"],
+            "sections": {k: {kk: v.get(kk) for kk in ("status", "rows", "matched", "new", "removed")}
+                         for k, v in out["sections"].items()}}
+
+
+def report_lock_key(agent_id: Any) -> str:
+    """同一台代理的回報在交易內排隊用的 advisory lock 鍵（見 agent_report）。"""
+    return f"scan_agent_report:{agent_id}"
 
 
 @router.post("/report")
@@ -554,6 +872,10 @@ async def agent_report(
     """Agent push 掃描結果：對有回應的 IP stamp last_seen_scanner（+補 MAC）。"""
     import ipaddress as _ipaddr
     agent = await _agent_from_key(session, x_agent_key)
+    # 同一台代理的回報排隊處理：代理會同時送逐子網路回報與背景結果（逾時也會重送），兩筆交易涵蓋同一批 IP、
+    # 卻在不同階段取得列鎖（ORM flush 一批、重算主機名稱再一批），交錯時互相死結（prod 兩週 28 次 500）。
+    # 交易層的鎖，commit／rollback 時自動放開；不同代理不受影響
+    await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": report_lock_key(agent.id)})
     now = datetime.now(UTC)
     # 只在「指派給此 agent 的子網路」範圍內配對 —— 解決重疊網段（A/B 客戶都用
     # 192.168.1.0/24）誤配到別人子網路的問題。同時帶出 CIDR，供自動新增比對。
@@ -576,21 +898,44 @@ async def agent_report(
     updated = 0
     created = 0
     skipped_not_in_ipam = 0
+    # 沒開自動收錄時掃到的未登錄活位址：不建 IP 記錄，只記「看到過」（指示計顯示「未納管」、未授權 IP 偵測也看得到）
+    unmanaged: dict[tuple[Any, str], dict[str, Any]] = {}
     skipped_no_subnet = 0
-    for item in payload.results:
+    from app.services.hostname_reports import HostnameRun
+    hn_runs = {src: HostnameRun(session, source=src, origin=f"{src}:{agent.id}", peers=2)
+               for src in ("scanner", "netbios", "mdns")}
+    recog_matcher: Any = _UNSET            # 第一筆需要判讀時才載入（多數回報沒有 OS 偵測結果）
+    vm_guests: dict[str, str] | None = None   # 虛擬機（"vm"）／容器（"ct"）的位址（同樣第一次需要時整批查）
+    # 沒有指派任何子網路的代理不能碰任何位址。以前這裡是「有指派才過濾」，沒指派的代理因此
+    # 跳過整道過濾、可以改全站任何一筆 IP 的 MAC／OS／主機名稱（2026-10-09 合規核對抓到）
+    results = payload.results if agent_subnet_ids else []
+    if not agent_subnet_ids:
+        skipped_no_subnet = sum(1 for it in payload.results if it.alive)
+    for item in results:
         if not item.alive:
             continue
-        stmt = select(IPAddress).where(IPAddress.ip == item.ip)
-        if agent_subnet_ids:
-            stmt = stmt.where(IPAddress.subnet_id.in_(agent_subnet_ids))
+        stmt = select(IPAddress).where(IPAddress.ip == item.ip,
+                                       in_values(IPAddress.subnet_id, agent_subnet_ids))
         # 重疊網段下可能有多筆同 IP；限定 agent 子網路後通常唯一，取第一筆
         ipa = (await session.execute(stmt.limit(1))).scalar_one_or_none()
+        if ipa is None and not item.liveness:
+            continue            # 背景探測補的資料只補既有的 IP，不當作「發現新主機」
         if ipa is None:
             if not agent.auto_create_ips:
-                # 沒開自動收錄 → 這個位址活著但 IPAM 沒有它，就讓它留在
-                # 「未授權 IP」異常偵測裡（判定正是「掃得到、IPAM 沒有」）。
-                # 回報筆數，別讓資料靜靜消失——看不到的丟棄是先前吃過虧的地方。
+                # 沒開自動收錄 → 不建紀錄，但記下「看到過」（unmanaged_sightings）：指示計上顯示「未納管」，
+                # 不再跟閒置一模一樣；「未授權 IP」偵測也讀得到。只記指派給這個代理、有開掃描的子網路內的位址。
                 skipped_not_in_ipam += 1
+                try:
+                    aip_u = _ipaddr.ip_address(str(item.ip).split("/")[0])
+                except ValueError:
+                    continue
+                sub_u = next((sid for net, sid in addable_nets if aip_u in net), None)
+                if sub_u is not None:
+                    unmanaged[(sub_u, str(aip_u))] = {
+                        "mac": (item.mac or None) and str(item.mac)[:17],
+                        "hostname": ((item.netbios or item.mdns or item.rdns) or None)
+                        and str(item.netbios or item.mdns or item.rdns)[:255],
+                    }
                 continue
             # 掃描代理發現的新 IP → 自動加進它所屬（有開掃描）的子網路
             try:
@@ -619,31 +964,51 @@ async def agent_report(
             # ip_id=None 建 FK row → NOT NULL 違規 500（rdns/mdns/os 等帶 hostname 的回報才會踩到）。
             await session.flush()
             created += 1
-        else:
+        elif item.liveness:
             ipa.last_seen_scanner = now
             # 掃描代理看到回應＝即時上線證據，立刻更新實際狀態（不必等 LibreNMS sync）
             from app.services.librenms import mark_scanner_seen
             await mark_scanner_seen(session, ipa, now)
         if item.mac:
+            from app.services.arp_evidence import record_arp_observation
             from app.services.arp_precedence import consider_mac
             await consider_mac(session, ip=ipa, mac=item.mac, source="scanner")
-        # OS 偵測：存原始字串 + 正規化家族（前端依 family 配 icon）
-        if item.os_guess:
-            from app.core.os_fingerprint import normalize_os
-            ipa.os_guess = item.os_guess[:160]
-            ipa.os_family = normalize_os(item.os_guess)
+            # IP 衝突偵測的依據：不管上面有沒有覆寫 IP 記錄上的 MAC 都要記
+            # （被優先序擋下來的那個 MAC 正是衝突的另一方，issue #41）
+            await record_arp_observation(session, ip=ipa, mac=item.mac, source="scanner",
+                                         seen_at=now)
+        # OS 偵測：有 nmap 結構化結果（代理 1.14.0 起）就用 IP 探測同一套判讀（含 Recog）推 OS、
+        # 設備類型與廠牌型號；沒有就照舊存代理自己推的那行 OS（前端依 family 配 icon）
+        if item.nmap or item.os_guess:
+            from app.services.device_identity import apply_summary
+            summary: dict[str, Any] = {}
+            if item.nmap:
+                from app.services.ip_identify import summarize
+                if recog_matcher is _UNSET:
+                    from app.services.recog import get_matcher
+                    recog_matcher = await get_matcher(session)
+                if vm_guests is None:
+                    vm_guests = await _virtual_guests(session, payload.results)
+                # 廠商用 IP 記錄上的 MAC 查 jt-ipam 自己的 OUI 表，與「探測」頁同一套。nmap 報的是當下回應 ARP 的
+                # 那張網卡：雙網卡主機的兩個網段在同一個廣播網域時，Linux 會用任何一張網卡回答本機任何一個位址
+                # （arp_ignore=0），SuperMicro 主機的位址曾由它的 HP 擴充網卡回答，畫面於是寫著「伺服器 · HP」
+                from app.services.oui import vendor_for_mac
+                vendor_mac = str(ipa.mac or item.mac) if (ipa.mac or item.mac) else None
+                summary = summarize({"nmap": {"available": True, **item.nmap}}, recog=recog_matcher,
+                                    mac_vendor=await vendor_for_mac(session, vendor_mac),
+                                    virtual_guest=vm_guests.get(str(item.ip).split("/")[0]), mac=vendor_mac)
+            await apply_summary(session, ipa, summary, fallback_os=item.os_guess)
         # 主機名稱觀測 → 走既有來源優先序（各來源獨立一筆，不會 thrash）。
         # rDNS 記 source=scanner；NetBIOS / mDNS 各自獨立來源，方便在優先序頁分別排序/停用。
-        from app.services.hostname import apply_observation
-        if item.rdns:
-            await apply_observation(session, ip=ipa, source="scanner",
-                                    hostname=item.rdns, tiebreak_min=True)
-        if item.netbios:
-            await apply_observation(session, ip=ipa, source="netbios",
-                                    hostname=item.netbios, tiebreak_min=True)
-        if item.mdns:
-            await apply_observation(session, ip=ipa, source="mdns",
-                                    hostname=item.mdns, tiebreak_min=True)
+        # 經 HostnameRun（逐代理記錄）：以前的 tiebreak_min 會讓改名成字典序較大的名字永遠不生效。
+        # 只報「有名字」的：沒有名字可能只是那個探測這輪沒跑、或對方沒回應，不代表名字消失了。
+        # 例外是反解：代理 1.8.1 起在 DNS 明確回答「沒有這筆 PTR」時送空字串（逾時、DNS 連不上
+        # 仍然不送），那才是「名字真的沒了」→ 清掉這台代理先前回報的（以前永遠留著）
+        for _src, _val in (("scanner", item.rdns), ("netbios", item.netbios), ("mdns", item.mdns)):
+            if _val:
+                hn_runs[_src].report(ipa, _val)
+            elif _src == "scanner" and _val == "" and "rdns" in (item.probes_run or []):
+                hn_runs[_src].report(ipa, None)
         # 記各 probe 上次執行時間（給「下次到期」顯示）
         if item.probes_run:
             lr = dict(ipa.probe_last_run or {})
@@ -651,9 +1016,23 @@ async def agent_report(
                 lr[p] = now.isoformat()
             ipa.probe_last_run = lr
         updated += 1
+    # 代理只回報活著的主機、而且是逐台回報，沒有「完整一輪」可言 → 不清（complete=False）
+    for _run in hn_runs.values():
+        await _run.finish(complete=False)
     dhcp_seen = await _record_dhcp_sightings(
         session, agent, agent_subnets, payload.dhcp_servers, now)
 
+    if payload.cycle is not None:
+        cyc = dict(payload.cycle)
+        if isinstance(cyc.get("subnets"), list):
+            cyc["subnets"] = cyc["subnets"][:1000]
+        agent.last_cycle = {**cyc, "at": now.isoformat()}
+        # 記下這一輪、評估負載；太重時通知管理員（開始與恢復各一次，見 services/scan_load）
+        from app.services.scan_load import record as record_cycle
+        await record_cycle(session, agent, cyc, now)
+    if unmanaged:
+        from app.services.unmanaged import record_sightings
+        await record_sightings(session, source="scanner", source_id=agent.id, now=now, sightings=unmanaged)
     agent.last_seen_at = now
     agent.last_error = None
     await session.commit()
@@ -728,12 +1107,44 @@ async def delete_agent(
         diff={"before": {"name": obj.name}},
         request_id=getattr(request.state, "request_id", None),
     )
+    # 它寫進共用表的主機名稱／租約／固定分配／NAT／VPN 通道一併收回（沒有外鍵會跟著刪）
+    from app.services.integration_cleanup import forget_instance
+    await forget_instance(session, source="scanner", source_id=obj.id,
+                          hostname_sources=("scanner", "netbios", "mdns"))
     await session.delete(obj)
     await session.commit()
+
+@router.get("/{agent_id}/load", dependencies=[Depends(require_ops_admin)])
+async def agent_load(
+    agent_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """負載面板：最近一輪的逐子網路細節、評估與建議，以及最近幾輪的耗時（趨勢）。"""
+    from app.services import scan_load
+
+    obj = await session.get(ScanAgent, agent_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Scan agent not found")
+    rows = await scan_load.recent(session, obj.id)
+    hist = [{"at": r.at, "duration_s": r.duration_s, "interval_s": r.interval_s,
+             "heavy_backlog": r.heavy_backlog, "hosts": r.hosts, "alive": r.alive} for r in rows]
+    from app.services.system_config import get_liveness_config
+    online = int((await get_liveness_config(session))["minutes"])
+    ev = scan_load.evaluate(obj.last_cycle, hist, online_minutes=online) if obj.last_cycle else None
+    if ev is not None:
+        # 帶上子網路 id（依 CIDR 對這台代理被指派的子網路），面板上才能直接「移到別的代理」
+        ids = {str(c): i for i, c in (await session.execute(
+            select(Subnet.id, Subnet.cidr).where(Subnet.scan_agent_id == obj.id))).all()}
+        for sub in ev["subnets"]:
+            sid = ids.get(str(sub.get("cidr")))
+            sub["subnet_id"] = str(sid) if sid else None
+    return {"agent_id": str(obj.id), "last_cycle": obj.last_cycle, "evaluation": ev, "history": hist}
+
 
 # ─────────────────── 工具探測工作（代理端；X-Agent-Key 驗證）───────────────────
 @router.get("/jobs", include_in_schema=False)
 async def agent_take_jobs(
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
     x_agent_key: Annotated[str | None, Header()] = None,
     wait: int = Query(0, ge=0, le=25),
@@ -747,21 +1158,89 @@ async def agent_take_jobs(
 
     agent = await _agent_from_key(session, x_agent_key)
     deadline = time.monotonic() + wait
-    while True:
-        jobs = await claim_jobs(session, agent_id=agent.id)
-        if jobs:
+    # 代理已經斷線（重啟、網路中斷）就不要再替它領：否則工作被領走後回給一條死掉的連線，就此遺失
+    # （代理重啟後的第一次主控台中繼因此乾等 15 秒）。
+    # 不能用 request.is_disconnected()：它用預先取消的 scope 探測，在 BaseHTTPMiddleware（這裡有三層）底下
+    # 永遠回 False（2026-10-02 實機抓到）。改由背景工作真的等 receive() 的斷線訊號。
+    hung_up = asyncio.create_task(_wait_disconnect(request)) if wait else None
+    try:
+        while True:
+            if hung_up is not None and hung_up.done():
+                return {"jobs": []}
+            jobs = await claim_jobs(session, agent_id=agent.id)
+            if jobs and hung_up is not None and hung_up.done():
+                await session.rollback()        # 領的當下才斷線：放回去，留給重新連上來的代理
+                return {"jobs": []}
+            out_jobs = await _expand_jobs(session, jobs) if jobs else []
             await session.commit()
-            return {"jobs": [{"id": str(j.id), "kind": j.kind, "params": j.params}
-                             for j in jobs]}
-        await session.commit()
-        if time.monotonic() >= deadline:
-            return {"jobs": []}
-        await asyncio.sleep(1.0)
+            if out_jobs:
+                return {"jobs": out_jobs}
+            if time.monotonic() >= deadline:
+                return {"jobs": []}
+            await asyncio.sleep(1.0)
+    finally:
+        if hung_up is not None:
+            hung_up.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await hung_up
+
+
+async def _expand_jobs(session: AsyncSession, jobs: list[Any]) -> list[dict[str, Any]]:
+    """領走的工作 → 給代理的內容。SNMP 的測試／立即收集在這裡才展開成目標＋解密後的憑證
+    （資料庫裡的工作記錄只有 id）；目標已經不在、或已經不歸這台代理收 → 工作作廢、不交出去。"""
+    from app.models.agent_probe_job import STATUS_FAILED
+    from app.services import snmp as snmp_svc
+
+    out: list[dict[str, Any]] = []
+    for j in jobs:
+        params = j.params
+        if j.kind in snmp_svc.SNMP_JOB_KINDS:
+            params = await snmp_svc.job_params(session, j)
+            if params is None:
+                j.status = STATUS_FAILED
+                j.finished_at = datetime.now(UTC)
+                j.error = "收集目標已不存在或已改由其他代理收集"
+                from app.services.snmp_collect import on_job_finished
+                await on_job_finished(session, j)
+                continue
+        out.append({"id": str(j.id), "kind": j.kind, "params": params})
+    return out
+
+
+async def _wait_disconnect(request: Request) -> None:
+    """等到用戶端斷線才結束（第一則是請求本體，之後只會有斷線訊號）。"""
+    while (await request.receive()).get("type") != "http.disconnect":
+        pass
 
 
 class _JobResultIn(StrictModel):
     result: Any = None
     error: str | None = None
+
+
+class _JobProgressIn(StrictModel):
+    progress: dict[str, Any]
+
+
+@router.post("/jobs/{job_id}/progress", include_in_schema=False)
+async def agent_job_progress(
+    job_id: uuid.UUID, payload: _JobProgressIn,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    x_agent_key: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    """代理回報執行中的進度（IP「探測」頁顯示現在在做什麼）。只收自己領到、還在跑的工作。"""
+    import json as _json
+
+    from app.services.agent_probe import MAX_PROGRESS_BYTES, update_progress
+
+    agent = await _agent_from_key(session, x_agent_key)
+    if len(_json.dumps(payload.progress, ensure_ascii=False)) > MAX_PROGRESS_BYTES:
+        raise HTTPException(status_code=413, detail="progress too large")
+    ok = await update_progress(session, agent_id=agent.id, job_id=job_id, progress=payload.progress)
+    await session.commit()
+    if not ok:
+        raise HTTPException(status_code=404, detail="job not found or not running")
+    return {"ok": True}
 
 
 @router.post("/jobs/{job_id}/result", include_in_schema=False)

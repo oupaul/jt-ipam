@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>jt-ipam — Install & upgrade troubleshooting</title>
-<meta name="description" content="What to do when a jt-ipam install or upgrade fails — a searchable Q&amp;A." />
+<title>jt-ipam: Install & upgrade troubleshooting</title>
+<meta name="description" content="What to do when a jt-ipam install or upgrade fails (a searchable Q&amp;A)." />
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <style>
   :root{
@@ -59,9 +59,41 @@
   .langsw li .tick{width:14px;flex:none;text-align:center;opacity:0}
   .langsw li[aria-selected="true"] .tick{opacity:1}
   @media(max-width:900px){.nav-links a:not(.btn){display:none}}
+  /* 小螢幕：導覽連結收起來之後，用「選單」按鈕展開（連結由頁尾的程式從導覽列複製）。
+     以前只有收起來、沒有替代入口，手機上整個導覽不見了（2026-10-10 使用者回報）。 */
+  .btn.nav-menu-btn{display:none}
+  .nav-menu-btn .i-close,.nav-menu-btn[aria-expanded="true"] .i-open{display:none}
+  .nav-menu-btn[aria-expanded="true"] .i-close{display:inline}
+  .mnav{display:none}
+  @media(max-width:900px){
+    .btn.nav-menu-btn{display:inline-flex}
+    .mnav.open{display:block;position:absolute;left:0;right:0;top:100%;background:#fff;border-bottom:1px solid var(--line);
+      box-shadow:0 14px 28px rgba(15,23,42,.10);padding:4px 20px 10px;max-height:calc(100vh - 80px);overflow:auto}
+    .mnav a{display:block;padding:12px 2px;border-bottom:1px solid #eef2ef;color:var(--body);font-size:15px;font-weight:500}
+    .mnav a:last-child{border-bottom:0}
+    .mnav a[aria-current="page"]{color:var(--green);font-weight:700}
+  }
+  /* 頂列固定一行：放不下時先把 GitHub、再把語言收進選單（頁尾程式量寬度決定；三種語言的字寬不同）。
+     2026-10-10 使用者：topbar 不要換行。選擇器多一層 nav 是為了蓋過各頁 560px 那條換行規則。 */
+  .mnav .m-gh,.mnav .m-lang{display:none}
+  @media(max-width:900px){
+    nav .nav-in{flex-wrap:nowrap}
+    nav .brand{flex:0 0 auto;white-space:nowrap}
+    nav .nav-links{flex:0 0 auto;flex-wrap:nowrap;width:auto;margin-left:auto;gap:8px}
+    nav .nav-links > *{flex-shrink:0}
+    nav.nav-c1 .nav-links > a.btn{display:none}
+    nav.nav-c2 .nav-links > .langsw{display:none}
+    nav.nav-c1 .mnav .m-gh{display:block}
+    nav.nav-c2 .mnav .m-lang{display:block}
+    .mnav .m-lang{padding:12px 2px 4px}
+    .mnav .m-lang-h{font-size:12px;color:var(--muted);margin-bottom:8px}
+    .mnav .m-lang button{display:inline-flex;align-items:center;margin:0 6px 6px 0;padding:7px 14px;border:1px solid var(--line);
+      border-radius:999px;background:#fff;color:var(--body);font:500 14px/1.2 inherit;cursor:pointer}
+    .mnav .m-lang button[aria-pressed="true"]{border-color:var(--green);color:var(--green);font-weight:700}
+  }
   /* 手機：頂列讓它自己長高換行，不要硬壓在 60px 裡把品牌名擠成兩行。 */
   @media(max-width:560px){
-    .nav-in{height:auto;padding:10px 0;flex-wrap:wrap;gap:10px}
+    .nav-in{height:auto;padding:10px 16px;flex-wrap:wrap;gap:10px}
     .brand{font-size:16px;white-space:nowrap}
     .nav-links{gap:8px;width:100%;justify-content:flex-end}
   }
@@ -119,7 +151,7 @@
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;color:var(--ink)}
   pre{background:var(--code-bg);color:var(--code-ink);border-radius:10px;padding:12px 14px;overflow:auto;
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.8px;line-height:1.6;margin:10px 0}
-  /* `.qa code` 的 specificity 比裸的 `pre code` 高，所以這裡要一起指定 ——
+  /* `.qa code` 的 specificity 比裸的 `pre code` 高，所以這裡要一起指定，
      不然深色程式區塊裡每一行都會多出一塊淺色底，看起來像被標記過。 */
   pre code,.qa pre code{background:transparent;border:0;padding:0;color:inherit;font-size:inherit}
   .sym{display:block;background:#fff7ed;border:1px solid #fed7aa;border-left:3px solid #f59e0b;border-radius:8px;
@@ -135,8 +167,8 @@
 </head>
 <body>
 <script>
-  /* 在內容繪製前先決定語言（避免閃爍）。優先序：網址 ?lang= > localStorage 偏好 > 預設英文。
-     安裝／升級腳本會依作業系統語系直接帶 ?lang=zh-TW / ?lang=ja / ?lang=en 進來。 */
+  /* 在內容繪製前先決定語言（避免閃爍）。優先序：網址 ?lang= > localStorage 偏好 > 瀏覽器語言 > 英文。
+     安裝/升級腳本會依作業系統語系直接帶 ?lang=zh-TW / ?lang=ja / ?lang=en 進來。 */
   (function(){
     try{
       function norm(v){ v = (v || '').toLowerCase();
@@ -145,7 +177,12 @@
         if (v === 'zh' || v === 'zh-tw' || v === 'zh-hant') return 'zh';
         return null; }
       var u = null; try { u = norm(new URLSearchParams(location.search).get('lang')); } catch (e) {}
-      var lang = u || norm(localStorage.getItem('jtipam-doc-lang')) || 'en';
+      function fromBrowser(){ var ls = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ''];
+        for (var i = 0; i < ls.length; i++){ var v = String(ls[i] || '').toLowerCase();
+          if (v.indexOf('zh') === 0) return 'zh'; if (v.indexOf('ja') === 0) return 'ja'; if (v.indexOf('en') === 0) return 'en'; }
+        return null; }
+      // 瀏覽器語言只當預設、不寫進偏好：之後改了瀏覽器語言仍會跟著變；自己選過的才記住
+      var lang = u || norm(localStorage.getItem('jtipam-doc-lang')) || fromBrowser() || 'en';
       document.body.classList.add('lang-' + lang);
       document.documentElement.setAttribute('lang', lang === 'en' ? 'en' : lang === 'ja' ? 'ja' : 'zh-Hant');
       if (u){ try {
@@ -173,7 +210,10 @@
       jt-ipam
     </a>
     <div class="nav-links">
+      <button type="button" class="btn btn-ghost btn-sm nav-menu-btn" aria-expanded="false" aria-controls="mnav"><svg class="i-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg><svg class="i-close" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg><span class="zh">選單</span><span class="en">Menu</span><span class="ja">メニュー</span></button>
       <a href="index.html#install"><span class="zh">安裝</span><span class="en">Install</span><span class="ja">インストール</span></a>
+      <a href="adoption.html"><span class="zh">導入流程</span><span class="en">Adoption roadmap</span><span class="ja">導入ガイド</span></a>
+      <a href="integrations.html"><span class="zh">整合導入</span><span class="en">Integrations guide</span><span class="ja">連携ガイド</span></a>
       <a href="features.html"><span class="zh">功能地圖</span><span class="en">Feature map</span><span class="ja">機能マップ</span></a>
       <a href="api.html">API</a>
       <a class="btn btn-ghost btn-sm" href="index.html"><span class="zh">回首頁</span><span class="en">Home</span><span class="ja">ホーム</span></a>
@@ -225,8 +265,8 @@
       <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
       <input id="q" type="search" autocomplete="off" spellcheck="false"
              data-ph-zh="搜尋錯誤訊息或關鍵字，例如 fast-forward、pgvector、8443…"
-             data-ph-en="Search an error message or keyword — fast-forward, pgvector, 8443…"
-             data-ph-ja="エラーメッセージやキーワードで検索 — fast-forward、pgvector、8443…" />
+             data-ph-en="Search an error message or keyword: fast-forward, pgvector, 8443…"
+             data-ph-ja="エラーメッセージやキーワードで検索：fast-forward、pgvector、8443…" />
       <button class="clr" id="clr" type="button" aria-label="clear">&times;</button>
     </div>
     <div class="hits" id="hits"></div>
@@ -238,13 +278,13 @@
       <article class="qa" id="qa-doctor">
         <h3>
           <span class="zh">1. 先跑內建的健檢：它會直接告訴你哪裡壞了、該下哪一行指令</span>
-          <span class="en">1. Run the built-in health check first — it names what is broken and the exact command to fix it</span>
-          <span class="ja">1. まず内蔵の健全性チェックを実行する — どこが壊れているかと、直すためのコマンドをそのまま教えてくれます</span>
+          <span class="en">1. Run the built-in health check first: it names what is broken and the exact command to fix it</span>
+          <span class="ja">1. まず内蔵の健全性チェックを実行する：どこが壊れているかと、直すためのコマンドをそのまま教えてくれます</span>
         </h3>
         <pre><code>sudo bash /opt/jt-ipam/scripts/jt-ipam.sh doctor</code></pre>
         <p>
           <span class="zh">它會逐項檢查設定檔、資料庫、遷移版本、前端 dist、systemd 服務與計時器、監聽埠、nginx、備份目錄與 ICMP 權限，並對每個紅字附上修復指令。大部分安裝問題在這一步就結束了。</span>
-          <span class="en">It checks the env file, database, migration revision, frontend dist, systemd units and timers, the listening port, nginx, the backup directory and ICMP capability — and prints a fix command next to anything red. Most install problems end here.</span>
+          <span class="en">It checks the env file, database, migration revision, frontend dist, systemd units and timers, the listening port, nginx, the backup directory and ICMP capability, and prints a fix command next to anything red. Most install problems end here.</span>
           <span class="ja">設定ファイル、データベース、マイグレーションのリビジョン、フロントエンドの dist、systemd のユニットとタイマー、待ち受けポート、nginx、バックアップ用ディレクトリ、ICMP の権限を順に確認し、赤く出た項目には必ず修正コマンドを添えます。インストールの問題はたいていここで片付きます。</span>
         </p>
       </article>
@@ -272,7 +312,7 @@
 sudo systemctl status jt-ipam-backend --no-pager</code></pre>
         <p>
           <span class="zh">腳本印出的 <code>FATAL:</code> 通常只是結果；真正的原因（缺套件、密碼錯、埠被占用）幾乎都在上面幾行或 journal 裡。</span>
-          <span class="en">The <code>FATAL:</code> line the script prints is usually the symptom. The cause — a missing package, a bad password, a port already in use — is a few lines above it or in the journal.</span>
+          <span class="en">The <code>FATAL:</code> line the script prints is usually the symptom. The cause (a missing package, a bad password, a port already in use) is a few lines above it or in the journal.</span>
           <span class="ja">スクリプトが出す <code>FATAL:</code> はたいてい結果にすぎません。本当の原因（パッケージ不足、パスワード誤り、ポートの使用中）は、その数行上か journal の中にあります。</span>
         </p>
       </article>
@@ -291,8 +331,8 @@ sudo systemctl status jt-ipam-backend --no-pager</code></pre>
         <code class="sym">fatal: Not possible to fast-forward, aborting.
 fatal: refusing to merge unrelated histories</code>
         <p>
-          <span class="zh">本機的原始碼歷程已經無法快轉到遠端（有人在機器上改過並提交、淺層 clone、或上游歷程被改寫）。因為升級用的是 <code>git pull --ff-only</code>，而且腳本開了 <code>set -e</code>，它會停在第一步——備份、遷移、建置、重啟全都沒跑，所以每次重跑都停在同一個地方。</span>
-          <span class="en">The local source history can no longer fast-forward onto the remote (someone committed an edit on the box, a shallow clone, or upstream history was rewritten). The upgrade pulls with <code>git pull --ff-only</code> under <code>set -e</code>, so it stops at step one — no backup, no migration, no build, no restart — and every re-run stops in exactly the same place.</span>
+          <span class="zh">本機的原始碼歷程已經無法快轉到遠端（有人在機器上改過並提交、淺層 clone、或上游歷程被改寫）。因為升級用的是 <code>git pull --ff-only</code>，而且腳本開了 <code>set -e</code>，它會停在第一步：備份、遷移、建置、重啟全都沒跑，所以每次重跑都停在同一個地方。</span>
+          <span class="en">The local source history can no longer fast-forward onto the remote (someone committed an edit on the box, a shallow clone, or upstream history was rewritten). The upgrade pulls with <code>git pull --ff-only</code> under <code>set -e</code>, so it stops at step one (no backup, no migration, no build, no restart), and every re-run stops in exactly the same place.</span>
           <span class="ja">ローカルのソース履歴がリモートへ早送り（fast-forward）できなくなっています。原因は、このマシン上で誰かが編集をコミットした、浅いクローンだった、上流の履歴が書き換えられた、のいずれかです。アップグレードは <code>set -e</code> の下で <code>git pull --ff-only</code> を実行するため、最初の手順で止まります。バックアップもマイグレーションもビルドも再起動も行われません。リポジトリの状態が変わらない以上、何度やり直しても同じ場所で止まります。</span>
         </p>
         <p class="note">
@@ -327,7 +367,7 @@ sudo bash scripts/jt-ipam.sh upgrade</code></pre>
         <code class="sym">FATAL: Upgrade would overwrite local changes. Re-run 'jt-ipam.sh upgrade --force' to discard them, or commit/stash them first.</code>
         <p>
           <span class="zh">原始碼樹裡有被改過的追蹤檔案（常見於手動修補過 <code>scripts/jt-ipam.sh</code>，或上次升級只完成一半）。確定那些改動不需要保留就：</span>
-          <span class="en">Tracked files in the source tree have been modified — usually a hand-patched <code>scripts/jt-ipam.sh</code>, or a half-finished previous upgrade. If you do not need those edits:</span>
+          <span class="en">Tracked files in the source tree have been modified: usually a hand-patched <code>scripts/jt-ipam.sh</code>, or a half-finished previous upgrade. If you do not need those edits:</span>
           <span class="ja">ソースツリー内の管理対象ファイルが変更されています。多くは <code>scripts/jt-ipam.sh</code> を手で修正した場合か、前回のアップグレードが途中で終わった場合です。その変更が不要なら次を実行します。</span>
         </p>
         <pre><code>sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade --force</code></pre>
@@ -353,9 +393,9 @@ sudo bash scripts/jt-ipam.sh upgrade</code></pre>
 # proxy が要る場合（git は apt のプロキシ設定を引き継ぎません）
 sudo -u jtipam git config --global http.proxy http://proxy.example.com:3128</code></pre>
         <p>
-          <span class="zh">離線環境：把新版原始碼自行複製到 <code>/opt/jt-ipam</code>，再用 <code>upgrade --no-pull</code> 跑後面的備份／遷移／建置／重啟。</span>
+          <span class="zh">離線環境：把新版原始碼自行複製到 <code>/opt/jt-ipam</code>，再用 <code>upgrade --no-pull</code> 跑後面的備份/遷移/建置/重啟。</span>
           <span class="en">Air-gapped: copy the new source into <code>/opt/jt-ipam</code> yourself, then run <code>upgrade --no-pull</code> to do the backup / migration / build / restart steps.</span>
-          <span class="ja">閉域環境では、新しいソースを自分で <code>/opt/jt-ipam</code> に配置したうえで <code>upgrade --no-pull</code> を実行し、バックアップ／マイグレーション／ビルド／再起動だけを行わせます。</span>
+          <span class="ja">閉域環境では、新しいソースを自分で <code>/opt/jt-ipam</code> に配置したうえで <code>upgrade --no-pull</code> を実行し、バックアップ/マイグレーション/ビルド/再起動だけを行わせます。</span>
         </p>
       </article>
 
@@ -474,7 +514,7 @@ sudo -u postgres pg_restore --clean --no-owner -d jt_ipam \
 cd /opt/jt-ipam/frontend &amp;&amp; sudo -u jtipam pnpm install &amp;&amp; sudo -u jtipam pnpm build
 sudo systemctl start jt-ipam-backend</code></pre>
         <p class="note">
-          <span class="zh">還原資料庫必須用同一把 <code>ENCRYPTION_KEY</code>，否則 DNS／API 等加密欄位解不開。</span>
+          <span class="zh">還原資料庫必須用同一把 <code>ENCRYPTION_KEY</code>，否則 DNS/API 等加密欄位解不開。</span>
           <span class="en">Restoring the database requires the same <code>ENCRYPTION_KEY</code>, or encrypted fields (DNS / API credentials) cannot be decrypted.</span>
           <span class="ja">データベースを戻すときは同じ <code>ENCRYPTION_KEY</code> が必要です。違うと DNS や API の資格情報など暗号化された項目を復号できません。</span>
         </p>
@@ -488,14 +528,14 @@ sudo systemctl start jt-ipam-backend</code></pre>
       <article class="qa" id="qa-pgvector">
         <h3>
           <span class="zh">extension "vector" is not available，可是 pgvector 明明裝了</span>
-          <span class="en">extension "vector" is not available — but pgvector is installed</span>
+          <span class="en">extension "vector" is not available, but pgvector is installed</span>
           <span class="ja">extension "vector" is not available と出るのに pgvector は入っている</span>
         </h3>
         <code class="sym">ERROR: extension "vector" is not available
 FATAL: Failed to create the required PostgreSQL extensions</code>
         <p>
           <span class="zh">這台機器多半<strong>本來就有一個 PostgreSQL 叢集</strong>（SonarQube、GitLab 之類帶來的）。jt-ipam 連的是 <code>127.0.0.1:5432</code>，也就是那個既有叢集，所以 pgvector 必須裝<strong>它的</strong>主版本；裝在別的版本上完全沒有作用。</span>
-          <span class="en">This host almost certainly <strong>already runs a PostgreSQL cluster</strong> (from SonarQube, GitLab, …). jt-ipam connects to <code>127.0.0.1:5432</code> — that cluster — so pgvector has to be installed for <strong>its</strong> major version; installing it for another version does nothing.</span>
+          <span class="en">This host almost certainly <strong>already runs a PostgreSQL cluster</strong> (from SonarQube, GitLab, …). jt-ipam connects to <code>127.0.0.1:5432</code> (that cluster), so pgvector has to be installed for <strong>its</strong> major version; installing it for another version does nothing.</span>
           <span class="ja">このホストにはほぼ確実に<strong>既存の PostgreSQL クラスタ</strong>があります（SonarQube や GitLab などが入れたもの）。jt-ipam は <code>127.0.0.1:5432</code>、つまりその既存クラスタに接続するため、pgvector は<strong>そのクラスタの</strong>メジャーバージョン向けに入れる必要があります。別のバージョン向けに入れても効果はありません。</span>
         </p>
         <pre><code>sudo -u postgres psql -tAc 'SHOW server_version_num'   # 例: 180004 → メジャー 18
@@ -516,22 +556,22 @@ sudo bash /opt/jt-ipam/scripts/jt-ipam.sh install …     # 同じコマンド�
           <span class="ja">既存の PostgreSQL が 16 未満だと言われる</span>
         </h3>
         <p>
-          <span class="zh">jt-ipam 需要 PostgreSQL 16 以上。既有叢集版本太舊時有兩條路：升級那個叢集，或讓 jt-ipam 連別的資料庫——在 <code>/etc/jt-ipam/backend.env</code> 改 <code>POSTGRES_HOST</code> / <code>POSTGRES_PORT</code> 後重跑安裝。</span>
-          <span class="en">jt-ipam needs PostgreSQL 16 or newer. If the existing cluster is older, either upgrade it, or point jt-ipam at a different one — set <code>POSTGRES_HOST</code> / <code>POSTGRES_PORT</code> in <code>/etc/jt-ipam/backend.env</code> and re-run the install.</span>
+          <span class="zh">jt-ipam 需要 PostgreSQL 16 以上。既有叢集版本太舊時有兩條路：升級那個叢集，或讓 jt-ipam 連別的資料庫，在 <code>/etc/jt-ipam/backend.env</code> 改 <code>POSTGRES_HOST</code> / <code>POSTGRES_PORT</code> 後重跑安裝。</span>
+          <span class="en">jt-ipam needs PostgreSQL 16 or newer. If the existing cluster is older, either upgrade it, or point jt-ipam at a different one: set <code>POSTGRES_HOST</code> / <code>POSTGRES_PORT</code> in <code>/etc/jt-ipam/backend.env</code> and re-run the install.</span>
           <span class="ja">jt-ipam には PostgreSQL 16 以上が必要です。既存クラスタが古い場合は、そのクラスタを上げるか、別のデータベースを使わせます。<code>/etc/jt-ipam/backend.env</code> の <code>POSTGRES_HOST</code> / <code>POSTGRES_PORT</code> を変更してインストールをやり直してください。</span>
         </p>
       </article>
 
       <article class="qa" id="qa-pgdg">
         <h3>
-          <span class="zh">很新的 Ubuntu／Debian：apt-get update 在加 PGDG 之後 404</span>
+          <span class="zh">很新的 Ubuntu/Debian：apt-get update 在加 PGDG 之後 404</span>
           <span class="en">Brand-new Ubuntu / Debian: apt-get update 404s after adding PGDG</span>
           <span class="ja">出たばかりの Ubuntu / Debian：PGDG を追加した後 apt-get update が 404 になる</span>
         </h3>
         <p>
-          <span class="zh">PGDG 對剛發布的版本常延遲數月才提供套件。安裝腳本會先用<strong>發行版自帶</strong>的 PostgreSQL（16／17／18 擇一），只有完全找不到才退回 PGDG。若仍失敗，手動裝發行版自帶的版本＋對應 pgvector 再重跑安裝：</span>
+          <span class="zh">PGDG 對剛發布的版本常延遲數月才提供套件。安裝腳本會先用<strong>發行版自帶</strong>的 PostgreSQL（16/17/18 擇一），只有完全找不到才退回 PGDG。若仍失敗，手動裝發行版自帶的版本＋對應 pgvector 再重跑安裝：</span>
           <span class="en">PGDG often lags a freshly released distro by months. The installer prefers whatever PostgreSQL (16/17/18) the distro itself ships and only falls back to PGDG. If it still fails, install the distro's own packages and re-run:</span>
-          <span class="ja">PGDG は出たばかりのディストリビューションへの対応が数か月遅れることがよくあります。インストーラはまずディストリビューション<strong>同梱</strong>の PostgreSQL（16／17／18 のいずれか）を使い、見つからない場合にだけ PGDG に頼ります。それでも失敗する場合は、同梱版と対応する pgvector を手動で入れてからやり直してください。</span>
+          <span class="ja">PGDG は出たばかりのディストリビューションへの対応が数か月遅れることがよくあります。インストーラはまずディストリビューション<strong>同梱</strong>の PostgreSQL（16/17/18 のいずれか）を使い、見つからない場合にだけ PGDG に頼ります。それでも失敗する場合は、同梱版と対応する pgvector を手動で入れてからやり直してください。</span>
         </p>
         <pre><code>apt-cache search --names-only '^postgresql-1[678]$'
 sudo apt install -y postgresql-17 postgresql-17-pgvector
@@ -540,13 +580,19 @@ sudo rm -f /etc/apt/sources.list.d/pgdg.list &amp;&amp; sudo apt-get update</cod
 
       <article class="qa" id="qa-node">
         <h3>
-          <span class="zh">Node.js install failed or too old（需要 18 以上）</span>
-          <span class="en">Node.js install failed or too old (need &gt;= 18)</span>
-          <span class="ja">Node.js install failed or too old（18 以上が必要）</span>
+          <span class="zh">Node.js install failed or too old（需要 22 以上）/升級時出現「Node.js 22 could not be installed」</span>
+          <span class="en">Node.js install failed or too old (need &gt;= 22) / "Node.js 22 could not be installed" during an upgrade</span>
+          <span class="ja">Node.js install failed or too old（22 以上が必要）/アップグレードで「Node.js 22 could not be installed」</span>
         </h3>
-        <pre><code>curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -
+        <p>
+          <span class="zh">Node.js 22 LTS 只用來建置前端，安裝與升級都會自動從 NodeSource 裝好。裝不起來時（連不到 deb.nodesource.com、走代理、apt 衝突），安裝會停下來；升級則沿用既有的 Node 20 以上版本建置、照常完成並印出警告框，<code>doctor</code> 會持續提醒。手動裝好後重跑同一個指令：</span>
+          <span class="en">Node.js 22 LTS is only used to build the frontend; install and upgrade both get it from NodeSource automatically. When that fails (no access to deb.nodesource.com, a proxy, an apt conflict), install stops, while upgrade builds with an existing Node 20 or newer, finishes with a warning banner, and <code>doctor</code> keeps reporting it. Install it by hand and re-run the same command:</span>
+          <span class="ja">Node.js 22 LTS はフロントエンドのビルドにだけ使い、インストールでもアップグレードでも NodeSource から自動で導入します。導入できない場合（deb.nodesource.com に届かない、プロキシ、apt の競合）、インストールは止まり、アップグレードは既存の Node 20 以降でビルドして完了し、警告枠を出します。<code>doctor</code> も指摘し続けます。手動で導入してから同じコマンドをやり直してください。</span>
+        </p>
+        <pre><code>curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
 sudo apt-get install -y nodejs
-node -v</code></pre>
+node -v      # v22.x
+sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade      # (or: install)</code></pre>
         <p>
           <span class="zh">機器上原本有發行版的舊 node 時要先移除，否則 PATH 會取到舊的：<code>sudo apt-get purge -y nodejs libnode-dev</code>，再裝一次。</span>
           <span class="en">If the distro's old node is present, purge it first or PATH will keep finding it: <code>sudo apt-get purge -y nodejs libnode-dev</code>, then install again.</span>
@@ -556,9 +602,9 @@ node -v</code></pre>
 
       <article class="qa" id="qa-pnpm">
         <h3>
-          <span class="zh">pnpm is required to build the frontend ／ <code>/usr/local/bin/pnpm: No such file or directory</code></span>
+          <span class="zh">pnpm is required to build the frontend / <code>/usr/local/bin/pnpm: No such file or directory</code></span>
           <span class="en">pnpm is required to build the frontend</span>
-          <span class="ja">pnpm is required to build the frontend ／ <code>/usr/local/bin/pnpm: No such file or directory</code></span>
+          <span class="ja">pnpm is required to build the frontend / <code>/usr/local/bin/pnpm: No such file or directory</code></span>
         </h3>
         <pre><code>sudo npm install -g pnpm@9        # または: curl -fsSL https://get.pnpm.io/install.sh | sh -
 pnpm --version
@@ -567,13 +613,13 @@ sudo bash /opt/jt-ipam/scripts/jt-ipam.sh install …   # 同じコマンドを�
 
       <article class="qa" id="qa-ping">
         <h3>
-          <span class="zh">LXC 容器裡 ping 不通／掃描代理探測不到任何主機</span>
+          <span class="zh">LXC 容器裡 ping 不通/掃描代理探測不到任何主機</span>
           <span class="en">Inside an LXC container ping never works / the scan agent finds nothing</span>
-          <span class="ja">LXC コンテナ内で ping が通らない／スキャンエージェントが何も見つけられない</span>
+          <span class="ja">LXC コンテナ内で ping が通らない/スキャンエージェントが何も見つけられない</span>
         </h3>
         <p>
           <span class="zh">容器裡 <code>net.ipv4.ping_group_range</code> 是唯讀的（核心屬於宿主），寫 <code>/etc/sysctl.d/</code> 不會生效；<code>setcap</code> 那條路又會被 unit 的 <code>NoNewPrivileges=yes</code> 無聲擋掉。可行的是 systemd drop-in 的 ambient capability，安裝與升級都會自動套用並讀回驗證：</span>
-          <span class="en">In a container <code>net.ipv4.ping_group_range</code> is read-only (the kernel belongs to the host), so <code>/etc/sysctl.d/</code> has no effect, and the <code>setcap</code> route is silently defeated by the unit's <code>NoNewPrivileges=yes</code>. What works is a systemd drop-in granting an ambient capability — install and upgrade both apply it and read it back:</span>
+          <span class="en">In a container <code>net.ipv4.ping_group_range</code> is read-only (the kernel belongs to the host), so <code>/etc/sysctl.d/</code> has no effect, and the <code>setcap</code> route is silently defeated by the unit's <code>NoNewPrivileges=yes</code>. What works is a systemd drop-in granting an ambient capability; install and upgrade both apply it and read it back:</span>
           <span class="ja">コンテナ内では <code>net.ipv4.ping_group_range</code> は読み取り専用です（カーネルはホストのもの）。したがって <code>/etc/sysctl.d/</code> に書いても効きません。<code>setcap</code> を使う方法も、ユニットの <code>NoNewPrivileges=yes</code> によって黙って無効化されます。有効なのは systemd の drop-in で ambient capability を与える方法で、インストール時もアップグレード時も自動的に適用し、実際に付いたかを読み戻して確認します。</span>
         </p>
         <pre><code>sudo systemctl show jt-ipam-backend -p AmbientCapabilities
@@ -584,6 +630,60 @@ sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade --no-pull</code></pre>
           <span class="en">No change on the Proxmox host is needed; this works for unprivileged containers too.</span>
           <span class="ja">Proxmox ホスト側を変更する必要はなく、非特権コンテナでも機能します。</span>
         </p>
+      </article>
+
+      <article class="qa" id="qa-large-subnet">
+        <h3>
+          <span class="zh">大子網路（例如 10.0.0.0/8）一設定掃描，設備就都變離線、代理超載</span>
+          <span class="en">A large subnet (for example 10.0.0.0/8) makes every device go offline and the agent overloaded</span>
+          <span class="ja">大きなサブネット（例：10.0.0.0/8）をスキャンすると機器がすべてオフラインになり、エージェントが過負荷になる</span>
+        </h3>
+        <p>
+          <span class="zh">不要為了掃描把子網路切小，照實際遮罩登記就好。子網路編輯的「掃描範圍」保持「自動」：4,096 個位址以內照舊全掃；更大的子網路，已登記的 IP 與最近 7 天 ARP 看過的位址每一輪都掃（上線狀態準確），其餘位址每輪在背景探索 1,024 個來找新設備，不算進負載。需要掃描代理 1.18.0 以上（代理會自動更新）；舊代理會照舊整段輪替，負載面板會提示。如果選了「整個子網路」，/8 每輪只掃得到 4,096 個，繞一圈要好幾天，設備會在兩次掃描之間被判成離線。</span>
+          <span class="en">Do not split the subnet for scanning; register it with its real mask. Keep the subnet's "Scan scope" at Automatic: subnets up to 4,096 addresses are swept as before; for larger ones, registered IPs and addresses seen in ARP in the last 7 days are scanned every cycle (so online status stays accurate) and the rest are explored in the background, 1,024 per cycle, to find new devices, without counting toward the load. This needs scan agent 1.18.0 or later (agents update themselves); older agents keep rotating through the whole subnet and the load panel says so. With "Whole subnet", a /8 is covered 4,096 addresses per cycle, so one pass takes days and devices show offline between scans.</span>
+          <span class="ja">スキャンのためにサブネットを分割する必要はありません。実際のマスクで登録してください。サブネット編集の「スキャン範囲」は「自動」のままにします：4,096 アドレス以下は従来どおり全スキャン、それより大きいサブネットは登録済みの IP と過去 7 日間に ARP で見えたアドレスを毎周スキャンし（オンライン状態は正確）、残りは毎周 1,024 個ずつバックグラウンドで探索して新しい機器を見つけます（負荷には数えません）。スキャンエージェント 1.18.0 以降が必要です（自動更新されます）。古いエージェントはサブネット全体を分割巡回し、負荷パネルにその旨が表示されます。「サブネット全体」を選ぶと /8 は毎周 4,096 個しかスキャンできず、1 巡に数日かかるため、スキャンの間に機器がオフラインと判定されます。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-hostname-source">
+        <h3>
+          <span class="zh">主機名稱是哪裡來的？NetBIOS 名稱和主機名稱不一樣</span>
+          <span class="en">Where did this hostname come from? The NetBIOS name differs from the host name</span>
+          <span class="ja">このホスト名はどこから来たのか？NetBIOS 名とホスト名が違う</span>
+        </h3>
+        <p>
+          <span class="zh">IP 頁的「主機名稱來源」把每個來源分開列出，滑過標籤看得到是哪一台掃描代理或哪個整合回報的、最後一次什麼時候看到；超過一天沒人回報的會標出幾天前，和目前採用的名稱不同的標成黃色。實際顯示哪一個由「管理 → 名稱/ARP 來源順序」決定，也可以在 IP 上固定某個來源。掃描代理只有勾了 rdns、netbios、mdns 才會查名字（只開 ICMP、ARP 時名字一定來自整合）；NetBIOS 名稱最多 15 字而且全大寫，和 DNS 名稱可以不同；mDNS 只在同一個二層網段有效，Windows 要 Server 2019、Windows 10 1703 之後才會回應；NetBIOS 是 UDP 137，Windows 防火牆的「檔案及印表機共用（NB-Name-In）」預設只允許本機子網路。</span>
+          <span class="en">The IP page's hostname sources list every source separately; hover a tag to see which scan agent or integration reported it and when it was last seen. Names nobody has reported for a day or more show how many days ago, and names that differ from the one in use are highlighted. Which one is shown is decided by Admin → Name / ARP source order, and you can pin a source on an IP. Scan agents only look up names when rdns, netbios or mdns is ticked (with only ICMP and ARP, names come from integrations). A NetBIOS name is at most 15 characters, upper case, and can differ from the DNS name; mDNS only works within one layer-2 segment and Windows answers it from Server 2019 and Windows 10 1703 on; NetBIOS uses UDP 137, which the Windows Firewall rule "File and Printer Sharing (NB-Name-In)" allows only from the local subnet by default.</span>
+          <span class="ja">IP ページの「ホスト名のソース」はソースごとに分けて表示します。タグにカーソルを合わせると、どのスキャンエージェントまたは連携が報告したか、最後に確認した日時が分かります。1 日以上報告のない名前は何日前かを表示し、使用中の名前と異なるものは黄色で示します。表示される名前は「管理 → 名称/ARP のソース順」で決まり、IP ごとにソースを固定することもできます。スキャンエージェントが名前を調べるのは rdns・netbios・mdns を選んだときだけです（ICMP と ARP のみなら名前は連携から来ています）。NetBIOS 名は最大 15 文字・大文字で、DNS 名と異なることがあります。mDNS は同じレイヤー 2 セグメント内でのみ有効で、Windows は Server 2019・Windows 10 1703 以降で応答します。NetBIOS は UDP 137 を使い、Windows ファイアウォールの「ファイルとプリンターの共有（NB-Name-In）」は既定でローカルサブネットからのみ許可します。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-ocs-timezone">
+        <h3>
+          <span class="zh">OCS 的最後盤點時間差了幾個小時（甚至在未來）</span>
+          <span class="en">OCS last inventory times are off by hours (or in the future)</span>
+          <span class="ja">OCS の最終インベントリ日時が数時間ずれる（未来になる）</span>
+        </h3>
+        <p>
+          <span class="zh">OCS 的 LASTDATE 是 OCS 主機的本地時間、沒有時區。到「管理 → 外部系統整合 → OCS」編輯整合，把「OCS 時區」設成 OCS 主機的時區（新建的整合預設跟 jt-ipam 主機相同，升級前就有的是 UTC）。換算後有盤點時間落在未來時，整合清單的「最後錯誤」欄會提醒。已經寫入的時間在每台電腦下次盤點時自動更正。</span>
+          <span class="en">OCS stores LASTDATE in the OCS host's local time without a zone. Edit the integration under Admin → External integrations → OCS and set "OCS time zone" to the OCS host's time zone (new integrations default to the jt-ipam host's, ones created before the upgrade are UTC). When converted inventory times land in the future, the "Last error" column of the integration list says so. Times already stored correct themselves at each computer's next inventory.</span>
+          <span class="ja">OCS の LASTDATE は OCS ホストのローカル時刻で、タイムゾーンを持ちません。「管理 → 外部システム連携 → OCS」で連携を編集し、「OCS のタイムゾーン」を OCS ホストのタイムゾーンにしてください（新しい連携の既定は jt-ipam ホストと同じ、アップグレード前からある連携は UTC）。換算後の日時が未来になると、連携一覧の「直近のエラー」欄に表示されます。保存済みの日時は各 PC の次回インベントリで自動的に直ります。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-ai-audit-schedule">
+        <h3>
+          <span class="zh">排程 AI 巡檢沒有跑，或跑到一半就停了</span>
+          <span class="en">The scheduled AI review did not run, or stopped halfway</span>
+          <span class="ja">定期 AI 点検が実行されない、または途中で止まった</span>
+        </h3>
+        <p>
+          <span class="zh">排程巡檢由 jt-ipam-ai-audit.timer 每 5 分鐘檢查一次是否到了設定的時刻。每個時刻只嘗試一次：開始打 LLM 時就記下這次嘗試，所以途中 LLM 主機掛掉或連不上，不會每 5 分鐘重跑，而是等下一個時刻；手動巡檢正在跑時，排程這次會略過。先確認計時器在跑，再看巡檢的紀錄。</span>
+          <span class="en">The scheduled review is checked every 5 minutes by jt-ipam-ai-audit.timer against the configured times. Each time slot is tried once: the attempt is recorded as soon as the LLM is called, so if the LLM host goes down or cannot be reached partway, the review is not retried every 5 minutes but waits for the next slot; while a manual review is running, the scheduled one skips. Check that the timer is running, then read the review's log.</span>
+          <span class="ja">定期点検は jt-ipam-ai-audit.timer が 5 分ごとに設定した時刻を過ぎたかを確認します。各時刻は 1 回だけ試行します。LLM を呼び出す時点で試行を記録するため、途中で LLM ホストが落ちたり接続できなくなったりしても 5 分ごとに再実行せず、次の時刻を待ちます。手動の点検が実行中なら、定期点検は今回スキップします。まずタイマーが動いていることを確認し、点検のログを見てください。</span>
+        </p>
+        <pre><code>systemctl status jt-ipam-ai-audit.timer
+sudo journalctl -u jt-ipam-ai-audit -n 100 --no-pager</code></pre>
       </article>
 
       <article class="qa" id="qa-done">
@@ -611,8 +711,8 @@ sudo ss -ltnp | grep -E '8000|8443|443'</code></pre>
       <article class="qa" id="qa-8443">
         <h3>
           <span class="zh">瀏覽器打不開，因為預設埠是 8443 不是 443</span>
-          <span class="en">Nothing opens — the default port is 8443, not 443</span>
-          <span class="ja">ブラウザで開けない — 既定のポートは 443 ではなく 8443 です</span>
+          <span class="en">Nothing opens: the default port is 8443, not 443</span>
+          <span class="ja">ブラウザで開けない：既定のポートは 443 ではなく 8443 です</span>
         </h3>
         <p>
           <span class="zh"><code>--tls-mode self-signed</code> / <code>direct</code> 由 uvicorn 自己處理 HTTPS，網址是 <code>https://&lt;你的 FQDN&gt;:8443/</code>，這個模式<strong>不需要</strong>另外裝 nginx 或 apache。</span>
@@ -667,7 +767,7 @@ grep -n proxy_pass /etc/nginx/sites-available/jt-ipam</code></pre>
           <span class="ja">nginx が ssl_stapling ignored, issuer certificate not found と警告する</span>
         </h3>
         <p>
-          <span class="zh">自簽憑證沒有簽發鏈，無法做 OCSP stapling——這是無害警告，換成正式憑證或 Let's Encrypt 後就不會再出現。</span>
+          <span class="zh">自簽憑證沒有簽發鏈，無法做 OCSP stapling，這是無害警告，換成正式憑證或 Let's Encrypt 後就不會再出現。</span>
           <span class="en">A self-signed certificate has no issuer chain, so OCSP stapling cannot work. Harmless; it disappears once you install a real certificate.</span>
           <span class="ja">自己署名証明書には発行者チェーンが無いため OCSP stapling は動きません。無害な警告で、正式な証明書に入れ替えれば出なくなります。</span>
         </p>
@@ -694,9 +794,9 @@ grep -n proxy_pass /etc/nginx/sites-available/jt-ipam</code></pre>
 
       <article class="qa" id="qa-resetpw">
         <h3>
-          <span class="zh">密碼忘了／帳號被鎖住</span>
+          <span class="zh">密碼忘了/帳號被鎖住</span>
           <span class="en">Forgot the password / locked out</span>
-          <span class="ja">パスワードを忘れた／アカウントがロックされた</span>
+          <span class="ja">パスワードを忘れた/アカウントがロックされた</span>
         </h3>
         <p>
           <span class="zh">用 CLI 重設同一個管理員（<code>--force-update</code> 才是覆寫既有帳號；不加會因為帳號已存在而報錯）：</span>
@@ -714,6 +814,34 @@ echo "$ADMIN_PW"</code></pre>
           <span class="ja">パスワードは 12 文字以上が必要です。ログイン失敗の繰り返しによるロックも、この再設定で解除されます。</span>
         </p>
       </article>
+
+      <article class="qa" id="qa-mfa-setup">
+        <h3>
+          <span class="zh">登入之後一直要我先設定雙因素驗證</span>
+          <span class="en">After signing in I am asked to set up two-factor authentication first</span>
+          <span class="ja">ログインすると先に二要素認証の設定を求められる</span>
+        </h3>
+        <p>
+          <span class="zh">管理員在「使用者 → 登入安全」把雙因素驗證設成「管理員必須使用」或「所有人必須使用」。還沒設定的人不會被鎖在外面：輸入密碼之後先用驗證器 App 掃描 QR code、輸入一組驗證碼，接著拿到 10 組復原碼（每組只能用一次，請存在密碼管理器等安全的地方），完成之後才進入系統。被要求的人不能自行停用雙因素驗證。SSO（OIDC / SAML）登入預設交給身分提供者自己的多因素驗證，除非管理員另外打開「SSO 登入也要求」。</span>
+          <span class="en">An administrator set two-factor authentication to "Required for administrators" or "Required for everyone" under Users → Sign-in security. People who have not set it up are not locked out: after the password they scan a QR code with an authenticator app, enter one code, and receive 10 recovery codes (each works once; keep them somewhere safe such as a password manager) before they get in. People it applies to cannot turn it off themselves. SSO (OIDC / SAML) sign-ins rely on the identity provider's own multi-factor authentication unless the administrator also turns on "Also require for SSO sign-ins".</span>
+          <span class="ja">管理者が「ユーザー → ログインのセキュリティ」で二要素認証を「管理者は必須」または「全員必須」にしています。未設定のユーザーが締め出されることはありません。パスワードのあと認証アプリで QR コードを読み取ってコードを 1 つ入力し、リカバリーコード 10 個（各 1 回限り。パスワードマネージャーなど安全な場所に保管）を受け取ってから入れます。対象のユーザーは自分で無効にできません。SSO（OIDC / SAML）のログインは、管理者が「SSO ログインにも適用」をオンにしない限り、ID プロバイダー側の多要素認証に任せます。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-mfa-lost">
+        <h3>
+          <span class="zh">手機遺失（或換手機），復原碼也不見了</span>
+          <span class="en">Lost (or replaced) the phone and the recovery codes are gone too</span>
+          <span class="ja">スマートフォンを紛失（または機種変更）し、リカバリーコードもない</span>
+        </h3>
+        <p>
+          <span class="zh">請另一位管理員到「使用者」頁，在這個人那一列按「重設雙因素驗證」：驗證器與復原碼一併清掉、所有登入撤銷，政策要求的話下次登入會重新設定。系統裡只有你一位管理員時，從主機 shell 重設（會留稽核記錄）：</span>
+          <span class="en">Ask another administrator to open Users and click "Reset two-factor authentication" on that person's row: the authenticator and recovery codes are cleared and every sign-in is revoked; if the policy requires it, they set it up again at the next sign-in. If you are the only administrator, reset it from a shell on the host (an audit record is written):</span>
+          <span class="ja">別の管理者に「ユーザー」ページでその人の行の「二要素認証をリセット」を押してもらいます。認証アプリとリカバリーコードが消去され、すべてのログインが取り消されます。ポリシーで必須なら次回ログイン時に設定し直します。管理者があなた 1 人だけの場合は、ホストのシェルからリセットします（監査記録が残ります）。</span>
+        </p>
+        <pre><code>sudo -u jtipam bash -c "cd /opt/jt-ipam/backend; set -a; source /etc/jt-ipam/backend.env; set +a; \
+  .venv/bin/python -m app.cli.bootstrap reset-mfa --username admin"</code></pre>
+      </article>
     </section>
 
     <!-- ══════════════ 升級後畫面或功能不對 ══════════════ -->
@@ -727,9 +855,9 @@ echo "$ADMIN_PW"</code></pre>
           <span class="ja">保存が効かない・ボタンの挙動が変・バージョンが古いまま</span>
         </h3>
         <p>
-          <span class="zh">開很久沒關的分頁還在跑舊的 JS，這是最常見的原因，不是後端沒更新。先強制重新整理（Ctrl／Cmd + Shift + R），再看版本資訊頁。</span>
-          <span class="en">A long-lived browser tab is still running the old JS bundle — this is the usual cause, not the backend. Hard-refresh (Ctrl/Cmd + Shift + R), then check the version page.</span>
-          <span class="ja">長時間開いたままのタブが古い JS を実行し続けているのが最も多い原因で、バックエンドの問題ではありません。まずスーパーリロード（Ctrl／Cmd + Shift + R）を行い、バージョン情報ページを確認してください。</span>
+          <span class="zh">開很久沒關的分頁還在跑舊的 JS，這是最常見的原因，不是後端沒更新。先強制重新整理（Ctrl/Cmd + Shift + R），再看版本資訊頁。</span>
+          <span class="en">A long-lived browser tab is still running the old JS bundle; this is the usual cause, not the backend. Hard-refresh (Ctrl/Cmd + Shift + R), then check the version page.</span>
+          <span class="ja">長時間開いたままのタブが古い JS を実行し続けているのが最も多い原因で、バックエンドの問題ではありません。まずスーパーリロード（Ctrl/Cmd + Shift + R）を行い、バージョン情報ページを確認してください。</span>
         </p>
         <p class="note">
           <span class="zh">新版會自動偵測到版本更換並提示重新載入。若<strong>後端</strong>版本沒變，多半是升級時沒重啟服務：<code>sudo systemctl restart jt-ipam-backend</code>。</span>
@@ -745,11 +873,180 @@ echo "$ADMIN_PW"</code></pre>
           <span class="ja">アップグレード後、特定の連携だけ同期が失敗し続ける</span>
         </h3>
         <p>
-          <span class="zh">單一整合失敗不會中斷其他整合；錯誤會寫回該筆整合的 <code>last_error</code>，也會在通知裡出現。先看管理 → 系統檢查，再看同步紀錄：</span>
+          <span class="zh">單一整合失敗不會中斷其他整合；錯誤會寫回該筆整合的 <code>last_error</code>，也會在通知裡出現。先看「管理 → 系統診斷」，再看同步紀錄：</span>
           <span class="en">One failing integration no longer interrupts the others; the error is written back to that instance's <code>last_error</code> and raised as a notification. Check Admin → System check first, then the sync log:</span>
           <span class="ja">ひとつの連携が失敗しても他は止まりません。エラーはその連携の <code>last_error</code> に書き戻され、通知としても上がります。まず 管理 → システムチェック を確認し、次に同期ログを見てください。</span>
         </p>
         <pre><code>sudo journalctl -u jt-ipam-sync -n 100 --no-pager</code></pre>
+      </article>
+
+      <article class="qa" id="qa-pdf-font">
+        <h3>
+          <span class="zh">匯出 PDF 時說「伺服器上沒有中文字型」</span>
+          <span class="en">PDF export says "the server has no CJK font"</span>
+          <span class="ja">PDF のエクスポートで「サーバーに日本語・中国語のフォントがない」と表示される</span>
+        </h3>
+        <p>
+          <span class="zh">PDF 報告由後端產生，會把中文/日文字型的子集內嵌進檔案（任何閱讀器都看得到）。安裝與升級時腳本會裝 <code>fonts-noto-cjk</code>，但升級當下連不到 apt 鏡像時只會警告、不會中斷升級。補裝後不必重啟（下一次匯出就會用到）；DOCX/ODT 匯出不受影響。版本資訊頁的「選用相依」可以看到目前用的是哪一套字型。</span>
+          <span class="en">PDF reports are generated by the backend, which embeds a subset of a Chinese / Japanese font into the file (so any viewer shows it). Install and upgrade install <code>fonts-noto-cjk</code>, but if apt cannot reach a mirror during an upgrade it only warns and carries on. After installing it no restart is needed (the next export picks it up); DOCX / ODT exports are unaffected. The version page lists the font in use under optional components.</span>
+          <span class="ja">PDF レポートはバックエンドが作成し、中国語・日本語フォントのサブセットをファイルに埋め込みます（どのビューアでも表示できます）。インストールとアップグレードで <code>fonts-noto-cjk</code> を入れますが、アップグレード時に apt のミラーへ接続できないと警告だけで続行します。追加したあと再起動は不要です（次のエクスポートから使われます）。DOCX/ODT のエクスポートには影響しません。使用中のフォントはバージョン情報ページの任意コンポーネントで確認できます。</span>
+        </p>
+        <pre><code>sudo apt-get update &amp;&amp; sudo apt-get install -y fonts-noto-cjk</code></pre>
+      </article>
+
+      <article class="qa" id="qa-pdf-worker-crash">
+        <h3>
+          <span class="zh">匯出 PDF 時畫面上其他操作一起斷線，日誌有 <code>Child process ... died</code></span>
+          <span class="en">Exporting a PDF drops other requests too, and the log shows <code>Child process ... died</code></span>
+          <span class="ja">PDF をエクスポートすると他の操作も切断され、ログに <code>Child process ... died</code> が出る</span>
+        </h3>
+        <p>
+          <span class="zh">PDF 報告用的套件會載入 numpy，numpy 一載入就呼叫 <code>mbind</code>（設定自己記憶體的 NUMA 位置）。後端服務的 systemd 沙箱擋掉這類系統呼叫、而且預設是直接結束程序，同一個工作程序上的其他請求就跟著斷。<code>jt-ipam.sh install</code> 與 <code>upgrade</code> 會寫入 <code>/etc/systemd/system/jt-ipam-backend.service.d/20-numa-syscalls.conf</code> 放行這三個呼叫；手動部署或自己改過服務單元時，執行一次 upgrade，或照下面建立同一份檔案：</span>
+          <span class="en">The PDF library imports numpy, which calls <code>mbind</code> (NUMA placement of its own memory) as soon as it loads. The backend's systemd sandbox blocks that group of system calls and its default action ends the process, so other requests on the same worker are cut off. <code>jt-ipam.sh install</code> and <code>upgrade</code> write <code>/etc/systemd/system/jt-ipam-backend.service.d/20-numa-syscalls.conf</code> to allow these three calls; on a manual deployment or a customised unit, run an upgrade once or create the same file:</span>
+          <span class="ja">PDF 用のライブラリは numpy を読み込み、numpy は読み込まれた時点で <code>mbind</code>（自分のメモリの NUMA 配置）を呼び出します。バックエンドの systemd サンドボックスはこの種のシステムコールを禁止しており、既定の動作はプロセスの終了なので、同じワーカー上の他のリクエストも切断されます。<code>jt-ipam.sh install</code> と <code>upgrade</code> は <code>/etc/systemd/system/jt-ipam-backend.service.d/20-numa-syscalls.conf</code> を作成してこの 3 つを許可します。手動で配置した場合やユニットを変更している場合は、upgrade を一度実行するか、次の内容で同じファイルを作成してください。</span>
+        </p>
+        <pre><code>sudo mkdir -p /etc/systemd/system/jt-ipam-backend.service.d
+printf '[Service]\nSystemCallFilter=mbind set_mempolicy get_mempolicy\n' | \
+  sudo tee /etc/systemd/system/jt-ipam-backend.service.d/20-numa-syscalls.conf
+sudo systemctl daemon-reload &amp;&amp; sudo systemctl restart jt-ipam-backend</code></pre>
+      </article>
+
+      <article class="qa" id="qa-windows-dns-winrm">
+        <h3>
+          <span class="zh">Windows DNS、Windows DHCP 測試連線出現 <code>CERTIFICATE_VERIFY_FAILED</code>，或連不到 5986</span>
+          <span class="en">Windows DNS or Windows DHCP connection test shows <code>CERTIFICATE_VERIFY_FAILED</code>, or port 5986 is unreachable</span>
+          <span class="ja">Windows DNS や Windows DHCP の接続テストで <code>CERTIFICATE_VERIFY_FAILED</code> が出る、または 5986 に接続できない</span>
+        </h3>
+        <p>
+          <span class="zh">Windows Server 的防火牆預設只開 WinRM HTTP 5985，HTTPS 5986 預設是封鎖的，要另外建立憑證監聽與防火牆規則，而且通常是自簽憑證。所以 1.0.5 起新增的 Windows DNS、Windows DHCP 連線預設就走 HTTP 5985（內容與帳密一律以 NTLM 加密，無法加密就連線失敗、不會退回明文）；之前建立的連線維持原本的設定。還在用 5986 的話，到設定裡把「WinRM 連線」改成 HTTP（5985）即可；要走 HTTPS 5986 且是自簽憑證，就關閉「驗證 TLS 憑證」，或把簽發的 CA 匯入 jt-ipam 主機。帳號要能使用 WinRM（Remote Management Users 群組或管理員），並有對應的權限（Windows DNS 要 DnsAdmins，Windows DHCP 要 DHCP Users）。</span>
+          <span class="en">The Windows Server firewall opens only WinRM HTTP 5985 by default and blocks HTTPS 5986, which needs a certificate listener and a firewall rule, usually with a self-signed certificate. From 1.0.5 new Windows DNS and Windows DHCP connections therefore default to HTTP 5985 (content and credentials are always NTLM-encrypted; if that is not possible the connection fails instead of falling back to clear text); connections made earlier keep their settings. If one still uses 5986, set "WinRM transport" to HTTP (5985) in its settings. To use HTTPS 5986 with a self-signed certificate, turn off "Verify TLS certificate" or import the issuing CA on the jt-ipam host. The account needs WinRM access (Remote Management Users or an administrator) and the matching rights (DnsAdmins for Windows DNS, DHCP Users for Windows DHCP).</span>
+          <span class="ja">Windows Server のファイアウォールは既定で WinRM HTTP 5985 のみ開いており、HTTPS 5986 はブロックされています。HTTPS には証明書付きリスナーとファイアウォール規則が別途必要で、証明書はほとんどが自己署名です。そのため 1.0.5 から新しく作成する Windows DNS と Windows DHCP の接続は既定で HTTP 5985 を使います（内容と資格情報は常に NTLM で暗号化され、暗号化できなければ平文には戻さず接続に失敗します）。それ以前に作成した接続は設定を変えません。5986 を使っている場合は、設定の「WinRM 接続」を HTTP（5985）にしてください。自己署名証明書で HTTPS 5986 を使う場合は「TLS 証明書を検証」をオフにするか、発行元 CA を jt-ipam ホストにインポートしてください。アカウントには WinRM の利用権限（Remote Management Users または管理者）と、対応する権限（Windows DNS は DnsAdmins、Windows DHCP は DHCP Users）が必要です。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-ai-chat-network-error">
+        <h3>
+          <span class="zh">AI 對話跑了很久，最後只顯示網路錯誤，沒有答案</span>
+          <span class="en">AI chat runs for a long time, then shows a network error instead of an answer</span>
+          <span class="ja">AI チャットが長時間動いたあと、回答ではなくネットワークエラーが表示される</span>
+        </h3>
+        <p>
+          <span class="zh">模型查工具、整理答案的空檔可能幾十秒沒有送出任何資料，反向代理的讀取逾時（本產品的 nginx 設定是 30 秒）一到就把連線切斷，後端其實還在算。1.0.4 起 AI 對話、IP 調查判讀與路徑追蹤在等待時每 10 秒送一則保活訊息，代理不會再因為等太久而切斷，升級即可，不必改逾時設定。jt-ipam 前面若還有自己的反向代理，請不要緩衝這些回應（nginx 用 <code>proxy_buffering off</code>，或保留上游送的 <code>X-Accel-Buffering: no</code>），否則進度會等到最後才一次出現。等了很久之後顯示的是「LLM 伺服器沒有在時限內回覆」而不是網路錯誤，則是模型本身太慢：到「管理 → LLM / AI」調高逾時，或換較小的模型。</span>
+          <span class="en">While the model looks things up and writes the answer, the stream can send nothing for tens of seconds, and the reverse proxy's read timeout (30 seconds in the bundled nginx configuration) cuts the connection while the backend is still working. From 1.0.4 the AI chat, IP investigation narrative and traceroute send a keepalive every 10 seconds while waiting, so proxies no longer cut them off; upgrading is enough and no timeout needs to change. If you run your own reverse proxy in front of jt-ipam, do not buffer these responses (nginx: <code>proxy_buffering off</code>, or honour the upstream <code>X-Accel-Buffering: no</code>), otherwise the progress only appears at the end. If the message after a long wait is "The LLM server did not answer in time" rather than a network error, the model itself is too slow: raise the timeout under Admin → LLM / AI, or choose a smaller model.</span>
+          <span class="ja">モデルがツールを調べて回答をまとめている間、数十秒間何も送られないことがあり、リバースプロキシの読み取りタイムアウト（同梱の nginx 設定では 30 秒）で接続が切られます。バックエンドはまだ処理を続けています。1.0.4 から AI チャット、IP 調査の解説、経路追跡は待機中に 10 秒ごとにキープアライブを送るため、プロキシに切られなくなりました。アップグレードするだけでよく、タイムアウトの変更は不要です。jt-ipam の前に独自のリバースプロキシがある場合は、これらの応答をバッファリングしないでください（nginx なら <code>proxy_buffering off</code>、または上流の <code>X-Accel-Buffering: no</code> に従う設定）。そうしないと進捗が最後にまとめて表示されます。長く待ったあとに出るのがネットワークエラーではなく「LLM サーバーが時間内に応答しませんでした」なら、モデル自体が遅すぎます。「管理 → LLM / AI」でタイムアウトを延ばすか、より小さいモデルを選んでください。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-arp-flux">
+        <h3>
+          <span class="zh">路由器日誌一直出現 <code>arp: ... moved from ... to ...</code>，異常偵測說 IP 衝突，其實是同一台主機</span>
+          <span class="en">The router log keeps printing <code>arp: ... moved from ... to ...</code> and anomaly detection reports an IP conflict, but it is one host</span>
+          <span class="ja">ルーターのログに <code>arp: ... moved from ... to ...</code> が出続け、異常検出が IP 衝突と報告するが、実は同じホスト</span>
+        </h3>
+        <p>
+          <span class="zh">這是 ARP flux：一台有兩張網卡的 Linux 主機，預設（arp_ignore=0）會用任何一張網卡回答本機任何一個位址的 ARP；兩個網段又在同一個二層時，同一個 IP 就會被兩張網卡輪流回答。兩個 MAC 都已經連到同一台裝置時，異常偵測會把它列在「同一台主機多張網卡（ARP flux）」，並在「子網段混在同一個二層」列出兩個網段沒有隔離的證據。在那台主機設定下面兩行並寫進 <code>/etc/sysctl.d/</code>：</span>
+          <span class="en">This is ARP flux: a Linux host with two NICs answers ARP for any of its addresses on either NIC by default (arp_ignore=0), and when the two segments share one layer 2 the same IP is answered by both NICs in turn. When both MACs are linked to the same device, anomaly detection lists it under "One host on several NICs (ARP flux)" and shows the evidence that the segments are not isolated under "Subnets sharing one layer 2". Set these two lines on that host and save them under <code>/etc/sysctl.d/</code>:</span>
+          <span class="ja">これは ARP flux です。NIC が 2 枚ある Linux ホストは既定（arp_ignore=0）で、自分のどのアドレスの ARP にもどちらの NIC でも応答します。2 つのセグメントが同じレイヤー 2 にあると、同じ IP に 2 枚の NIC が交互に応答します。両方の MAC が同じデバイスに関連付けられていれば、異常検出は「同一ホストの複数 NIC（ARP flux）」に表示し、セグメントが分離されていない証拠を「同じレイヤー 2 に複数サブネット」に表示します。そのホストで次の 2 行を設定し、<code>/etc/sysctl.d/</code> に保存してください。</span>
+        </p>
+        <pre><code>printf 'net.ipv4.conf.all.arp_ignore=1\nnet.ipv4.conf.all.arp_announce=2\n' | \
+  sudo tee /etc/sysctl.d/90-arp-flux.conf
+sudo sysctl --system</code></pre>
+        <p>
+          <span class="zh">IP 衝突裡標成「疑似讀壞」的 MAC（只有一個來源、查不到廠商、由另外兩個 MAC 拼成）是設備的 ARP 表正在切換時 SNMP 讀到一半，不是另一台機器；修好 ARP flux 之後就不會再出現。</span>
+          <span class="en">A MAC marked "Likely misread" in an IP conflict (single source, no vendor, spliced from two other MACs) is an SNMP walk that caught a device's ARP table mid-change, not another machine; it stops once the ARP flux is fixed.</span>
+          <span class="ja">IP 衝突で「読み取り破損の疑い」とされた MAC（報告元 1 つ・ベンダー不明・別の 2 つの MAC をつなぎ合わせた形）は、デバイスの ARP テーブルの切り替え中に SNMP が途中まで読んだもので、別の機器ではありません。ARP flux を直せば出なくなります。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-dns-compare-group">
+        <h3>
+          <span class="zh">DNS 比對群組一直顯示「資料不完整」「無法比對」，或列出一整個 zone 只在其中一台</span>
+          <span class="en">A DNS comparison group keeps showing "Incomplete data" or "Cannot compare", or lists a whole zone as present on only one server</span>
+          <span class="ja">DNS 比較グループが「データ不足」「比較できません」のまま、またはゾーン全体が 1 台にしかないと表示される</span>
+        </h3>
+        <p>
+          <span class="zh">jt-ipam 不會在伺服器之間同步紀錄，比對只用它已經拉回來的紀錄，所以每台成員都要拉取成功過。「資料不完整」的說明會寫出是哪一台：那台最近一次拉取失敗（到 DNS 頁看它的錯誤訊息）或從沒拉取過，修好後按它的「拉取」，群組會跟著重新比對。剛升級到這一版時，既有的紀錄要等下一輪拉取才有比對用的正規化欄位，在那之前也會顯示「資料不完整」，對每台成員按一次「拉取」即可。一整個 zone 只在部分成員上，最常見的原因是那幾台的帳號讀不到那個 zone：Technitium 逐個 zone 給權限，沒有權限的 zone 根本不會列出來（測試連線會列出讀不到的 zone）；BIND 9 要讀哪些 zone 是在伺服器設定的「Zone 清單（BIND9）」逐一列出，同一組的每台要列一樣的 zone。成員之間本來就只複寫部分 zone、或某台另外放了自己的 zone 時，在差異清單那一列按「不比對這個 zone」，或在群組設定的「不比對的 zone」列出來即可，存檔後馬上重新比對。「無法比對」表示 Unbound（OPNsense）和其他類型的伺服器在同一組：Unbound 只存主機覆寫、不是完整的 zone，只能和 Unbound 同組（其他軟體可以互相混搭，例如 Windows DNS 與 UCS）。差異一直停在「待確認」，表示沒有那筆的伺服器在寬限時間之後還沒重新拉取過：確認要等它下一次拉取（看它的拉取間隔），或直接按它的「拉取」。</span>
+          <span class="en">jt-ipam does not sync records between the servers; the comparison uses only the records it has already pulled, so every member must have been pulled successfully. The "Incomplete data" hint names the server: its last pull failed (see its error on the DNS page) or it has never been pulled; fix it and click its Pull, and the group is compared again. Right after upgrading to this version, existing records get the normalized columns used for comparison only on the next pull, so groups show "Incomplete data" until then; click Pull once on each member. A whole zone present on only some members usually means the other members' accounts cannot read it: Technitium grants access per zone and does not list zones without permission at all (the connection test lists unreadable zones); for BIND 9 the zones to read are listed one by one under "Zones (BIND9)" in the server settings, so every member of a group needs the same list. When the servers replicate only some zones, or one of them also holds zones of its own, click "Stop comparing this zone" on that row of the difference list, or list them under "Zones not compared" in the group settings; the group is compared again when you save. A difference that stays "Pending" means the server missing it has not been pulled since the grace period ended: it is confirmed at that server's next pull (see its pull interval), or click its Pull. "Cannot compare" means Unbound (OPNsense) shares a group with another type: Unbound holds host overrides rather than full zones, so it can only be grouped with Unbound (other products can be mixed, for example Windows DNS and UCS).</span>
+          <span class="ja">jt-ipam はサーバー間でレコードを同期せず、比較には取得済みのレコードだけを使うため、すべてのメンバーが一度は取得に成功している必要があります。「データ不足」の説明に該当サーバーが表示されます。直近の取得に失敗した（DNS ページでエラーを確認）か、まだ取得していないサーバーです。直して「取得」を押せばグループも再比較されます。このバージョンへアップグレードした直後は、既存レコードの比較用の正規化列が次の取得まで埋まらないため「データ不足」と表示されます。各メンバーで一度「取得」を押してください。ゾーン全体が一部のメンバーにしかない場合、多くはほかのメンバーのアカウントがそのゾーンを読めないことが原因です。Technitium はゾーンごとに権限を与え、権限のないゾーンは一覧にすら出ません（接続テストで読めないゾーンを表示します）。BIND 9 は読み取るゾーンをサーバー設定の「ゾーン（BIND9）」に 1 つずつ列挙するため、同じグループのサーバーには同じゾーンを列挙してください。一部のゾーンだけを複製している場合や、あるサーバーに独自のゾーンがある場合は、違いの一覧のその行で「このゾーンを比較しない」を押すか、グループ設定の「比較しないゾーン」に入れてください。保存するとすぐに再比較します。違いが「確認待ち」のままの場合、ないサーバーが猶予時間後にまだ取得し直されていません。そのサーバーの次の取得で確定します（取得間隔を確認）。すぐ確認したいときはそのサーバーの「取得」を押してください。「比較できません」は Unbound（OPNsense）とほかの種類のサーバーが同じグループにあることを示します。Unbound はホストオーバーライドのみで完全なゾーンではないため、Unbound 同士でしかグループにできません（ほかの製品は混在できます。例：Windows DNS と UCS）。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-ucs-udm-rest-404">
+        <h3>
+          <span class="zh">UCS 的 DNS 拉取失敗，錯誤是 UDM REST 404（找不到 /univention/udm/）或 403（Not in allowed groups）</span>
+          <span class="en">Pulling DNS from UCS fails with UDM REST 404 (/univention/udm/ not found) or 403 (Not in allowed groups)</span>
+          <span class="ja">UCS の DNS 取得が UDM REST 404（/univention/udm/ が見つからない）または 403（Not in allowed groups）で失敗する</span>
+        </h3>
+        <p>
+          <span class="zh">jt-ipam 透過 UCS 的 UDM REST API 讀 DNS，那台沒有這個 API 時，Apache 會回 404。Primary 與 Backup Directory Node 預設會裝，Replica Directory Node、或當初沒裝的就沒有。用 root 在那台執行 <code>univention-install univention-directory-manager-rest</code>，再用 <code>systemctl status univention-directory-manager-rest</code> 確認服務在跑。裝好後瀏覽 <code>https://&lt;UCS 主機&gt;/univention/udm/</code> 應該要求登入（401），不再是 404。也可以改填 Primary Directory Node 的位址：UCS 的 DNS 資料存在 LDAP，每台 Directory Node 讀到的都一樣。裝好之後如果變成 403「Not in allowed groups」，表示帳號不在允許使用 API 的群組裡：UDM REST API 只讓 UCR 變數 <code>directory/manager/rest/authorized-groups/*</code> 列出的群組使用，手動裝在 Replica 上時常少了這組。到 Primary 執行 <code>ucr search authorized-groups</code> 對照，在那台補上同樣的設定，例如 <code>ucr set directory/manager/rest/authorized-groups/domain-admins="cn=Domain Admins,cn=groups,$(ucr get ldap/base)"</code>，再執行 <code>systemctl restart univention-directory-manager-rest</code>。</span>
+          <span class="en">jt-ipam reads DNS through the UCS UDM REST API; when that server has no such API, Apache answers 404. Primary and Backup Directory Nodes have it by default; a Replica Directory Node, or a server where it was never installed, does not. Run <code>univention-install univention-directory-manager-rest</code> as root on that server, then check the service with <code>systemctl status univention-directory-manager-rest</code>. Afterwards <code>https://&lt;UCS host&gt;/univention/udm/</code> should ask for a login (401) instead of 404. You can also use the Primary Directory Node's address: UCS keeps DNS data in LDAP, so every Directory Node reads the same data. If it then answers 403 "Not in allowed groups", the account is not in a group allowed to use the API: the UDM REST API only admits the groups listed in the UCR variables <code>directory/manager/rest/authorized-groups/*</code>, which are often missing when it was installed by hand on a Replica. Compare with <code>ucr search authorized-groups</code> on the Primary and add the same settings on that server, for example <code>ucr set directory/manager/rest/authorized-groups/domain-admins="cn=Domain Admins,cn=groups,$(ucr get ldap/base)"</code>, then run <code>systemctl restart univention-directory-manager-rest</code>.</span>
+          <span class="ja">jt-ipam は UCS の UDM REST API で DNS を読み取ります。そのサーバーに API がないと Apache が 404 を返します。Primary と Backup Directory Node には標準で入っていますが、Replica Directory Node や導入時に入れなかったサーバーにはありません。そのサーバーで root として <code>univention-install univention-directory-manager-rest</code> を実行し、<code>systemctl status univention-directory-manager-rest</code> でサービスが動いていることを確認してください。導入後に <code>https://&lt;UCS ホスト&gt;/univention/udm/</code> を開くと、404 ではなくログイン（401）を求められます。Primary Directory Node のアドレスを指定することもできます。UCS の DNS データは LDAP にあるため、どの Directory Node から読んでも同じです。導入後に 403「Not in allowed groups」になる場合は、アカウントが API の利用を許可されたグループに入っていません。UDM REST API は UCR 変数 <code>directory/manager/rest/authorized-groups/*</code> に列挙されたグループだけを受け付け、Replica に手動で入れた場合はよく欠けています。Primary で <code>ucr search authorized-groups</code> を実行して比べ、そのサーバーに同じ設定を追加してください（例：<code>ucr set directory/manager/rest/authorized-groups/domain-admins="cn=Domain Admins,cn=groups,$(ucr get ldap/base)"</code>）。その後 <code>systemctl restart univention-directory-manager-rest</code> を実行します。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-rogue-dhcp-integrated">
+        <h3>
+          <span class="zh">DHCP 伺服器已經加進整合，IP 清單還是顯示紅色的「非法 DHCP 伺服器」</span>
+          <span class="en">A DHCP server is already integrated, but the IP list still shows the red "Rogue DHCP server" icon</span>
+          <span class="ja">DHCP サーバーを連携に追加したのに、IP 一覧に赤い「不正な DHCP サーバー」が出たまま</span>
+        </h3>
+        <p>
+          <span class="zh">紅色圖示表示掃描代理收到這個位址發出的 DHCP 回應，而它不是已知的 DHCP 伺服器。整合中的 DHCP 來源（Windows DHCP、Kea、ISC DHCP、Technitium、ISOinsight、MikroTik，以及 OPNsense、pfSense、FortiGate、Palo Alto、Check Point 防火牆）會自動算成已知，IP 清單、異常偵測與 IP 調查用的是同一份判斷。整合的主機欄位填的是名稱（例如 WinRM 用的 FQDN）時，是用這個位址 IP 記錄上的主機名稱對應：完整名稱相同，或其中一邊只寫短名稱時比第一段。主機名稱對不上（例如 IP 記錄還沒有名稱）時，把整合的主機改填 IP，或編輯這筆 IP 勾「標記為 DHCP 伺服器」。</span>
+          <span class="en">The red icon means a scan agent received DHCP replies from this address and it is not a known DHCP server. Integrated DHCP sources (Windows DHCP, Kea, ISC DHCP, Technitium, ISOinsight, MikroTik, and OPNsense, pfSense, FortiGate, Palo Alto and Check Point firewalls) count as known automatically; the IP list, anomaly detection and IP investigation share the same check. When the integration's host field holds a name (for example the FQDN used for WinRM), it is matched against the host name on this address's IP record: the full names are equal, or the first labels are equal when one side is a short name. If the names do not match (for example the IP record has no name yet), enter the integration's host as an IP address, or edit the IP and tick "Mark as DHCP server".</span>
+          <span class="ja">赤いアイコンは、スキャンエージェントがこのアドレスからの DHCP 応答を受け取り、それが既知の DHCP サーバーではないことを示します。連携中の DHCP ソース（Windows DHCP、Kea、ISC DHCP、Technitium、ISOinsight、MikroTik、および OPNsense、pfSense、FortiGate、Palo Alto、Check Point のファイアウォール）は自動で既知として扱われ、IP 一覧・異常検知・IP 調査は同じ判定を使います。連携のホスト欄が名前（例：WinRM 用の FQDN）の場合は、このアドレスの IP レコードのホスト名と照合します。完全な名前が一致するか、片方が短い名前なら先頭のラベルが一致すれば同じとみなします。名前が一致しない場合（例：IP レコードにまだ名前がない）は、連携のホストを IP アドレスで指定するか、この IP を編集して「DHCP サーバーとして指定」にチェックを入れてください。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-gateway-no-ping">
+        <h3>
+          <span class="zh">閘道（路由器的介面位址）不回 ping，登記後顯示紅燈</span>
+          <span class="en">A gateway (a router's interface address) does not answer ping and shows red after it is registered</span>
+          <span class="ja">ゲートウェイ（ルーターのインターフェースアドレス）が ping に応答せず、登録すると赤になる</span>
+        </h3>
+        <p>
+          <span class="zh">一台路由器接好幾個 LAN 時，每個 LAN 的閘道都是它自己的介面位址，常被防火牆政策擋掉 ICMP，或掃描代理不在那個網段，探測沒有回應。路由器有接 OPNsense、pfSense、FortiGate、MikroTik 或 LibreNMS 整合的話，每輪同步會讀它啟用中的介面位址，對得到的 IP 記錄就算在線（上線判定的來源「設備介面位址」，預設採信），不用另外設定；FortiGate 的 API 管理員要能讀取系統設定（介面），讀不到時這一段只記日誌。沒有接整合的，把這些閘道 IP 掛到所屬的路由器（裝置），在 IP 編輯勾「上線狀態跟著所屬設備」：同一台設備的其他位址或 LibreNMS 回報設備在線，這些位址就跟著在線，設備掛了一起變離線。IP 詳細頁發現同一個 MAC 的另一個位址在線時，會提示並可以一鍵套用。只勾選、還沒掛設備時顯示灰色「使用中（不回應探測）」，不算離線。</span>
+          <span class="en">When one router serves several LANs, each LAN's gateway is one of the router's own interface addresses; firewall policy often drops ICMP to them, or the scan agent is not on that subnet, so probes get no answer. If the router is connected through an OPNsense, pfSense, FortiGate, MikroTik or LibreNMS integration, every sync reads its enabled interface addresses and the matching IP records count as online (the liveness source "Device interface address", trusted by default), with nothing else to set up; a FortiGate API administrator needs read access to system settings (interfaces), otherwise that step is only logged. Without an integration, link these gateway IPs to their router (device) and tick "Liveness follows its device" when editing the IP: whenever another address of the same device, or LibreNMS, reports the device up, these addresses are online too, and they go offline with the device. The IP detail page suggests this, with a one-click apply, when another address with the same MAC is online. Ticked but with no device linked, the address shows grey "In use (does not answer probes)" instead of offline.</span>
+          <span class="ja">1 台のルーターが複数の LAN を収容する場合、各 LAN のゲートウェイはルーター自身のインターフェースアドレスで、ファイアウォールのポリシーで ICMP が落とされたり、スキャンエージェントがそのセグメントにいなかったりして応答がありません。ルーターを OPNsense、pfSense、FortiGate、MikroTik、LibreNMS のいずれかで連携していれば、同期のたびに有効なインターフェースアドレスを読み、一致する IP レコードをオンラインとします（オンライン判定の根拠「機器のインターフェースアドレス」、既定で採用）。追加の設定は不要です。FortiGate の API 管理者にはシステム設定（インターフェース）の読み取り権限が必要で、読めない場合はログに記録するだけです。連携していない場合は、これらのゲートウェイ IP を所属ルーター（機器）に紐づけ、IP の編集で「オンライン状態を所属機器に従わせる」にチェックを入れてください。同じ機器のほかのアドレスか LibreNMS が機器のオンラインを報告していればオンラインとなり、機器が落ちれば一緒にオフラインになります。IP 詳細ページは、同じ MAC のほかのアドレスがオンラインのときに提案し、ワンクリックで適用できます。チェックだけで機器が未紐づけの場合は、オフラインではなく灰色の「使用中（プローブに応答しない）」になります。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-relogin">
+        <h3>
+          <span class="zh">升級之後所有人都被登出、要重新登入</span>
+          <span class="en">After the upgrade everyone was signed out and has to sign in again</span>
+          <span class="ja">アップグレード後に全員がログアウトされ、ログインし直す必要がある</span>
+        </h3>
+        <p>
+          <span class="zh">這是預期的，只會發生一次：1.0.6 起登入改成伺服器端的工作階段：更新用的權杖只放在瀏覽器碰不到的 HttpOnly cookie，存取權杖只留在這個分頁。舊版放在瀏覽器儲存空間裡的權杖不再被接受，最晚 15 分鐘後（舊的存取權杖到期）會回到登入頁。重新登入一次即可；之後每個人可以在右上角帳號選單的「偏好設定 → 安全 → 登入中的裝置」看到並登出自己在其他地方的登入，管理員可以在「使用者」頁強制某人登出。</span>
+          <span class="en">This is expected and happens once: from 1.0.6 sign-in uses server-side sessions: the refresh token lives only in an HttpOnly cookie that page scripts cannot read, and the access token stays in the tab. Tokens that older versions kept in browser storage are no longer accepted, so within 15 minutes (when the old access token expires) people land on the sign-in page. Signing in once is enough; afterwards everyone can see and sign out their other sign-ins in the account menu (top right) under Preferences → Security → Signed-in devices, and administrators can sign someone out everywhere from Users.</span>
+          <span class="ja">想定どおりの動作で、一度だけ起こります。1.0.6 からログインはサーバー側のセッションになりました。更新用トークンはページのスクリプトから読めない HttpOnly cookie にだけ置かれ、アクセストークンはそのタブの中にだけ残ります。旧バージョンがブラウザのストレージに置いていたトークンは受け付けないため、遅くとも 15 分後（古いアクセストークンの期限）にログイン画面に戻ります。一度ログインし直せば十分です。以後は各自が右上のアカウントメニューの「設定 → セキュリティ → ログイン中のデバイス」で他の場所のログインを確認・ログアウトでき、管理者は「ユーザー」ページから強制ログアウトできます。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-dsv-404">
+        <h3>
+          <span class="zh">Graylog 查表（DSV）回 404 或 401</span>
+          <span class="en">The Graylog lookup (DSV) returns 404 or 401</span>
+          <span class="ja">Graylog の参照（DSV）が 404 または 401 を返す</span>
+        </h3>
+        <p>
+          <span class="zh"><strong>404</strong>：權杖在網址上，所以明文的 8088 埠預設不服務，一律回 404，只有 HTTPS 可以用。升級前就在用 DSV 的站台會保留原本的行為；新設定的話，Graylog 能信任 jt-ipam 的憑證就改用 <code>https://</code> 網址，不能的話到「整合 Graylog」打開「允許明文 HTTP（8088 埠）」，並建議同時填「允許的來源位址」。有設允許的來源位址時，其他位址來的請求也一律回 404。<strong>401</strong>：權杖錯了或已過期。權杖現在有效期限，到期前會發通知；在同一頁按顯示可以看到目前的權杖（會留稽核記錄），換發之後要把新網址貼回 Graylog 的 Data Adapter。</span>
+          <span class="en"><strong>404</strong>: the token is in the URL, so plain-HTTP port 8088 is off by default and always answers 404; only HTTPS works. Sites that already used DSV before upgrading keep their previous behaviour. For a new setup, use the <code>https://</code> URL if Graylog trusts jt-ipam's certificate; otherwise turn on "Allow plain HTTP (port 8088)" under Graylog integration, preferably together with "Allowed sources". When allowed sources are set, requests from any other address also get 404. <strong>401</strong>: the token is wrong or has expired. Tokens now expire and a notification goes out before they do; reveal the current token on the same page (an audit record is written), and after rotating it paste the new URL into Graylog's Data Adapter.</span>
+          <span class="ja"><strong>404</strong>：トークンが URL に含まれるため、平文の 8088 番ポートは既定で無効になっていて常に 404 を返し、HTTPS だけが使えます。アップグレード前から DSV を使っていたサイトは従来の動作を維持します。新しく設定する場合は、Graylog が jt-ipam の証明書を信頼できるなら <code>https://</code> の URL を使い、できないなら「Graylog 連携」で「平文 HTTP を許可（8088 番ポート）」をオンにし、あわせて「許可する送信元」も設定してください。許可する送信元を設定すると、それ以外のアドレスからの要求も 404 になります。<strong>401</strong>：トークンが違うか期限切れです。トークンには有効期限があり、期限前に通知が届きます。同じページで現在のトークンを表示でき（監査記録が残ります）、再発行したら新しい URL を Graylog の Data Adapter に貼り直してください。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-backup-unencrypted">
+        <h3>
+          <span class="zh">系統診斷說「備份加密」沒有設定</span>
+          <span class="en">System diagnostics warns that backup encryption is not set</span>
+          <span class="ja">システム診断で「バックアップの暗号化」が未設定と警告される</span>
+        </h3>
+        <p>
+          <span class="zh">每日備份裡同時有資料庫與解密資料庫內機密的金鑰（backend.env），拿到備份檔就等於拿到所有整合的密碼。到「管理 → 系統設定 → 每日備份加密」設定密碼（至少 12 個字元），之後每天的備份會整包加密成一個 <code>.jtbak</code> 檔、明文刪除。密碼忘記就解不開，請存在這台主機以外的地方。設定了卻仍警告「最後一次備份沒有加密」，是 <code>/usr/local/bin</code> 裡還是升級前的備份腳本（再跑一次升級），或加密失敗（看 <code>journalctl -u jt-ipam-backup</code>）。還原步驟見安裝文件的「備份與還原」一節。</span>
+          <span class="en">The daily backup holds both the database and the key that decrypts the secrets inside it (backend.env), so anyone with the backup file has every integration password. Set a passphrase (at least 12 characters) under Admin → System Settings → Daily backup encryption; from then on each day's backup becomes one encrypted <code>.jtbak</code> file and the plain copy is deleted. A forgotten passphrase cannot be recovered, so keep it somewhere other than this host. If it is set but the warning says the last backup was not encrypted, <code>/usr/local/bin</code> still has the pre-upgrade backup script (run the upgrade again) or encryption failed (see <code>journalctl -u jt-ipam-backup</code>). Restoring is described in the Backup &amp; restore section of the install guide.</span>
+          <span class="ja">毎日のバックアップにはデータベースと、その中の機密を復号する鍵（backend.env）の両方が入っているため、バックアップファイルを手に入れればすべての連携のパスワードが手に入ります。「管理 → システム設定 → 日次バックアップの暗号化」でパスフレーズ（12 文字以上）を設定すると、以後は毎日のバックアップが 1 つの暗号化された <code>.jtbak</code> ファイルになり、平文は削除されます。パスフレーズを忘れると復号できないので、このホスト以外の場所に保管してください。設定済みなのに「最後のバックアップが暗号化されていない」と出る場合は、<code>/usr/local/bin</code> にアップグレード前のバックアップスクリプトが残っている（アップグレードをもう一度実行）か、暗号化に失敗しています（<code>journalctl -u jt-ipam-backup</code> を確認）。復元手順はインストールガイドの「バックアップと復元」を参照してください。</span>
+        </p>
       </article>
     </section>
 
@@ -759,19 +1056,19 @@ echo "$ADMIN_PW"</code></pre>
 
       <article class="qa" id="qa-rdp-engine">
         <h3>
-          <span class="zh">RDP 連 Linux（xrdp／GNOME 遠端登入）時帳密明明是對的卻說認證失敗</span>
+          <span class="zh">RDP 連 Linux（xrdp/GNOME 遠端登入）時帳密明明是對的卻說認證失敗</span>
           <span class="en">RDP to Linux (xrdp / GNOME Remote Login) reports a logon failure with correct credentials</span>
-          <span class="ja">Linux への RDP（xrdp／GNOME リモートログイン）で、正しい資格情報なのに認証失敗になる</span>
+          <span class="ja">Linux への RDP（xrdp/GNOME リモートログイン）で、正しい資格情報なのに認証失敗になる</span>
         </h3>
         <p>
-          <span class="zh">請到 管理 → 系統設定 → 主控台，把 RDP 連線引擎改成 <strong>FreeRDP</strong>。預設的 aardwolf 引擎在 NTLM 認證時不送 MIC（訊息完整性碼），而 FreeRDP 的<strong>伺服器端</strong>會強制檢查它 —— xrdp 與 gnome-remote-desktop 用的正是 FreeRDP 伺服器，於是一律回「帳號或密碼錯誤」。連 Windows 目標時兩個引擎都可以。</span>
-          <span class="en">Go to Admin → System settings → Console and switch the RDP engine to <strong>FreeRDP</strong>. The default aardwolf engine does not send the NTLM message integrity code (MIC), and the FreeRDP <strong>server</strong> enforces it — xrdp and gnome-remote-desktop are both built on that server, so they answer with a logon failure regardless of the password. Either engine works against Windows targets.</span>
-          <span class="ja">管理 → システム設定 → コンソール で RDP 接続エンジンを <strong>FreeRDP</strong> に切り替えてください。既定の aardwolf エンジンは NTLM の MIC（メッセージ整合性コード）を送らず、FreeRDP の<strong>サーバー側</strong>はそれを必須としています。xrdp と gnome-remote-desktop はどちらもそのサーバーを使っているため、パスワードが正しくてもログオン失敗になります。Windows が相手ならどちらのエンジンでも接続できます。</span>
+          <span class="zh">這只發生在 <strong>aardwolf 備用引擎</strong>：它在 NTLM 認證時不送 MIC（訊息完整性碼），而 FreeRDP 的<strong>伺服器端</strong>會強制檢查它，xrdp 與 gnome-remote-desktop 用的正是 FreeRDP 伺服器，於是一律回「帳號或密碼錯誤」。請到「管理 → 系統設定 → RDP 連線引擎」改回預設的 <strong>guacd</strong>（建議；2026-09-27 起的預設，內部用 FreeRDP 用戶端）。aardwolf 會逐步淘汰。</span>
+          <span class="en">This only happens with the <strong>aardwolf fallback engine</strong>: it does not send the NTLM message integrity code (MIC), and the FreeRDP <strong>server</strong> enforces it; xrdp and gnome-remote-desktop are both built on that server, so they answer with a logon failure regardless of the password. Go to Admin → System Settings → RDP connection engine and switch it back to the default <strong>guacd</strong> (recommended; the default since 2026-09-27, which uses the FreeRDP client). aardwolf is being phased out.</span>
+          <span class="ja">これは <strong>aardwolf 予備エンジン</strong>でのみ起きます。aardwolf は NTLM の MIC（メッセージ整合性コード）を送らず、FreeRDP の<strong>サーバー側</strong>はそれを必須としています。xrdp と gnome-remote-desktop はどちらもそのサーバーを使っているため、パスワードが正しくてもログオン失敗になります。「管理 → システム設定 → RDP 接続エンジン」で既定の <strong>guacd</strong>（推奨。2026-09-27 からの既定、内部で FreeRDP クライアントを使用）に戻してください。aardwolf は段階的に廃止予定です。Windows が相手ならどのエンジンでも接続できます。</span>
         </p>
         <p class="note">
-          <span class="zh">FreeRDP 引擎需要額外的系統套件（約 150 MB），設定頁會列出缺哪些與安裝指令。也可以在安裝時加 <code>--with-freerdp</code>；升級時若已選用 FreeRDP 會自動補上。</span>
-          <span class="en">The FreeRDP engine needs extra system packages (~150 MB); the settings page lists what is missing and the command to install it. You can also pass <code>--with-freerdp</code> at install time — an upgrade installs them automatically when FreeRDP is already selected.</span>
-          <span class="ja">FreeRDP エンジンには追加のシステムパッケージ（約 150 MB）が必要です。不足分とインストールコマンドは設定ページに表示されます。インストール時に <code>--with-freerdp</code> を付けることもでき、FreeRDP を選択済みならアップグレード時に自動で導入されます。</span>
+          <span class="zh">一般不需要 FreeRDP：建議使用預設的 guacd。FreeRDP 只是備用引擎，需要額外的系統套件（約 150 MB）；選了它卻沒裝時，設定頁會列出缺哪些與安裝指令，並建議改回 guacd。也可以在安裝時加 <code>--with-freerdp</code>；升級時若已選用 FreeRDP 會自動補上。沒選用 FreeRDP 時，版本資訊頁會把這組套件標成「未選用此引擎」，不算缺少。Ubuntu 25.10 以後只有 <code>freerdp3-x11</code>。</span>
+          <span class="en">You normally do not need FreeRDP: use the default guacd. FreeRDP is only a fallback engine and needs extra system packages (~150 MB); when it is selected but not installed, the settings page lists what is missing and the command to install it, and recommends switching back to guacd. You can also pass <code>--with-freerdp</code> at install time; an upgrade installs them automatically when FreeRDP is already selected. When FreeRDP is not selected, the version page shows these packages as "Engine not selected", not as missing. Ubuntu 25.10 and later only have <code>freerdp3-x11</code>.</span>
+          <span class="ja">通常 FreeRDP は不要です。既定の guacd をお使いください。FreeRDP は予備エンジンで、追加のシステムパッケージ（約 150 MB）が必要です。選択しているのに未導入の場合、設定ページに不足分とインストールコマンドが表示され、guacd に戻すよう案内されます。インストール時に <code>--with-freerdp</code> を付けることもでき、FreeRDP を選択済みならアップグレード時に自動で導入されます。FreeRDP を選択していない場合、バージョン情報ページではこれらのパッケージは「このエンジンは未選択」と表示され、不足扱いにはなりません。Ubuntu 25.10 以降は <code>freerdp3-x11</code> のみです。</span>
         </p>
         <pre><code>sudo apt-get install -y freerdp2-x11 xvfb xclip ffmpeg</code></pre>
       </article>
@@ -783,34 +1080,34 @@ echo "$ADMIN_PW"</code></pre>
           <span class="ja">何十回か接続した後、GNOME リモートログインが真っ黒な画面しか出さない</span>
         </h3>
         <p>
-          <span class="zh">被控端累積了收不掉的登入畫面工作階段。GNOME 的<strong>遠端登入</strong>每接一次就開一個新的無頭工作階段，而用戶端離線時它不一定會把那個工作階段收掉 —— 累積到一定數量，新的連線就什麼都畫不出來。在被控端上看：</span>
-          <span class="en">The target has accumulated login-screen sessions that were never reaped. GNOME <strong>Remote Login</strong> starts a new headless session for every connection, and does not reliably end it when the client disconnects — past a certain number, new connections render nothing. Check on the target:</span>
+          <span class="zh">被控端累積了收不掉的登入畫面工作階段。GNOME 的<strong>遠端登入</strong>每接一次就開一個新的無頭工作階段，而用戶端離線時它不一定會把那個工作階段收掉，累積到一定數量，新的連線就什麼都畫不出來。在被控端上看：</span>
+          <span class="en">The target has accumulated login-screen sessions that were never reaped. GNOME <strong>Remote Login</strong> starts a new headless session for every connection, and does not reliably end it when the client disconnects; past a certain number, new connections render nothing. Check on the target:</span>
           <span class="ja">接続先にログイン画面のセッションが回収されずに溜まっています。GNOME の<strong>リモートログイン</strong>は接続のたびに新しいヘッドレスセッションを開始しますが、クライアント切断時にそれを確実に終了しません。ある程度溜まると新規接続は何も表示されなくなります。接続先で確認してください：</span>
         </p>
         <pre><code>loginctl list-sessions | grep gdm | wc -l
 sudo loginctl terminate-user gdm     # <span class="zh">收掉全部登入畫面（會重新產生）</span><span class="en">end all login-screen sessions (they respawn)</span><span class="ja">ログイン画面のセッションを全て終了（再生成されます）</span></code></pre>
         <p class="note">
-          <span class="zh">這是被控端的行為，主控台這邊已經是先送 SIGTERM、等它好好關閉連線才收掉。要避免累積，請改用「桌面共享」—— 它接的是既有的工作階段，不會每次都開新的。</span>
-          <span class="en">This is the target's behaviour; the console already sends SIGTERM and waits for a clean disconnect before reaping its own processes. To avoid the build-up, use Desktop Sharing — it attaches to the existing session instead of starting a new one each time.</span>
+          <span class="zh">這是被控端的行為，主控台這邊已經是先送 SIGTERM、等它好好關閉連線才收掉。要避免累積，請改用「桌面共享」：它接的是既有的工作階段，不會每次都開新的。</span>
+          <span class="en">This is the target's behaviour; the console already sends SIGTERM and waits for a clean disconnect before reaping its own processes. To avoid the build-up, use Desktop Sharing: it attaches to the existing session instead of starting a new one each time.</span>
           <span class="ja">これは接続先側の挙動です。コンソール側は既に SIGTERM を送り、正常な切断を待ってから自プロセスを終了しています。蓄積を避けるにはデスクトップ共有をご利用ください。毎回新規に開始せず、既存のセッションに接続します。</span>
         </p>
       </article>
 
       <article class="qa" id="qa-rdp-cjk">
         <h3>
-          <span class="zh">用 FreeRDP 引擎時打不出中文／日文</span>
+          <span class="zh">用 FreeRDP 引擎時打不出中文/日文</span>
           <span class="en">Chinese or Japanese cannot be typed with the FreeRDP engine</span>
           <span class="ja">FreeRDP エンジンでは中国語・日本語が入力できない</span>
         </h3>
         <p>
-          <span class="zh">請改用主控台工具列的「貼上」—— 剪貼簿這條路不受限制，中文、日文都貼得進去。直接打字時，非 ASCII 字元畫面上會出現提示，不會默默消失。</span>
-          <span class="en">Use <strong>Paste</strong> in the console toolbar instead — the clipboard path has no such limit and handles any text. When you type one directly, the console tells you; the character is never dropped in silence.</span>
+          <span class="zh">請改用主控台工具列的「貼上」：剪貼簿這條路不受限制，中文、日文都貼得進去。直接打字時，非 ASCII 字元畫面上會出現提示，不會默默消失。</span>
+          <span class="en">Use <strong>Paste</strong> in the console toolbar instead: the clipboard path has no such limit and handles any text. When you type one directly, the console tells you; the character is never dropped in silence.</span>
           <span class="ja">コンソールのツールバーの「<strong>貼り付け</strong>」をご利用ください。クリップボード経路にこの制限はなく、どの文字でも入力できます。直接入力した場合は画面に案内が出るため、黙って消えることはありません。</span>
         </p>
         <p class="note">
-          <span class="zh">原因在被控端之外：FreeRDP 的用戶端是用一張<strong>固定的按鍵對照表</strong>把鍵盤事件翻成 RDP 事件，沒有 Unicode 鍵盤通道，因此配置上沒有的字元送不出去。預設的 aardwolf 引擎沒有這個限制 —— 如果目標是 Windows，用預設引擎即可。</span>
-          <span class="en">The cause is in the client, not the target: FreeRDP translates key events through a <strong>fixed key table</strong> and has no Unicode keyboard channel, so characters absent from the layout cannot be sent. The default aardwolf engine does not have this limit — for Windows targets, the default engine is the better choice.</span>
-          <span class="ja">原因は接続先ではなくクライアント側にあります。FreeRDP はキーイベントを<strong>固定のキー対応表</strong>で RDP イベントに変換しており、Unicode キーボードチャネルを持たないため、配列にない文字は送信できません。既定の aardwolf エンジンにこの制限はなく、Windows が相手なら既定のままで十分です。</span>
+          <span class="zh">原因在被控端之外：FreeRDP 的用戶端是用一張<strong>固定的按鍵對照表</strong>把鍵盤事件翻成 RDP 事件，沒有 Unicode 鍵盤通道，因此配置上沒有的字元送不出去。這是 FreeRDP 備用引擎的限制，建議使用預設的 guacd；不論用哪個引擎，工具列的「貼上」都能輸入任何文字。</span>
+          <span class="en">The cause is in the client, not the target: FreeRDP translates key events through a <strong>fixed key table</strong> and has no Unicode keyboard channel, so characters absent from the layout cannot be sent. This is a limit of the FreeRDP fallback engine; use the default guacd. Whatever the engine, Paste in the toolbar can enter any text.</span>
+          <span class="ja">原因は接続先ではなくクライアント側にあります。FreeRDP はキーイベントを<strong>固定のキー対応表</strong>で RDP イベントに変換しており、Unicode キーボードチャネルを持たないため、配列にない文字は送信できません。これは FreeRDP 予備エンジンの制限です。既定の guacd をお使いください。どのエンジンでも、ツールバーの「貼り付け」なら任意の文字を入力できます。</span>
         </p>
       </article>
 
@@ -838,6 +1135,58 @@ sudo loginctl terminate-user gdm     # <span class="zh">收掉全部登入畫面
         <pre><code>loginctl list-sessions
 sudo loginctl terminate-user &lt;username&gt;</code></pre>
       </article>
+
+      <article class="qa" id="qa-rustdesk-web-insecure">
+        <h3>
+          <span class="zh">相容 RustDesk 的網頁連線顯示「無法建立加密連線」</span>
+          <span class="en">The RustDesk-compatible web connection says &ldquo;Encryption could not be set up&rdquo;</span>
+          <span class="ja">RustDesk 互換の Web 接続で「暗号化接続を確立できません」と表示される</span>
+        </h3>
+        <p>
+          <span class="zh">hbbs 沒有簽受控端的身分。hbbs 要有簽章用的私鑰才會簽：用工作目錄裡的金鑰檔啟動（官方 deb 的 <code>.env</code> 設 <code>KEY=_</code>，或 <code>-k</code> 留空、設成 <code>_</code>）。用 <code>-k &lt;公鑰字串&gt;</code> 啟動的 hbbs 手上沒有私鑰，永遠不簽；網頁連線不會在沒有加密的情況下連線，所以一律拒絕。改好後重新啟動 hbbs，原本的 RustDesk 客戶端不用改設定（公鑰不變）。</span>
+          <span class="en">hbbs did not sign the device identity. hbbs signs only when it holds the private signing key: start it with the key file in its working directory (<code>KEY=_</code> in the <code>.env</code> of the official deb, or <code>-k</code> empty or <code>_</code>). An hbbs started with <code>-k &lt;public key string&gt;</code> has no private key and never signs, and the web connection never connects without encryption, so it is always refused. Restart hbbs after the change; RustDesk clients need no change (the public key stays the same).</span>
+          <span class="ja">hbbs が接続先の ID に署名していません。hbbs は署名用の秘密鍵を持っているときだけ署名します。作業ディレクトリの鍵ファイルで起動してください（公式 deb の <code>.env</code> で <code>KEY=_</code>、または <code>-k</code> を空か <code>_</code> にする）。<code>-k &lt;公開鍵の文字列&gt;</code> で起動した hbbs は秘密鍵を持たないため署名せず、Web 接続は暗号化なしでは接続しないので常に拒否されます。変更後に hbbs を再起動してください。RustDesk クライアントの設定変更は不要です（公開鍵は変わりません）。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-rustdesk-web-wrong-key">
+        <h3>
+          <span class="zh">網頁連線連不上，同一區網用 RustDesk 程式卻連得上</span>
+          <span class="en">The web connection fails, but the RustDesk app on the same LAN connects</span>
+          <span class="ja">Web 接続はつながらないが、同じ LAN の RustDesk アプリではつながる</span>
+        </h3>
+        <p>
+          <span class="zh">最常見的原因是對方電腦的 RustDesk Key 設錯（例如大小寫打錯）。Key 錯的電腦照樣能向 ID 伺服器註冊（顯示「就緒」）、照樣回報主機名稱，同一區網內的 RustDesk 程式會直接連線、不經過中繼，所以也連得上；只有走中繼時會被中繼伺服器（hbbr）拒絕，而網頁連線一定走中繼，從外網用 RustDesk 程式連也一樣會失敗。RustDesk 代理 1.1.0 起會讀 hbbr/hbbs 的日誌找出這種電腦：伺服器列顯示「Key 錯誤 N」、裝置清單標「Key 錯誤」、IP 頁說明被拒的時間，網頁連線的錯誤訊息也會直接說是對方的 Key。修法：在那台電腦的 RustDesk「設定 → 網路 → ID / 中繼伺服器」把 Key 改成跟伺服器公鑰完全相同（用複製貼上）。改好之後下一次經過中繼成功，標記就會消失。日誌不在 <code>/var/log/rustdesk-server/</code> 的站台（例如自己寫 systemd unit 或用容器）可以在代理的設定檔加 <code>JT_RD_LOG_DIR=</code> 指到日誌目錄；按「測試」會顯示讀不讀得到。</span>
+          <span class="en">Most often the device's RustDesk Key is wrong (for example a letter in the wrong case). A device with a wrong Key still registers with the ID server (it shows "Ready") and still reports its host name, and the RustDesk app on the same LAN connects directly without the relay, so that works too; only connections through the relay are refused by the relay server (hbbr). The web connection always uses the relay, and the RustDesk app connecting from outside fails as well. From RustDesk agent 1.1.0 the agent reads the hbbr/hbbs logs to find such devices: the server row shows "Wrong Key N", the device list marks "Wrong Key", the IP page says when it was refused, and the web connection error names the device's Key directly. Fix: on that computer, set the Key in RustDesk "Settings → Network → ID/Relay server" to exactly the server's public key (copy and paste it). The mark goes away after the next successful connection through the relay. If the logs are not in <code>/var/log/rustdesk-server/</code> (a hand-written systemd unit or a container, for example), add <code>JT_RD_LOG_DIR=</code> with the log directory to the agent's config file; <b>Test</b> shows whether they can be read.</span>
+          <span class="ja">最も多い原因は、接続先の RustDesk の Key の設定ミス（大文字と小文字の打ち間違いなど）です。Key が誤っていても ID サーバーへの登録（「準備完了」と表示）やホスト名の報告はでき、同じ LAN 内の RustDesk アプリは中継を通さず直接接続するので、それもつながります。中継を通る接続だけが中継サーバー（hbbr）に拒否されます。Web 接続は必ず中継を使い、外部から RustDesk アプリで接続しても同じく失敗します。RustDesk エージェント 1.1.0 以降は hbbr/hbbs のログを読んでこうしたデバイスを見つけます。サーバー行に「Key 不一致 N」、デバイス一覧に「Key 不一致」、IP ページに拒否された時刻を表示し、Web 接続のエラーも接続先の Key が原因だと示します。対処：そのコンピューターの RustDesk「設定 → ネットワーク → ID/中継サーバー」で Key をサーバーの公開鍵と完全に同じにします（コピー＆ペースト推奨）。次に中継経由の接続が成功すると表示は消えます。ログが <code>/var/log/rustdesk-server/</code> にないサイト（自作の systemd unit やコンテナなど）は、エージェントの設定ファイルに <code>JT_RD_LOG_DIR=</code> でログのディレクトリを指定してください。「テスト」で読めるかどうか確認できます。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-console-blocked">
+        <h3>
+          <span class="zh">主控台說「這個位址不能開主控台（本機、link-local 或保留位址）」</span>
+          <span class="en">The console says it cannot be opened to this address (loopback, link-local or reserved)</span>
+          <span class="ja">コンソールに「このアドレスにはコンソールを開けません（ループバック、リンクローカル、予約済みアドレス）」と出る</span>
+        </h3>
+        <p>
+          <span class="zh">IP 記錄是有子網路寫入權限的人可以自己建的，所以主控台不連本機（127.0.0.0/8、::1）、link-local（169.254.0.0/16，含雲端中繼資料位址）、多播與保留位址，避免有人建一筆 127.0.0.1 再開主控台，把 jt-ipam 當跳板連本機的服務。私網與 CGNAT（例如 Tailscale 的 100.64.0.0/10）照常可以連。主機名稱也一樣，會先解析再檢查每一個位址。真的需要例外（例如測試環境），在 <code>/etc/jt-ipam/backend.env</code> 的 <code>OUTBOUND_ALLOW_CIDRS</code> 加入該網段後重啟 <code>jt-ipam-backend</code>；這個設定也會放行其他對外連線，請只加需要的網段。</span>
+          <span class="en">Anyone who can write to a subnet can create IP records, so consoles do not connect to loopback (127.0.0.0/8, ::1), link-local (169.254.0.0/16, which includes cloud metadata addresses), multicast or reserved addresses; otherwise someone could create 127.0.0.1 and open a console to reach services on the jt-ipam host. Private ranges and CGNAT (for example Tailscale's 100.64.0.0/10) work as usual. Host names are resolved first and every address is checked. If you really need an exception (a test lab, say), add the range to <code>OUTBOUND_ALLOW_CIDRS</code> in <code>/etc/jt-ipam/backend.env</code> and restart <code>jt-ipam-backend</code>; it also allows other outbound connections, so add only what you need.</span>
+          <span class="ja">IP レコードはサブネットへの書き込み権限があれば誰でも作れるため、コンソールはループバック（127.0.0.0/8、::1）、リンクローカル（169.254.0.0/16。クラウドのメタデータアドレスを含む）、マルチキャスト、予約済みアドレスには接続しません。そうしないと 127.0.0.1 のレコードを作ってコンソールを開き、jt-ipam ホスト上のサービスに届いてしまいます。プライベートアドレスと CGNAT（Tailscale の 100.64.0.0/10 など）は通常どおり使えます。ホスト名は先に名前解決してすべてのアドレスを確認します。どうしても例外が必要な場合（検証環境など）は、<code>/etc/jt-ipam/backend.env</code> の <code>OUTBOUND_ALLOW_CIDRS</code> にその範囲を追加して <code>jt-ipam-backend</code> を再起動します。ほかの外向き接続も許可されるので、必要な範囲だけにしてください。</span>
+        </p>
+      </article>
+
+      <article class="qa" id="qa-console-revoked">
+        <h3>
+          <span class="zh">開著的主控台突然結束，說存取權已被收回</span>
+          <span class="en">An open console suddenly ends, saying access was revoked</span>
+          <span class="ja">開いていたコンソールが突然終了し、アクセス権が取り消されたと表示される</span>
+        </h3>
+        <p>
+          <span class="zh">主控台開著的期間每 30 秒會重新確認一次：帳號仍是啟用的、開主控台的那次登入沒有被登出，以及仍有這個 IP 的連線權限。帳號被停用、被強制登出（含重設雙因素驗證）、自己在別處登出這次登入，或是 IP 被刪除、連線權限被收回時，連線會在 30 秒內結束，畫面會說明是哪一種原因，並留一筆 <code>console_revoked</code> 稽核記錄。原因是登出的話，重新登入之後再開即可；是權限的話，請管理員確認權限設定。</span>
+          <span class="en">While a console is open it is re-checked every 30 seconds: the account is still active, the sign-in that opened it has not been signed out, and you still have console rights on that IP. If the account is deactivated, you are signed out (including a two-factor authentication reset), you sign that session out elsewhere, or the IP is deleted or your rights are withdrawn, the connection ends within 30 seconds, the screen says which of these happened, and a <code>console_revoked</code> audit record is written. If it was a sign-out, sign in again and reopen it; if it was permissions, ask an administrator to check them.</span>
+          <span class="ja">コンソールを開いている間は 30 秒ごとに、アカウントが有効であること、そのコンソールを開いたログインがログアウトされていないこと、その IP への接続権限がまだあることを確認します。アカウントの無効化、強制ログアウト（二要素認証のリセットを含む）、別の場所でのそのログインのログアウト、IP の削除や接続権限の取り消しがあると、30 秒以内に接続を終了し、どの理由かを画面に表示して <code>console_revoked</code> の監査記録を残します。ログアウトが理由ならログインし直して開き直してください。権限が理由なら管理者に設定を確認してもらってください。</span>
+        </p>
+      </article>
     </section>
 
     <!-- ══════════════ 還是不行 ══════════════ -->
@@ -847,8 +1196,8 @@ sudo loginctl terminate-user &lt;username&gt;</code></pre>
       <article class="qa" id="qa-issue">
         <h3>
           <span class="zh">開一張 issue，附上這四樣就夠我們判斷</span>
-          <span class="en">Open an issue — these four outputs are usually enough</span>
-          <span class="ja">issue を立ててください — この四つがあれば判断できます</span>
+          <span class="en">Open an issue: these four outputs are usually enough</span>
+          <span class="ja">issue を立ててください：この四つがあれば判断できます</span>
         </h3>
         <pre><code># 1) <span class="zh">版本與作業系統</span><span class="en">Version and OS</span><span class="ja">バージョンと OS</span>
 cat /opt/jt-ipam/backend/app/version.py; lsb_release -ds; uname -r
@@ -858,7 +1207,7 @@ sudo bash /opt/jt-ipam/scripts/jt-ipam.sh doctor
 sudo journalctl -u jt-ipam-backend -n 100 --no-pager
 # 4) <span class="zh">失敗當下的完整輸出（只貼最後一行不夠）</span><span class="en">The full output of the failure (the last line alone is not enough)</span><span class="ja">失敗した時の出力全文（最後の一行だけは不可）</span></code></pre>
         <p>
-          <span class="zh">貼之前請把主機名稱、對外網域、IP 與任何密碼／金鑰換掉。</span>
+          <span class="zh">貼之前請把主機名稱、對外網域、IP 與任何密碼/金鑰換掉。</span>
           <span class="en">Please redact hostnames, public domains, IP addresses and any password or key before pasting.</span>
           <span class="ja">貼り付ける前に、ホスト名・公開ドメイン・IP アドレス・パスワードや鍵はすべて伏せてください。</span>
         </p>
@@ -885,8 +1234,8 @@ sudo journalctl -u jt-ipam-backend -n 100 --no-pager
 
     <div class="empty" id="empty">
       <span class="zh">找不到符合的項目。試試錯誤訊息裡的一個英文單字，例如 <code>fast-forward</code>、<code>vector</code>、<code>pnpm</code>。</span>
-      <span class="en">No matching entry. Try one English word from the error message — <code>fast-forward</code>, <code>vector</code>, <code>pnpm</code>.</span>
-      <span class="ja">該当する項目がありません。エラーメッセージ中の英単語で試してください — <code>fast-forward</code>、<code>vector</code>、<code>pnpm</code>。</span>
+      <span class="en">No matching entry. Try one English word from the error message: <code>fast-forward</code>, <code>vector</code>, <code>pnpm</code>.</span>
+      <span class="ja">該当する項目がありません。エラーメッセージ中の英単語で試してください：<code>fast-forward</code>、<code>vector</code>、<code>pnpm</code>。</span>
     </div>
   </main>
 </div>
@@ -918,7 +1267,7 @@ sudo journalctl -u jt-ipam-backend -n 100 --no-pager
          : body.classList.contains('lang-en') ? 'en' : 'zh';
   }
 
-  /* 語言切換：只換 class。搜尋索引跟著重建 —— innerText 讀不到 display:none 的內容，
+  /* 語言切換：只換 class。搜尋索引跟著重建：innerText 讀不到 display:none 的內容，
      所以同一段搜尋程式對三種語言都成立，不必替每種語言各存一份文字。 */
   function applyLang(){
     var l = lang();
@@ -940,12 +1289,12 @@ sudo journalctl -u jt-ipam-backend -n 100 --no-pager
       history.replaceState(null, '', u);
     } catch (e) {}
     applyLang();
-    // 全站共用的語言變更事件（其他頁也發這個）：<title>／description／截圖都掛在它上面
+    // 全站共用的語言變更事件（其他頁也發這個）：<title>/description/截圖都掛在它上面
     document.dispatchEvent(new CustomEvent('jtipam:langchange', { detail: { lang: l } }));
   }
   if (langBtn) langBtn.addEventListener('click', function(e){ e.stopPropagation(); openLang(langMenu.hidden); });
   langItems.forEach(function(li){ li.addEventListener('click', function(){ setLang(li.dataset.lang); openLang(false); }); });
-  // 點面板外面、按 Esc 都要關 —— 自己畫的面板不會自動有這些行為。
+  // 點面板外面、按 Esc 都要關：自己畫的面板不會自動有這些行為。
   document.addEventListener('click', function(e){ if (langMenu && !langMenu.hidden && !langMenu.contains(e.target)) openLang(false); });
   document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && langMenu && !langMenu.hidden) openLang(false); });
 
@@ -1005,11 +1354,11 @@ sudo journalctl -u jt-ipam-backend -n 100 --no-pager
 </script>
 <script>
   /* <title> / description / <html lang> 也要跟著語言走。
-     原本只有內文與截圖會切，文件本身的中繼資料留在原地 —— 於是三種語言的
+     原本只有內文與截圖會切，文件本身的中繼資料留在原地，於是三種語言的
      分頁標題、搜尋結果與分享預覽全都是中文。靜態值放預設語言（英文），
      這樣沒有 JavaScript 的讀者與爬蟲拿到的也是對的那一份。 */
   (function(){
-    var META = {"zh": ["jt-ipam — 安裝與升級疑難排解", "jt-ipam 安裝與升級失敗時的處理方式（可搜尋 Q&A）。"], "en": ["jt-ipam — Install & upgrade troubleshooting", "What to do when a jt-ipam install or upgrade fails — a searchable Q&A."], "ja": ["jt-ipam — インストールとアップグレードのトラブルシューティング", "jt-ipam のインストールやアップグレードが失敗したときの対処法（検索できる Q&A）。"]};
+    var META = {"zh": ["jt-ipam：安裝與升級疑難排解", "jt-ipam 安裝與升級失敗時的處理方式（可搜尋 Q&A）。"], "en": ["jt-ipam: Install & upgrade troubleshooting", "What to do when a jt-ipam install or upgrade fails (a searchable Q&A)."], "ja": ["jt-ipam：インストールとアップグレードのトラブルシューティング", "jt-ipam のインストールやアップグレードが失敗したときの対処法（検索できる Q&A）。"]};
     function cur(){
       var c = document.body.className;
       return c.indexOf('lang-ja') >= 0 ? 'ja' : c.indexOf('lang-zh') >= 0 ? 'zh' : 'en';
@@ -1024,6 +1373,64 @@ sudo journalctl -u jt-ipam-backend -n 100 --no-pager
     }
     document.addEventListener('jtipam:langchange', function(e){ apply(e.detail.lang); });
     apply(cur());
+  })();
+</script>
+<script src="anchors.js" defer></script>
+<script>
+  // 小螢幕的導覽選單：把導覽列的連結（GitHub 按鈕除外）複製到下拉面板；點連結、點外面、按 Esc 都會關。
+  (function(){
+    var nav = document.querySelector('nav'), btn = document.querySelector('.nav-menu-btn');
+    if (!nav || !btn) return;
+    var panel = document.createElement('div');
+    panel.className = 'mnav'; panel.id = 'mnav';
+    Array.prototype.forEach.call(document.querySelectorAll('.nav-links > a:not(.btn)'), function(a){
+      panel.appendChild(a.cloneNode(true)); });
+    nav.appendChild(panel);
+    function open(v){ panel.classList.toggle('open', v); btn.setAttribute('aria-expanded', String(v)); }
+    btn.addEventListener('click', function(e){ e.stopPropagation(); open(!panel.classList.contains('open')); });
+    panel.addEventListener('click', function(e){ if (e.target.closest('a')) open(false); });
+    document.addEventListener('click', function(e){ if (panel.classList.contains('open') && !panel.contains(e.target)) open(false); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape') open(false); });
+  })();
+</script>
+<script>
+  // 頂列固定一行：放不下時先把 GitHub、再把語言收進選單。實際量寬度（三種語言的字寬不同），
+  // 視窗大小、轉向、字型載入完、換語言之後都重算。
+  (function(){
+    var nav = document.querySelector('nav'), panel = document.getElementById('mnav'),
+        btn = document.querySelector('.nav-menu-btn'), inner = document.querySelector('.nav-in');
+    if (!nav || !panel || !btn || !inner) return;
+    var gh = document.querySelector('.nav-links > a.btn');
+    if (gh){ var a = gh.cloneNode(true); a.className = 'm-gh'; panel.appendChild(a); }
+    var items = Array.prototype.slice.call(document.querySelectorAll('#langMenu li[data-lang]'));
+    if (items.length){
+      var box = document.createElement('div'); box.className = 'm-lang';
+      box.innerHTML = '<div class="m-lang-h"><span class="zh">語言</span><span class="en">Language</span><span class="ja">言語</span></div>';
+      items.forEach(function(li){
+        var b = document.createElement('button'); b.type = 'button'; b.dataset.lang = li.dataset.lang;
+        b.textContent = li.textContent.replace('\u2713', '').trim();
+        b.addEventListener('click', function(){
+          li.click();                                   // 沿用語言選單自己的切換（記住偏好、改網址、通知頁面）
+          panel.classList.remove('open'); btn.setAttribute('aria-expanded', 'false');
+        });
+        box.appendChild(b);
+      });
+      panel.appendChild(box);
+    }
+    function cur(){ var c = document.body.className; return c.indexOf('lang-ja') >= 0 ? 'ja' : c.indexOf('lang-zh') >= 0 ? 'zh' : 'en'; }
+    function mark(){ Array.prototype.forEach.call(panel.querySelectorAll('.m-lang button'), function(b){
+      b.setAttribute('aria-pressed', String(b.dataset.lang === cur())); }); }
+    function over(){ return inner.scrollWidth > inner.clientWidth + 1; }
+    function fit(){
+      nav.classList.remove('nav-c1', 'nav-c2');
+      if (getComputedStyle(btn).display === 'none') return;   // 寬螢幕：導覽連結都在頂列，不收
+      if (over()) nav.classList.add('nav-c1');                 // 先收 GitHub
+      if (over()) nav.classList.add('nav-c2');                 // 還是放不下：再收語言
+    }
+    window.addEventListener('resize', fit);
+    document.addEventListener('jtipam:langchange', function(){ mark(); fit(); });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
+    mark(); fit();
   })();
 </script>
 </body>

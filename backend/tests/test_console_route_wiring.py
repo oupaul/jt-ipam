@@ -44,7 +44,7 @@ def test_console_resolves_and_uses_the_route(name: str) -> None:
 #: 但實際連出去的還是原本那個目標 IP。
 DIAL_SITE = {
     "ssh_console": "host, port = tunnel.host, tunnel.port",
-    "sftp_console": "conn = await asyncssh.connect(\n            dial_host, port=dial_port,",
+    "sftp_console": "conn = await _connect_pinned(dial_host, dial_port, username, known_host, kw)",
     "rdp_console": "return factory.create_connection_newtarget(tunnel.host, io)",
     "vnc_console": "conn = factory.create_connection_newtarget(dial_host, io)",
 }
@@ -56,12 +56,31 @@ def test_console_dials_the_tunnel_not_the_original_target(name: str) -> None:
     assert DIAL_SITE[name] in src, f"{name} 沒有把連線目標換成通道的位址"
 
 
+def test_sftp_fetches_the_host_key_through_the_tunnel() -> None:
+    """要確認的指紋也得走同一條路，否則釘到的是「後端直連看到的那台」（可能根本是另一台）。"""
+    assert "fetch_host_key(dial_host, port=dial_port)" in _src("sftp_console")
+
+
 #: RDP 有兩個引擎（aardwolf / FreeRDP）。跳板這件事**每個引擎各做一次** ——
 #: 只驗其中一個，另一個可以整條繞過通道直連目標，而畫面上一切正常。
 RDP_ENGINE_DIAL_SITES = (
     "return factory.create_connection_newtarget(tunnel.host, io)",   # aardwolf
     "host=tunnel.host, port=tunnel.port, username=username",         # FreeRDP
 )
+
+
+#: guacd 引擎（RDP／VNC／SSH）：交給 guacd 的 hostname／port 也必須是通道的位址
+GUACD_DIAL_SITES = {
+    "rdp_console": '"hostname": tunnel.host, "port": str(tunnel.port),',
+    "vnc_console": 'params = guacd_vnc_params(dial_host, dial_port, username, password)',
+    # ssh 的 host／port 在上面已經換成通道的位址（`host, port = tunnel.host, tunnel.port`）
+    "ssh_console": '"hostname": host, "port": str(port), "username": username,',
+}
+
+
+@pytest.mark.parametrize("name", sorted(GUACD_DIAL_SITES))
+def test_guacd_engine_dials_the_tunnel(name: str) -> None:
+    assert GUACD_DIAL_SITES[name] in _src(name), f"{name} 的 guacd 引擎沒有把連線目標換成通道的位址"
 
 
 def test_every_rdp_engine_dials_the_tunnel() -> None:

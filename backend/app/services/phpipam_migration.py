@@ -98,6 +98,9 @@ def _connect_mysql_sync(url: str):  # type: ignore[no-untyped-def]
     parsed = urlparse(url)
     if parsed.scheme not in ("mysql", "mariadb"):
         raise ValueError(f"Unsupported scheme: {parsed.scheme}")
+    # 連線前檢查（core/net_guard 的 integration：本機允許，因為經 SSH 隧道時連的是 127.0.0.1 的轉發埠）
+    from app.core.net_guard import check_target
+    check_target(parsed.hostname or "localhost", parsed.port or 3306)
     return pymysql.connect(
         host=parsed.hostname or "localhost",
         port=parsed.port or 3306,
@@ -812,7 +815,7 @@ _DEVICE_TYPE_MAP = {
     "firewall": "firewall",
     "server": "server",
     "host": "server",
-    "workstation": "server",
+    "workstation": "workstation",
     "storage": "storage",
     "san": "storage",
     "nas": "storage",
@@ -906,6 +909,7 @@ async def _sync_devices(
         tname = type_name_by_tid.get(type_legacy) if type_legacy else None
         obj.name = row.get("hostname") or obj.name
         obj.type = _phpipam_device_type(tname)
+        obj.type_source = "phpipam" if obj.type != "other" else None
         obj.vendor = row.get("vendor") or None
         obj.model = row.get("model") or None
         obj.location_id = location_legacy_to_uuid.get(loc_legacy) if loc_legacy else None

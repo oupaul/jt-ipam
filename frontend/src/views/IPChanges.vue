@@ -5,14 +5,17 @@
  */
 import { computed, h, onMounted, ref, watch } from "vue";
 import {
-  NButton, NCard, NDataTable, NInput, NPagination, NSelect, NSpace, NTag, NText,
+  NButton, NCard, NDataTable, NIcon, NInput, NPagination, NSelect, NSpace, NTag, NText,
 } from "naive-ui";
+import { IPChangesIcon } from "@/icons";
 import type { DataTableColumns } from "naive-ui";
 import { useI18n } from "vue-i18n";
+import { useRouter } from "vue-router";
 import {
   listIpChanges, IP_CHANGE_EVENT_TYPES, IP_CHANGE_SOURCES,
   type IPChangeLog,
 } from "@/api/ip_history";
+import { sourceLabel } from "@/utils/sourceLabel";
 import { fmtDateTime } from "@/utils/datetime";
 import { useChangeLogDim } from "@/composables/useChangeLogDim";
 import ExportButton from "@/components/ExportButton.vue";
@@ -21,6 +24,7 @@ import { listSections } from "@/api/sections";
 import { useCustomers } from "@/composables/useCustomers";
 
 const { t } = useI18n();
+const router = useRouter();
 
 /** 沒有對應翻譯的事件型別（舊資料、未來新增的）直接顯示原值，
  *  不要把 `ipChanges.event.xxx` 這種鍵名露在畫面上。與 IPAddressEditModal 同一套作法。 */
@@ -36,6 +40,27 @@ const total = ref(0);
 const page = ref(1);
 const pageSize = ref(50);
 const loading = ref(false);
+
+// 欄位標題排序（使用者 2026-10-12）：伺服器端分頁，排序交給後端；沒選＝時間新的在前
+const sortField = ref<string | null>(null);
+const sortDir = ref<"asc" | "desc">("desc");
+/** 表格欄位 key → 後端的排序鍵 */
+const SORT_KEYS: Record<string, string> = {
+  created_at: "created_at", ip_text: "ip", event_type: "event_type", field: "field", source: "source", actor: "actor",
+};
+function handleSorter(s: { columnKey?: string | number; order?: "ascend" | "descend" | false } | null) {
+  const key = s && s.order ? SORT_KEYS[String(s.columnKey)] : undefined;
+  sortField.value = key ?? null;
+  sortDir.value = s?.order === "ascend" ? "asc" : "desc";
+  page.value = 1;
+  void load();
+}
+/** 欄位上顯示的排序狀態（受控）；沒選排序時時間欄顯示「新的在前」 */
+function sortOrderOf(columnKey: string): "ascend" | "descend" | false {
+  const key = SORT_KEYS[columnKey];
+  if (!sortField.value) return columnKey === "created_at" ? "descend" : false;
+  return sortField.value === key ? (sortDir.value === "asc" ? "ascend" : "descend") : false;
+}
 
 const q = ref("");
 const eventType = ref<string | null>(null);
@@ -79,7 +104,7 @@ const eventOptions = computed(() => [
 ]);
 const sourceOptions = computed(() => [
   { label: t("ipChanges.all_sources"), value: "" },
-  ...IP_CHANGE_SOURCES.map((s) => ({ label: s, value: s })),
+  ...IP_CHANGE_SOURCES.map((s) => ({ label: sourceLabel(t, s), value: s })),
 ]);
 
 // 事件 → tag 顏色
@@ -87,6 +112,7 @@ const EVENT_TYPE: Record<string, "default" | "info" | "success" | "warning" | "e
   created: "success", deleted: "error",
   online: "success", offline: "warning",
   hostname_changed: "info", mac_changed: "info", arp_changed: "info",
+  os_changed: "warning", kind_changed: "warning",
   state_changed: "warning", edited: "default",
 };
 
@@ -102,6 +128,8 @@ async function load() {
       customer_id: customerId.value || undefined,
       page: page.value,
       page_size: pageSize.value,
+      sort: sortField.value || undefined,
+      order: sortField.value ? sortDir.value : undefined,
     });
     rows.value = r.items;
     total.value = r.total;
@@ -128,15 +156,31 @@ onMounted(() => { void load(); void loadFilterOptions(); });
 const columns = computed<DataTableColumns<IPChangeLog>>(() => [
   {
     title: t("ipChanges.col_time"), key: "created_at", width: 170,
+    sorter: true, sortOrder: sortOrderOf("created_at"),
     render: (r) => fmtDateTime(r.created_at),
   },
-  { title: t("ipChanges.col_ip"), key: "ip_text", width: 150, ellipsis: { tooltip: true } },
+  {
+    // IP 點進去看詳細資料（使用者 2026-10-12）；IP 已刪除（ip_id 是空的）就只顯示文字
+    title: t("ipChanges.col_ip"), key: "ip_text", width: 150, ellipsis: { tooltip: true },
+    sorter: true, sortOrder: sortOrderOf("ip_text"),
+    render: (r) => !r.ip_id ? r.ip_text : h("a", {
+      href: router.resolve({ name: "address-detail", params: { id: r.ip_id } }).href,
+      class: "ipchg-ip-link",
+      onClick: (e: MouseEvent) => {
+        if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;   // 新分頁開啟照瀏覽器預設
+        e.preventDefault();
+        void router.push({ name: "address-detail", params: { id: r.ip_id as string } });
+      },
+    }, r.ip_text),
+  },
   {
     title: t("ipChanges.col_event"), key: "event_type", width: 130,
+    sorter: true, sortOrder: sortOrderOf("event_type"),
     render: (r) => h(NTag, { size: "small", type: EVENT_TYPE[r.event_type] ?? "default", bordered: false },
       { default: () => eventLabel(r.event_type) }),
   },
-  { title: t("ipChanges.col_field"), key: "field", width: 110, render: (r) => r.field ?? "—" },
+  { title: t("ipChanges.col_field"), key: "field", width: 110, sorter: true, sortOrder: sortOrderOf("field"),
+    render: (r) => r.field ?? "—" },
   {
     title: t("ipChanges.col_change"), key: "change", minWidth: 220,
     render: (r) => {
@@ -150,17 +194,25 @@ const columns = computed<DataTableColumns<IPChangeLog>>(() => [
   },
   {
     title: t("ipChanges.col_source"), key: "source", width: 100,
-    render: (r) => h(NTag, { size: "small", bordered: false }, { default: () => r.source }),
+    sorter: true, sortOrder: sortOrderOf("source"),
+    render: (r) => h(NTag, { size: "small", bordered: false }, { default: () => sourceLabel(t, r.source) }),
   },
   {
     title: t("ipChanges.col_actor"), key: "actor", width: 120,
-    render: (r) => r.actor_username ?? (r.source === "manual" ? "—" : r.source),
+    sorter: true, sortOrder: sortOrderOf("actor"),
+    render: (r) => r.actor_username ?? (r.source === "manual" ? "—" : sourceLabel(t, r.source)),
   },
 ]);
 </script>
 
 <template>
-  <n-card :title="t('ipChanges.title')" :bordered="false">
+  <n-card :bordered="false">
+    <template #header>
+      <n-space align="center" :wrap-item="false">
+        <n-icon :size="22"><IPChangesIcon /></n-icon>
+        <span>{{ t("ipChanges.title") }}</span>
+      </n-space>
+    </template>
     <!-- 卡片標題列只放標題。說明文字與動作都屬於內容區：
          說明自成一行，動作靠右與篩選同一列 —— 動作不會自己佔掉一整條空帶，
          也不會因為多加幾個篩選就被擠到下一行單獨一個。 -->
@@ -214,11 +266,14 @@ const columns = computed<DataTableColumns<IPChangeLog>>(() => [
       :bordered="false"
       size="small"
       :scroll-x="1000"
+      remote
       :row-class-name="(r:any) => isOldLog(r.created_at) ? 'log-dim' : ''"
+      @update:sorter="handleSorter"
     />
 
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px">
-      <span style="font-size: 13px; opacity: 0.7">{{ t("common.total_rows", { n: total }) }}</span>
+    <!-- 手機上放不下時分頁換到下一行，「共 N 筆」不被擠成直排 -->
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; flex-wrap: wrap; gap: 8px">
+      <span style="font-size: 13px; opacity: 0.7; white-space: nowrap">{{ t("common.total_rows", { n: total }) }}</span>
       <n-pagination
         v-model:page="page"
         v-model:page-size="pageSize"
@@ -236,6 +291,10 @@ const columns = computed<DataTableColumns<IPChangeLog>>(() => [
    刻意不做「動作靠右」：靠右在寬度不夠時會自己換到一整列去，
    畫面上就多一條只有兩顆按鈕的空帶（拓樸圖原本就是這樣，使用者回報過）。 */
 .ipchg-toolbar { flex-wrap: wrap; row-gap: 8px; margin-bottom: 12px; }
+
+/* IP 連到詳細資料：render 出來的儲存格吃不到 scoped 樣式，用 :deep */
+:deep(a.ipchg-ip-link) { color: var(--primary-color, #18a058); text-decoration: none; }
+:deep(a.ipchg-ip-link:hover) { text-decoration: underline; }
 
 /* 異動記錄超過 N 天（系統設定）的列以淡色顯示 */
 :deep(tr.log-dim td) { opacity: .45; }

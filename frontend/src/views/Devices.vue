@@ -6,12 +6,12 @@ const _authBtn = useAuthStore();
 import { computed, h, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
+import { trackTask } from "@/composables/useTaskTracker";
 import { apiClient, apiErrMsg } from "@/api/client";
 import {
   NCard, NDataTable, NSpace, NIcon, NButton, NModal, NForm, NFormItem,
   NInput, NInputNumber, NInputGroup, NSelect, NPopconfirm, NTag, NTooltip, NSpin,
-  NUpload, NPopover, NCheckbox, NAlert,
-  useMessage, type DataTableColumns, type DataTableRowKey, type UploadCustomRequestOptions,
+  useMessage, type DataTableColumns, type DataTableRowKey,
 } from "naive-ui";
 import {
   listDevices, createDevice, updateDevice, deleteDevice, bulkDeleteDevices, type Device,
@@ -20,13 +20,17 @@ import {
 import { getRackDiagram, type RackDiagram } from "@/api/racks";
 import { resolveRackLocation } from "@/utils/rackLocation";
 import {
-  DevicesIcon, PlusIcon, EditIcon, DeleteIcon, RefreshIcon, SaveIcon, CancelIcon, EyeIcon, LinkIcon, RacksIcon,
+  DevicesIcon, PlusIcon, EditIcon, UploadIcon, DeleteIcon, RefreshIcon, SaveIcon, CancelIcon, EyeIcon, LinkIcon, RacksIcon,
+  SnmpIcon,
 } from "@/icons";
 import { cmpNatural } from "@/utils/sort";
 import { useIpOptions } from "@/composables/useIpOptions";
 import { listSubnets } from "@/api/subnets";
+import SnmpBulkAssign from "@/components/SnmpBulkAssign.vue";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
+import DeviceImportModal from "@/components/DeviceImportModal.vue";
+import { withExportValue } from "@/utils/tableExport";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { useCustomers } from "@/composables/useCustomers";
 import { useEntityLinks } from "@/composables/useEntityLinks";
@@ -37,6 +41,7 @@ const router = useRouter();
 const links = useEntityLinks(router);
 const checkedKeys = ref<DataTableRowKey[]>([]);
 const bulkBusy = ref(false);
+const snmpBulkShow = ref(false);
 
 async function doBulkDelete() {
   if (!checkedKeys.value.length) return;
@@ -78,45 +83,13 @@ const locations = ref<Location[]>([]);
 const racks = ref<Rack[]>([]);
 const loading = ref(false);
 const show = ref(false);
-const editing = ref<Device | null>(null);
-
-const dryRun = ref(true);
-const updateExisting = ref(false);
-const importBusy = ref(false);
-const importResult = ref<Record<string, unknown> | null>(null);
-
-async function uploadDevicesCsv(opts: UploadCustomRequestOptions) {
-  const { file } = opts;
-  if (!file.file) { opts.onError(); return; }
-  importBusy.value = true;
-  importResult.value = null;
-  try {
-    const form = new FormData();
-    form.append("file", file.file as Blob, file.name);
-    form.append("dry_run", String(dryRun.value));
-    form.append("update_existing", String(updateExisting.value));
-    const resp = await apiClient.post("/api/v1/devices/import-csv", form, {
-      headers: { "Content-Type": "multipart/form-data" },
-    });
-    importResult.value = resp.data;
-    if (dryRun.value) {
-      msg.info(t("device_csv_import.dry_run_preview", { n: resp.data.preview?.length ?? 0 }));
-    } else {
-      msg.success(t("device_csv_import.imported", {
-        inserted: resp.data.inserted ?? 0,
-        updated: resp.data.updated ?? 0,
-        skipped: resp.data.skipped ?? 0,
-      }));
-      await refresh();
-    }
-    opts.onFinish();
-  } catch (e: any) {
-    msg.error(e?.response?.data?.detail ?? t("device_csv_import.import_failed"));
-    opts.onError();
-  } finally {
-    importBusy.value = false;
-  }
+// 裝置匯入（issue #46）
+const showImport = ref(false);
+function onImportQueued(taskId: string) {
+  // 匯入在背景跑：右下角的「背景作業」面板顯示進度與結果，跑完重抓清單
+  trackTask(taskId, { onDone: () => void refresh() });
 }
+const editing = ref<Device | null>(null);
 
 const form = ref<{
   name: string; fqdn: string; type: string;
@@ -141,7 +114,7 @@ const form = ref<{
 });
 
 const DEVICE_TYPES = ["server", "switch", "router", "firewall", "ap", "storage", "ipmi",
-  "patch_panel", "pdu", "ups", "other"];
+  "patch_panel", "pdu", "ups", "workstation", "other"];
 const typeOpts = DEVICE_TYPES.map((v) => ({ label: t(`devices.type_${v}`), value: v }));
 const rackFaceOpts = computed(() => [
   { label: t("devices.rack_face_front"), value: "front" },
@@ -394,7 +367,7 @@ async function submit() {
       vendor: form.value.vendor || undefined,
       model: form.value.model || undefined,
       serial: form.value.serial || undefined,
-      description: form.value.description || undefined,
+      description: form.value.description ?? "",
       location_id: form.value.location_id,
       rack_id: form.value.rack_id,
       u_position: form.value.u_position,
@@ -436,7 +409,7 @@ async function loadSubnetOptions() {
   } catch { /* 沒權限就不顯示選項，篩選仍可留空 */ }
 }
 
-const { visibleKeys, setVisible, reset } = useColumnPrefs(
+const { visibleKeys, setVisible, reset, order, setOrder, orderColumns } = useColumnPrefs(
   "devices",
   // 全部可選欄位 / 預設顯示的欄位。**新增欄位要兩份都加** —— 只加到 catCols 的話，
   // 欄位存在卻不在預設清單裡，使用者得自己去「欄位」勾才看得到（真實瀏覽器巡檢抓到）。
@@ -478,7 +451,8 @@ function iconAction(icon: any, label: string, onClick: () => void, type?: any) {
 const allCols = computed<DataTableColumns<Device>>(() => [
   { type: "selection" },
   {
-    title: t("common.name"), key: "name",
+    // 主欄位要有最小寬度：沒設時固定 scroll-x 下它分到的最少，手機上「sw-demo-core」這種名稱會被斷成三行
+    title: t("common.name"), key: "name", width: 160,
     render: (r) => links.device(r.id, r.name),
     sorter: (a, b) => cmpNatural(a.name, b.name),
   },
@@ -507,21 +481,22 @@ const allCols = computed<DataTableColumns<Device>>(() => [
     ellipsis: { tooltip: true },
     sorter: (a, b) => (a.fqdn ?? "").localeCompare(b.fqdn ?? ""),
   },
-  {
+  withExportValue({
     // 給足寬度：最長的標籤是「無線基地台 (AP)」，沒有寬度時會溢出、壓到隔壁的「虛實」
     title: t("devices.type"), key: "type", width: 148,
-    render: (r) => h(NTag, { size: "small", type: "info" }, () => t(`devices.type_${r.type}`)),
-    sorter: (a, b) => a.type.localeCompare(b.type),
-  },
-  {
+    render: (r: Device) => h(NTag, { size: "small", type: "info" }, () => t(`devices.type_${r.type}`)),
+    sorter: (a: Device, b: Device) => a.type.localeCompare(b.type),
+  // 匯出寫顯示文字（匯入認得三種語言的文字，也認得代碼）
+  }, (r: Device) => t(`devices.type_${r.type}`)),
+  withExportValue({
     // 虛擬 / 實體：同步進來的虛擬機在清單上與實體機長得一模一樣，
     // 分不出來的話，「這台可以斷電維護嗎」這種問題就得逐台去查。
     title: t("devices.virtuality"), key: "is_virtual", width: 92,
-    render: (r) => h(NTag, { size: "small", type: r.is_virtual ? "warning" : "default",
+    render: (r: Device) => h(NTag, { size: "small", type: r.is_virtual ? "warning" : "default",
                              bordered: false },
       () => t(r.is_virtual ? "devices.virtual" : "devices.physical")),
-    sorter: (a, b) => Number(!!a.is_virtual) - Number(!!b.is_virtual),
-  },
+    sorter: (a: Device, b: Device) => Number(!!a.is_virtual) - Number(!!b.is_virtual),
+  }, (r: Device) => t(r.is_virtual ? "devices.virtual" : "devices.physical")),
   {
     title: t("devices.vendor"), key: "vendor",
     render: (r) => r.vendor ?? "—",
@@ -532,7 +507,7 @@ const allCols = computed<DataTableColumns<Device>>(() => [
     render: (r) => r.model ?? "—",
     sorter: (a, b) => (a.model ?? "").localeCompare(b.model ?? ""),
   },
-  {
+  withExportValue({
     title: t("devices.location"), key: "location_id",
     render: (r) => links.location(r.location_id, locations.value.find((l) => l.id === r.location_id)?.name ?? "—"),
     sorter: (a, b) => {
@@ -540,8 +515,9 @@ const allCols = computed<DataTableColumns<Device>>(() => [
       const bn = locations.value.find((l) => l.id === b.location_id)?.name ?? "";
       return an.localeCompare(bn);
     },
-  },
-  {
+  // 匯出寫名稱：以前匯出的是內部 UUID，檔案看不懂、也匯不回來（issue #46）
+  }, (r: Device) => locations.value.find((l) => l.id === r.location_id)?.name ?? ""),
+  withExportValue({
     title: t("devices.rack"), key: "rack_id",
     render: (r) => {
       const rk = racks.value.find((x) => x.id === r.rack_id);
@@ -554,13 +530,13 @@ const allCols = computed<DataTableColumns<Device>>(() => [
       const bn = racks.value.find((x) => x.id === b.rack_id)?.name ?? "";
       return an.localeCompare(bn);
     },
-  },
-  {
+  }, (r: Device) => racks.value.find((x) => x.id === r.rack_id)?.name ?? ""),
+  withExportValue({
     title: t("nav.customers"), key: "customer_id", width: 160,
     ellipsis: { tooltip: true },
     render: (r) => links.customer(r.customer_id, customerLabelFor(r.customer_id)),
     sorter: (a, b) => customerLabelFor(a.customer_id).localeCompare(customerLabelFor(b.customer_id)),
-  },
+  }, (r: Device) => (r.customer_id ? customerLabelFor(r.customer_id) : "")),
   {
     // 釘在右側 + 放得下四顆（連結 IP／檢視／編輯／刪除）：欄位一多表格就橫向溢出，
     // 最後一顆會被推到可視範圍外（實機回報「刪除鈕跑出右邊」）。
@@ -580,7 +556,7 @@ const allCols = computed<DataTableColumns<Device>>(() => [
 ]);
 
 const cols = computed<DataTableColumns<Device>>(() =>
-  allCols.value.filter((c: any) => c.type === "selection" || visibleKeys.value.includes(c.key)),
+  orderColumns(allCols.value.filter((c: any) => c.type === "selection" || visibleKeys.value.includes(c.key))),
 );
 
 import { useRoute } from "vue-router";
@@ -630,40 +606,14 @@ onMounted(async () => {
         {{ t("common.refresh") }}
       </n-button>
       <ColumnPicker :all="columnPickerItems" :visible="visibleKeys"
-                    @update:visible="setVisible" @reset="reset" />
+                    @update:visible="setVisible" @reset="reset"
+                    :order="order" @update:order="setOrder" />
       <ExportButton :columns="cols" :rows="rows" :fetch-all="fetchAllForExport"
                     filename="devices" :title="t('nav.devices')" />
-      <n-popover trigger="click" placement="bottom-end" :width="360">
-        <template #trigger>
-          <n-button :disabled="_authBtn.me?.can_edit === false">
-            {{ t("device_csv_import.button") }}
-          </n-button>
-        </template>
-        <n-space vertical :size="12">
-          <n-alert type="info" size="small">
-            <span v-html="t('device_csv_import.hint_html')" />
-          </n-alert>
-          <n-checkbox v-model:checked="dryRun">
-            {{ t("device_csv_import.dry_run") }}
-          </n-checkbox>
-          <n-checkbox v-model:checked="updateExisting">
-            {{ t("device_csv_import.update_existing") }}
-          </n-checkbox>
-          <n-upload
-            :custom-request="uploadDevicesCsv"
-            :show-file-list="false"
-            accept=".csv,text/csv"
-            :disabled="importBusy"
-          >
-            <n-button :loading="importBusy" type="primary" size="small">
-              {{ t("device_csv_import.select_file") }}
-            </n-button>
-          </n-upload>
-          <n-card v-if="importResult" size="small" :title="t('device_csv_import.result_title')">
-            <pre style="font-size:11px;overflow:auto;max-height:260px;margin:0">{{ JSON.stringify(importResult, null, 2) }}</pre>
-          </n-card>
-        </n-space>
-      </n-popover>
+      <n-button v-if="_authBtn.me?.is_admin" data-testid="device-import-open" @click="showImport = true">
+        <template #icon><n-icon><UploadIcon /></n-icon></template>
+        {{ t("device_import.open") }}
+      </n-button>
       <n-button type="primary" :disabled="_authBtn.me?.can_edit === false" @click="openCreate">
         <template #icon><n-icon><PlusIcon /></n-icon></template>
         {{ t("common.create") }}
@@ -680,14 +630,23 @@ onMounted(async () => {
         </template>
         {{ t("common.confirm_delete_n", { n: checkedKeys.length }) }}
       </n-popconfirm>
-      <n-button size="small" @click="checkedKeys = []">{{ t("common.clear_selection") }}</n-button>
+      <n-button v-if="_authBtn.me?.is_admin" size="small" data-testid="device-snmp-bulk" @click="snmpBulkShow = true">
+        <template #icon><n-icon><SnmpIcon /></n-icon></template>
+        {{ t("snmp.bulk_button") }}
+      </n-button>
+      <n-button size="small" @click="checkedKeys = []">
+        <template #icon><n-icon><CancelIcon /></n-icon></template>
+        {{ t("common.clear_selection") }}
+      </n-button>
     </n-space>
+    <SnmpBulkAssign v-if="_authBtn.me?.is_admin" v-model:show="snmpBulkShow"
+                    :device-ids="checkedKeys.map((k) => String(k))" @done="refresh" />
     <n-data-table
       :columns="cols"
       :data="filteredRows"
       :loading="loading"
       :bordered="false"
-      :scroll-x="1116"
+      :scroll-x="1180"
       :pagination="pg"
       :row-key="(row: Device) => row.id"
       :checked-row-keys="checkedKeys"
@@ -831,6 +790,7 @@ onMounted(async () => {
         </div>
       </n-spin>
     </n-modal>
+    <DeviceImportModal v-model:show="showImport" @queued="onImportQueued" />
   </n-card>
 </template>
 

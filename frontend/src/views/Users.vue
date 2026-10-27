@@ -26,7 +26,9 @@ import {
 } from "@/api/admin";
 import {
   UsersIcon, PlusIcon, EditIcon, DeleteIcon, RefreshIcon, SaveIcon, CancelIcon, TokenIcon, AdminIcon,
+  LogoutIcon, KeyIcon, LockIcon,
 } from "@/icons";
+import { getAuthPolicy, putAuthPolicy, resetUserMfa, revokeUserSessions, type AuthPolicy } from "@/api/sessions";
 import { useRouter } from "vue-router";
 import { autoSort } from "@/composables/useTableSort";
 import ColumnPicker from "@/components/ColumnPicker.vue";
@@ -36,7 +38,8 @@ const { t } = useI18n();
 const router = useRouter();
 function goPerms(r: User) { router.push({ name: "permissions", query: { ptype: "user", pid: r.id } }); }
 
-const { visibleKeys: usrVis, setVisible: usrSet, reset: usrReset } = useColumnPrefs(
+const { visibleKeys: usrVis, setVisible: usrSet, reset: usrReset,
+  order: usrOrder, setOrder: usrSetOrder, orderColumns: usrOrderCols } = useColumnPrefs(
   "users_v2",
   ["username", "email", "display_name", "auth_provider", "is_active", "is_admin", "is_ops_admin", "can_ssh", "last_login_at", "locked_until", "actions"],
   ["username", "email", "display_name", "auth_provider", "is_active", "is_admin", "is_ops_admin", "can_ssh", "last_login_at", "locked_until", "actions"],
@@ -138,10 +141,6 @@ async function submitCreate() {
     msg.error(t("users.error_username_required"));
     return;
   }
-  if (!newUser.value.email.trim()) {
-    msg.error(t("users.error_email_required"));
-    return;
-  }
   if (newUser.value.password.length < 12) {
     msg.error(t("users.error_password_too_short"));
     return;
@@ -220,6 +219,36 @@ async function unlock(u: User) {
   try { await updateUser(u.id, { unlock: true }); msg.success(t("common.ok")); await refresh(); }
   catch { msg.error(t("errors.server")); }
 }
+// 強制登出：撤銷這個人所有的登入（含已開著的主控台）；重設 MFA：裝置遺失又沒有復原碼時
+async function forceLogout(u: User) {
+  try { const n = await revokeUserSessions(u.id); msg.success(t("users.force_logout_done", { n })); }
+  catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+}
+async function resetMfa(u: User) {
+  try { await resetUserMfa(u.id); msg.success(t("users.reset_mfa_done")); }
+  catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+}
+
+// 登入安全（MFA 政策）
+const policyShow = ref(false);
+const policy = ref<AuthPolicy>({ mfa_required: "off", mfa_apply_to_sso: false });
+const policySaving = ref(false);
+const policyOptions = computed(() => [
+  { label: t("users.mfa_policy_off"), value: "off" },
+  { label: t("users.mfa_policy_admins"), value: "admins" },
+  { label: t("users.mfa_policy_all"), value: "all" },
+]);
+async function openPolicy() {
+  try { policy.value = await getAuthPolicy(); policyShow.value = true; }
+  catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+}
+async function savePolicy() {
+  policySaving.value = true;
+  try { policy.value = await putAuthPolicy(policy.value); policyShow.value = false; msg.success(t("common.saved")); }
+  catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+  finally { policySaving.value = false; }
+}
+
 async function remove(u: User) {
   try { await deleteUser(u.id); msg.success(t("common.ok")); await refresh(); }
   catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
@@ -310,13 +339,21 @@ const allColumns = computed<DataTableColumns<User>>(() => autoSort([
       : "—",
   },
   {
-    title: t("common.actions"), key: "actions", className: "col-actions", width: 150, fixed: "right",
+    title: t("common.actions"), key: "actions", className: "col-actions", width: 220, fixed: "right",
     render: (r) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
       iconAction(EditIcon, t("common.edit"), () => openEdit(r)),
       iconAction(AdminIcon, t("users.assign_perms"), () => goPerms(r)),
       r.locked_until
         ? iconAction(TokenIcon, t("users.unlock"), () => unlock(r))
         : null,
+      h(NPopconfirm, { onPositiveClick: () => forceLogout(r) }, {
+        trigger: () => iconAction(LogoutIcon, t("users.force_logout"), () => {}, "warning"),
+        default: () => t("users.force_logout_confirm"),
+      }),
+      h(NPopconfirm, { onPositiveClick: () => resetMfa(r) }, {
+        trigger: () => iconAction(KeyIcon, t("users.reset_mfa"), () => {}, "warning"),
+        default: () => t("users.reset_mfa_confirm"),
+      }),
       h(NPopconfirm, { onPositiveClick: () => remove(r) }, {
         trigger: () => iconAction(DeleteIcon, t("common.delete"), () => {}, "error"),
         default: () => t("common.confirm_delete"),
@@ -326,7 +363,7 @@ const allColumns = computed<DataTableColumns<User>>(() => autoSort([
 ]));
 
 const columns = computed<DataTableColumns<User>>(() =>
-  allColumns.value.filter((c: any) => usrVis.value.includes(c.key)),
+  usrOrderCols(allColumns.value.filter((c: any) => usrVis.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); });
@@ -354,9 +391,14 @@ onMounted(() => { void refresh(); });
         {{ t("users.create_user") }}
       </n-button>
       <ColumnPicker :all="usrPicker" :visible="usrVis"
-                    @update:visible="usrSet" @reset="usrReset" />
+                    @update:visible="usrSet" @reset="usrReset"
+                    :order="usrOrder" @update:order="usrSetOrder" />
       <ExportButton :columns="columns" :rows="rows" :fetch-all="fetchAllForExport"
                     filename="users" :title="t('users.title')" />
+      <n-button data-testid="mfa-policy-open" @click="openPolicy">
+        <template #icon><n-icon><LockIcon /></n-icon></template>
+        {{ t("users.mfa_policy") }}
+      </n-button>
       <span style="opacity: 0.6">{{ t("common.total_n", { n: total }) }}</span>
     </n-space>
 
@@ -369,7 +411,7 @@ onMounted(() => { void refresh(); });
         prefix: ({ itemCount }) => t('common.total_rows', { n: itemCount ?? 0 }),
         onUpdatePage: (p) => { offset = (p - 1) * limit; void refresh(); },
       }"
-      remote :bordered="false" :scroll-x="1084"
+      remote :bordered="false" :scroll-x="1154"
     >
       <template #empty>
         <n-space justify="center">{{ t("common.no_data") }}</n-space>
@@ -387,8 +429,9 @@ onMounted(() => { void refresh(); });
         <n-form-item :label="t('users.username')">
           <n-input v-model:value="newUser.username" />
         </n-form-item>
-        <n-form-item :label="t('users.email')">
-          <n-input v-model:value="newUser.email" />
+        <!-- Email 是選用的（2026-10-22）：只拿來寄通知信，給電視之類的帳號可以不填 -->
+        <n-form-item :label="t('users.email_optional')" :feedback="t('users.email_hint')">
+          <n-input v-model:value="newUser.email" :placeholder="t('users.email_placeholder')" />
         </n-form-item>
         <n-form-item :label="t('users.display_name')">
           <n-input v-model:value="newUser.display_name" />
@@ -437,6 +480,37 @@ onMounted(() => { void refresh(); });
       </n-space>
     </n-modal>
 
+    <n-modal v-model:show="policyShow" preset="card" style="width: 520px; max-width: 94vw">
+      <template #header>
+        <n-space align="center">
+          <n-icon :size="20"><LockIcon /></n-icon>
+          <span>{{ t("users.mfa_policy") }}</span>
+        </n-space>
+      </template>
+      <n-form label-placement="top">
+        <n-form-item :label="t('users.mfa_policy_required')">
+          <n-select v-model:value="policy.mfa_required" :options="policyOptions" data-testid="mfa-policy-select" />
+        </n-form-item>
+        <p class="policy-hint">{{ t("users.mfa_policy_hint") }}</p>
+        <n-form-item :label="t('users.mfa_policy_sso')">
+          <n-space vertical :size="2" style="width:100%">
+            <n-switch v-model:value="policy.mfa_apply_to_sso" />
+            <span class="policy-hint">{{ t("users.mfa_policy_sso_hint") }}</span>
+          </n-space>
+        </n-form-item>
+      </n-form>
+      <n-space justify="end">
+        <n-button type="error" ghost @click="policyShow = false">
+          <template #icon><n-icon><CancelIcon /></n-icon></template>
+          {{ t("common.cancel") }}
+        </n-button>
+        <n-button type="primary" :loading="policySaving" data-testid="mfa-policy-save" @click="savePolicy">
+          <template #icon><n-icon><SaveIcon /></n-icon></template>
+          {{ t("common.save") }}
+        </n-button>
+      </n-space>
+    </n-modal>
+
     <n-modal v-model:show="showEdit" preset="card" style="width: 460px">
       <template #header>
         <n-space align="center">
@@ -450,8 +524,8 @@ onMounted(() => { void refresh(); });
                    :disabled="editing?.auth_provider !== 'local'"
                    :placeholder="editing?.auth_provider !== 'local' ? t('cols.username_external') : ''" />
         </n-form-item>
-        <n-form-item :label="t('users.email')">
-          <n-input v-model:value="editForm.email" />
+        <n-form-item :label="t('users.email_optional')" :feedback="t('users.email_hint')">
+          <n-input v-model:value="editForm.email" :placeholder="t('users.email_placeholder')" />
         </n-form-item>
         <n-form-item :label="t('users.display_name')">
           <n-input v-model:value="editForm.display_name" />
@@ -475,3 +549,7 @@ onMounted(() => { void refresh(); });
     </n-modal>
   </n-card>
 </template>
+
+<style scoped>
+.policy-hint { font-size: 12px; opacity: 0.7; margin: -4px 0 8px; }
+</style>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>jt-ipam — Talks</title>
+<title>jt-ipam: Talks</title>
 <meta name="description" content="Talk decks about jt-ipam." />
 <style>
   :root{
@@ -38,7 +38,7 @@
   /* ── 語言切換（自訂下拉） ── */
   /* 不用原生 <select>：桌面瀏覽器會叫出作業系統自己的彈出視窗，長相與站上其他元件
      完全不同，也套不上我們的配色與圓角。面板自己畫，行為才一致。
-     也不用三顆並排 —— 那在窄視窗會把頂列擠開，每加一種語言就更擠。 */
+     也不用三顆並排：那在窄視窗會把頂列擠開，每加一種語言就更擠。 */
   .langsw{position:relative;display:inline-flex;align-items:center}
   .langsw > button{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);
     border-radius:10px;background:#fff;color:var(--ink);font-family:inherit;font-size:13px;
@@ -59,11 +59,43 @@
   .langsw li[aria-selected="true"] .tick{opacity:1}
   /* 手機：頂列讓它自己長高換行，不要硬壓在 60px 裡把品牌名擠成兩行。 */
   @media(max-width:560px){
-    .nav-in{height:auto;padding:10px 0;flex-wrap:wrap;gap:10px}
+    .nav-in{height:auto;padding:10px 16px;flex-wrap:wrap;gap:10px}
     .brand{font-size:16px;white-space:nowrap}
     .nav-links{gap:8px;width:100%;justify-content:flex-end}
   }
-  @media(max-width:820px){.nav-links a:not(.btn){display:none}}
+  @media(max-width:920px){.nav-links a:not(.btn){display:none}}
+  /* 小螢幕：導覽連結收起來之後，用「選單」按鈕展開（連結由頁尾的程式從導覽列複製）。
+     以前只有收起來、沒有替代入口，手機上整個導覽不見了（2026-10-10 使用者回報）。 */
+  .btn.nav-menu-btn{display:none}
+  .nav-menu-btn .i-close,.nav-menu-btn[aria-expanded="true"] .i-open{display:none}
+  .nav-menu-btn[aria-expanded="true"] .i-close{display:inline}
+  .mnav{display:none}
+  @media(max-width:920px){
+    .btn.nav-menu-btn{display:inline-flex}
+    .mnav.open{display:block;position:absolute;left:0;right:0;top:100%;background:#fff;border-bottom:1px solid var(--line);
+      box-shadow:0 14px 28px rgba(15,23,42,.10);padding:4px 20px 10px;max-height:calc(100vh - 80px);overflow:auto}
+    .mnav a{display:block;padding:12px 2px;border-bottom:1px solid #eef2ef;color:var(--body);font-size:15px;font-weight:500}
+    .mnav a:last-child{border-bottom:0}
+    .mnav a[aria-current="page"]{color:var(--green);font-weight:700}
+  }
+  /* 頂列固定一行：放不下時先把 GitHub、再把語言收進選單（頁尾程式量寬度決定；三種語言的字寬不同）。
+     2026-10-10 使用者：topbar 不要換行。選擇器多一層 nav 是為了蓋過各頁 560px 那條換行規則。 */
+  .mnav .m-gh,.mnav .m-lang{display:none}
+  @media(max-width:920px){
+    nav .nav-in{flex-wrap:nowrap}
+    nav .brand{flex:0 0 auto;white-space:nowrap}
+    nav .nav-links{flex:0 0 auto;flex-wrap:nowrap;width:auto;margin-left:auto;gap:8px}
+    nav .nav-links > *{flex-shrink:0}
+    nav.nav-c1 .nav-links > a.btn{display:none}
+    nav.nav-c2 .nav-links > .langsw{display:none}
+    nav.nav-c1 .mnav .m-gh{display:block}
+    nav.nav-c2 .mnav .m-lang{display:block}
+    .mnav .m-lang{padding:12px 2px 4px}
+    .mnav .m-lang-h{font-size:12px;color:var(--muted);margin-bottom:8px}
+    .mnav .m-lang button{display:inline-flex;align-items:center;margin:0 6px 6px 0;padding:7px 14px;border:1px solid var(--line);
+      border-radius:999px;background:#fff;color:var(--body);font:500 14px/1.2 inherit;cursor:pointer}
+    .mnav .m-lang button[aria-pressed="true"]{border-color:var(--green);color:var(--green);font-weight:700}
+  }
   /* ── 內容 ── */
   h1{font-size:clamp(26px,4vw,36px);color:var(--ink);margin:30px 0 6px}
   .sub{color:var(--muted);font-size:14.5px;margin:0 0 24px}
@@ -96,7 +128,7 @@
 </head>
 <body>
 <script>
-  /* 在內容繪製前先決定語言（避免閃爍）。優先序：網址 ?lang= > localStorage 偏好 > 預設英文。 */
+  /* 在內容繪製前先決定語言（避免閃爍）。優先序：網址 ?lang= > localStorage 偏好 > 瀏覽器語言 > 英文。 */
   (function(){
     try{
       function norm(v){ v = (v || '').toLowerCase();
@@ -105,7 +137,12 @@
         if (v === 'zh' || v === 'zh-tw' || v === 'zh-hant') return 'zh';
         return null; }
       var u = null; try { u = norm(new URLSearchParams(location.search).get('lang')); } catch (e) {}
-      var lang = u || norm(localStorage.getItem('jtipam-doc-lang')) || 'en';
+      function fromBrowser(){ var ls = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ''];
+        for (var i = 0; i < ls.length; i++){ var v = String(ls[i] || '').toLowerCase();
+          if (v.indexOf('zh') === 0) return 'zh'; if (v.indexOf('ja') === 0) return 'ja'; if (v.indexOf('en') === 0) return 'en'; }
+        return null; }
+      // 瀏覽器語言只當預設、不寫進偏好：之後改了瀏覽器語言仍會跟著變；自己選過的才記住
+      var lang = u || norm(localStorage.getItem('jtipam-doc-lang')) || fromBrowser() || 'en';
       document.body.classList.add('lang-' + lang);
       document.documentElement.setAttribute('lang', lang === 'en' ? 'en' : lang === 'ja' ? 'ja' : 'zh-Hant');
       if (u){ try {
@@ -133,11 +170,14 @@
       jt-ipam
     </span>
     <div class="nav-links">
+      <button type="button" class="btn btn-ghost btn-sm nav-menu-btn" aria-expanded="false" aria-controls="mnav"><svg class="i-open" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg><svg class="i-close" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg><span class="zh">選單</span><span class="en">Menu</span><span class="ja">メニュー</span></button>
       <a href="index.html#features"><span class="zh">特色</span><span class="en">Features</span><span class="ja">機能</span></a>
       <a href="index.html#integrations"><span class="zh">整合</span><span class="en">Integrations</span><span class="ja">連携</span></a>
       <a href="index.html#screens"><span class="zh">畫面</span><span class="en">Screenshots</span><span class="ja">画面</span></a>
       <a href="index.html#ai">AI</a>
       <a href="index.html#install"><span class="zh">安裝</span><span class="en">Install</span><span class="ja">インストール</span></a>
+      <a href="adoption.html"><span class="zh">導入流程</span><span class="en">Adoption roadmap</span><span class="ja">導入ガイド</span></a>
+      <a href="integrations.html"><span class="zh">整合導入</span><span class="en">Integrations guide</span><span class="ja">連携ガイド</span></a>
       <a href="api.html">API</a>
       <a class="btn btn-ghost btn-sm" href="index.html"><span class="zh">回首頁</span><span class="en">Home</span><span class="ja">ホーム</span></a>
       <a class="btn btn-ghost btn-sm" href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener">GitHub</a>
@@ -164,7 +204,7 @@
 
   <div class="talks">
     <a class="talk" href="talk-from-spreadsheet-to-ai-assistant.html">
-      <h2>從試算表到 AI 助理 — 讓 AI 讀懂企業網路資產</h2>
+      <h2 id="from-spreadsheet-to-ai-assistant">從試算表到 AI 助理：讓 AI 讀懂企業網路資產</h2>
       <div class="meta">2026-08 · <span class="zh">繁體中文</span><span class="en">Traditional Chinese</span><span class="ja">繁体字中国語</span></div>
       <div class="desc">
         <span class="zh">為什麼網路資產管理會從試算表走到 AI 助理，以及過程中在治理、資安與資料品質上的取捨。</span>
@@ -211,12 +251,12 @@
         history.replaceState(null, '', u);
       } catch (e) {}
       mark(); open(false);
-      // 頁面上其他要跟著語言改字的東西（例如 api.html 的上一節／下一節標題）掛這個事件。
+      // 頁面上其他要跟著語言改字的東西（例如 api.html 的上一節/下一節標題）掛這個事件。
       document.dispatchEvent(new CustomEvent('jtipam:langchange', { detail: { lang: l } }));
     }
     if (btn) btn.addEventListener('click', function(e){ e.stopPropagation(); open(menu.hidden); });
     items.forEach(function(li){ li.addEventListener('click', function(){ set(li.dataset.lang); }); });
-    // 點面板外面、按 Esc 都要關 —— 自己畫的面板不會自動有這些行為。
+    // 點面板外面、按 Esc 都要關：自己畫的面板不會自動有這些行為。
     document.addEventListener('click', function(e){ if (menu && !menu.hidden && !menu.contains(e.target)) open(false); });
     document.addEventListener('keydown', function(e){ if (e.key === 'Escape') open(false); });
     mark();
@@ -224,11 +264,11 @@
 </script>
 <script>
   /* <title> / description / <html lang> 也要跟著語言走。
-     原本只有內文與截圖會切，文件本身的中繼資料留在原地 —— 於是三種語言的
+     原本只有內文與截圖會切，文件本身的中繼資料留在原地，於是三種語言的
      分頁標題、搜尋結果與分享預覽全都是中文。靜態值放預設語言（英文），
      這樣沒有 JavaScript 的讀者與爬蟲拿到的也是對的那一份。 */
   (function(){
-    var META = {"zh": ["jt-ipam — 演講", "jt-ipam 相關演講的簡報。"], "en": ["jt-ipam — Talks", "Talk decks about jt-ipam."], "ja": ["jt-ipam — 講演", "jt-ipam に関する講演のスライド。"]};
+    var META = {"zh": ["jt-ipam：演講", "jt-ipam 相關演講的簡報。"], "en": ["jt-ipam: Talks", "Talk decks about jt-ipam."], "ja": ["jt-ipam：講演", "jt-ipam に関する講演のスライド。"]};
     function cur(){
       var c = document.body.className;
       return c.indexOf('lang-ja') >= 0 ? 'ja' : c.indexOf('lang-zh') >= 0 ? 'zh' : 'en';
@@ -243,6 +283,64 @@
     }
     document.addEventListener('jtipam:langchange', function(e){ apply(e.detail.lang); });
     apply(cur());
+  })();
+</script>
+<script src="anchors.js" defer></script>
+<script>
+  // 小螢幕的導覽選單：把導覽列的連結（GitHub 按鈕除外）複製到下拉面板；點連結、點外面、按 Esc 都會關。
+  (function(){
+    var nav = document.querySelector('nav'), btn = document.querySelector('.nav-menu-btn');
+    if (!nav || !btn) return;
+    var panel = document.createElement('div');
+    panel.className = 'mnav'; panel.id = 'mnav';
+    Array.prototype.forEach.call(document.querySelectorAll('.nav-links > a:not(.btn)'), function(a){
+      panel.appendChild(a.cloneNode(true)); });
+    nav.appendChild(panel);
+    function open(v){ panel.classList.toggle('open', v); btn.setAttribute('aria-expanded', String(v)); }
+    btn.addEventListener('click', function(e){ e.stopPropagation(); open(!panel.classList.contains('open')); });
+    panel.addEventListener('click', function(e){ if (e.target.closest('a')) open(false); });
+    document.addEventListener('click', function(e){ if (panel.classList.contains('open') && !panel.contains(e.target)) open(false); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape') open(false); });
+  })();
+</script>
+<script>
+  // 頂列固定一行：放不下時先把 GitHub、再把語言收進選單。實際量寬度（三種語言的字寬不同），
+  // 視窗大小、轉向、字型載入完、換語言之後都重算。
+  (function(){
+    var nav = document.querySelector('nav'), panel = document.getElementById('mnav'),
+        btn = document.querySelector('.nav-menu-btn'), inner = document.querySelector('.nav-in');
+    if (!nav || !panel || !btn || !inner) return;
+    var gh = document.querySelector('.nav-links > a.btn');
+    if (gh){ var a = gh.cloneNode(true); a.className = 'm-gh'; panel.appendChild(a); }
+    var items = Array.prototype.slice.call(document.querySelectorAll('#langMenu li[data-lang]'));
+    if (items.length){
+      var box = document.createElement('div'); box.className = 'm-lang';
+      box.innerHTML = '<div class="m-lang-h"><span class="zh">語言</span><span class="en">Language</span><span class="ja">言語</span></div>';
+      items.forEach(function(li){
+        var b = document.createElement('button'); b.type = 'button'; b.dataset.lang = li.dataset.lang;
+        b.textContent = li.textContent.replace('\u2713', '').trim();
+        b.addEventListener('click', function(){
+          li.click();                                   // 沿用語言選單自己的切換（記住偏好、改網址、通知頁面）
+          panel.classList.remove('open'); btn.setAttribute('aria-expanded', 'false');
+        });
+        box.appendChild(b);
+      });
+      panel.appendChild(box);
+    }
+    function cur(){ var c = document.body.className; return c.indexOf('lang-ja') >= 0 ? 'ja' : c.indexOf('lang-zh') >= 0 ? 'zh' : 'en'; }
+    function mark(){ Array.prototype.forEach.call(panel.querySelectorAll('.m-lang button'), function(b){
+      b.setAttribute('aria-pressed', String(b.dataset.lang === cur())); }); }
+    function over(){ return inner.scrollWidth > inner.clientWidth + 1; }
+    function fit(){
+      nav.classList.remove('nav-c1', 'nav-c2');
+      if (getComputedStyle(btn).display === 'none') return;   // 寬螢幕：導覽連結都在頂列，不收
+      if (over()) nav.classList.add('nav-c1');                 // 先收 GitHub
+      if (over()) nav.classList.add('nav-c2');                 // 還是放不下：再收語言
+    }
+    window.addEventListener('resize', fit);
+    document.addEventListener('jtipam:langchange', function(){ mark(); fit(); });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
+    mark(); fit();
   })();
 </script>
 </body>

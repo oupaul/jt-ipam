@@ -1,7 +1,7 @@
 """RBAC 缺口回歸測試（2026-07-30 稽核找到的四類）。
 
 這批全部是「已登入但受限」的帳號本來不該看到卻看得到的資料。共同教訓：
-**認證過 ≠ 授權過**，而且 GraphQL 是與 REST 平行的第二個表面，很容易被漏掉。
+**認證過 ≠ 授權過**。（GraphQL 這個平行表面已在 2026-10-04 移除。）
 """
 
 from __future__ import annotations
@@ -135,7 +135,7 @@ async def test_subnets_total_scales_with_visibility(db_session) -> None:
     await _grant(db_session, user, "subnet", subs[0].id)
 
     out = await list_subnets(
-        user, db_session, section_id=None, archived=False, page=1, page_size=50,
+        user, db_session, section_id=None, archived=False, q=None, page=1, page_size=50,
     )
     assert [i.id for i in out.items] == [subs[0].id]
     assert out.total == 1, (
@@ -188,65 +188,6 @@ async def test_addresses_total_scales_with_visibility(db_session) -> None:
     )
 
 
-# ── 3. GraphQL 不得成為繞過 REST 限制的旁路 ─────────────────────────
-
-
-def test_graphql_resolvers_are_all_guarded() -> None:
-    """每個 resolver 都要有可見性過濾或全域讀取檢查（`me` 例外：只回自己）。
-
-    釘住這件事，因為 GraphQL 與 REST 是兩個平行表面 —— 新增 resolver 時
-    很容易只想到 REST 那邊的守門。
-    """
-    import re
-    from pathlib import Path
-
-    src = Path(__file__).resolve().parent.parent / "app" / "graphql" / "schema.py"
-    text = src.read_text(encoding="utf-8")
-    unguarded = []
-    for block in re.split(r"(?=@strawberry\.field)", text)[1:]:
-        m = re.search(r"async def (\w+)\(", block)
-        if not m:
-            continue
-        name = m.group(1)
-        if name == "me":                       # 只回自己，不需過濾
-            continue
-        if not any(
-            k in block
-            for k in ("filter_visible", "visible_ids", "get_object_permission",
-                      "_assert_global_read")
-        ):
-            unguarded.append(name)
-    assert not unguarded, f"這些 GraphQL resolver 沒有任何權限過濾：{unguarded}"
-
-
-@pytest.mark.anyio
-async def test_graphql_global_read_matches_rest(db_session) -> None:
-    """GraphQL 的全域讀取判斷要與 REST 的 `require_global_read` 一致。"""
-    from app.graphql.schema import _assert_global_read
-
-    user = await _limited_user(db_session)
-    with pytest.raises(PermissionError):
-        await _assert_global_read(db_session, user)
-
-
-@pytest.mark.anyio
-async def test_graphql_devices_filtered_for_limited_user(db_session) -> None:
-    """零權限帳號用 GraphQL 列裝置要拿到空清單，不是全部裝置。"""
-    from app.graphql.schema import Query
-    from app.models.device import Device
-
-    db_session.add(Device(name=f"rbac-dev-{uuid.uuid4().hex[:6]}", type="server"))
-    await db_session.commit()
-
-    user = await _limited_user(db_session)
-
-    class _Info:
-        context = {"session": db_session, "user": user}
-
-    got = await Query().devices(_Info(), type=None, limit=200)  # type: ignore[arg-type]
-    assert got == [], f"零權限帳號看到了 {len(got)} 台裝置"
-
-
 # ── 3b. 重疊網段：先縮可見範圍再取一筆（不可先取後驗）─────────────────
 
 
@@ -282,9 +223,14 @@ async def test_mcp_ip_lookup_survives_overlapping_subnets(db_session, admin_user
     ) or 0)
     assert dupes == 2, f"測試前提不成立：同 IP 只有 {dupes} 筆"
 
-    # 修正前這兩支都會拋 MultipleResultsFound
-    got = await switch_port_for_ip(db_session, user=admin_user, ip=dup_ip)
-    assert got["ip"] == dup_ip
+    # 修正前這兩支都會拋 MultipleResultsFound。
+    # switch_port_for_ip 之後（2026-10-15）也不再默默取第一筆：回看得懂的錯誤並列出候選，帶 ip_id 才回答
+    from app.mcp.tools import IPAMToolError
+    with pytest.raises(IPAMToolError, match="overlapping"):
+        await switch_port_for_ip(db_session, user=admin_user, ip=dup_ip)
+    one = (await db_session.execute(select(IPAddress.id).where(IPAddress.ip == dup_ip).limit(1))).scalar_one()
+    got = await switch_port_for_ip(db_session, user=admin_user, ip=dup_ip, ip_id=str(one))
+    assert got["ip"] == dup_ip and got["ip_id"] == str(one)
     assert (await get_ip_detail(db_session, user=admin_user, ip=dup_ip))["found"] is True
 
 
@@ -513,3 +459,17 @@ def test_webhook_notify_goes_through_ssrf_guard() -> None:
     src = inspect.getsource(notify_channels._post)
     assert "assert_url_safe(url)" in src, "notify_channels._post 沒有過 SSRF 檢查"
     assert "follow_redirects=False" in src, "不可跟隨重導（會繞過已檢查的目標）"
+
+
+
+
+async def test_graphql_endpoint_is_gone(client, auth_headers) -> None:
+    """2026-10-04 移除：沒有前端使用、沒寫進手冊、nginx 也從沒把 /graphql 轉給後端，留著只是一份要手動跟 REST
+    同步的權限判斷（漏一處就是旁路）。"""
+    r = await client.post("/graphql", headers=auth_headers, json={"query": "{ me }"})
+    # 有前端 build 時 / 掛著靜態檔，POST 會是 405（與 nginx 後面一樣）；沒有時是 404 —— 都不再是 GraphQL
+    assert r.status_code in (404, 405)
+    assert "data" not in (r.json() if r.headers.get("content-type", "").startswith("application/json") else {})
+    from pathlib import Path
+    pyproject = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    assert "strawberry" not in pyproject

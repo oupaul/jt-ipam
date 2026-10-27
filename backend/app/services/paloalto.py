@@ -47,9 +47,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
 from app.core.security import decrypt_secret, encrypt_secret
 from app.core.ui_error import UiError
-from app.models.address import IPAddress
 from app.models.paloalto import PaloAltoAddressObject, PaloAltoFirewall, PaloAltoPolicy
-from app.services.hostname import apply_observation
+from app.services.dhcp_leases import LeaseRun
+from app.services.fw_sightings import SightingBatch, lease_inactive
+from app.services.hostname_reports import HostnameRun, enabled_peers
 
 
 class PaloAltoError(UiError, RuntimeError):
@@ -258,53 +259,30 @@ async def detect_api_version(fw: PaloAltoFirewall) -> str:
 
 async def list_vsys(fw: PaloAltoFirewall) -> list[str]:
     """要同步的 vsys：使用者指定優先；否則從設定檔探索；失敗退回 `['vsys1']`。"""
+    return (await list_vsys_ex(fw))[0]
+
+
+async def list_vsys_ex(fw: PaloAltoFirewall) -> tuple[list[str], bool]:
+    """vsys 清單，以及它是不是**權威的**（使用者指定或成功讀到）。
+
+    退回 `['vsys1']` 時只看得到 vsys1：拿它當完整清單去清 NAT，會把其他 vsys 的 NAT 全刪
+    （2026-09-26 稽核），所以清除只在權威時做。"""
     if fw.vsys_list:
-        return [v for v in fw.vsys_list if v]
+        return [v for v in fw.vsys_list if v], True
     try:
         result = await _xml_get(fw, {
             "type": "config", "action": "get",
             "xpath": "/config/devices/entry/vsys",
         }, timeout=10.0)
     except PaloAltoError:
-        return ["vsys1"]        # 單一 vsys 機型或權限不足
+        return ["vsys1"], False        # 單一 vsys 機型或權限不足
     if result is None:
-        return ["vsys1"]
+        return ["vsys1"], False
     names = [e.get("name") for e in result.iter("entry") if e.get("name")]
-    return names or ["vsys1"]
+    return (names, True) if names else (["vsys1"], False)
 
 
 # ─────────────────── IP stamp（重疊網段安全）───────────────────
-async def _stamp_ip_seen(
-    session: AsyncSession, ip: str, *, evidence: str,
-    mac: str | None = None, hostname: str | None = None,
-    subnet_ids: list[uuid.UUID] | None = None, dhcp: bool = False,
-    permanent: bool = False, seen_at: datetime | None = None,
-) -> bool:
-    """只標記**既有**的 IP，絕不新建（與其他防火牆整合一致）。
-
-    `evidence`＝證據契約裡的來源名稱（`arp:paloalto` / `lease:paloalto`），
-    逐來源存在 `arp_seen`（見 services/arp_seen.py）。
-    """
-    ipx = _valid_ip(ip)
-    if ipx is None:
-        return False
-    stmt = select(IPAddress).where(IPAddress.ip == ipx)
-    if subnet_ids:
-        stmt = stmt.where(IPAddress.subnet_id.in_(subnet_ids))
-    # 重疊網段下同一個 IP 會有多筆 → 取一筆，不可以用 scalar_one_or_none（會炸掉整批）
-    ipa = (await session.execute(stmt.limit(1))).scalars().first()
-    if ipa is None:
-        return False
-    from app.services import arp_seen as arp_seen_svc
-    arp_seen_svc.stamp(ipa, evidence, seen_at, permanent=permanent)
-    if dhcp:
-        ipa.in_dhcp_lease = True
-    if mac:
-        from app.services.arp_precedence import consider_mac
-        await consider_mac(session, ip=ipa, mac=mac, source="paloalto")
-    if hostname:
-        await apply_observation(session, ip=ipa, source="paloalto", hostname=hostname)
-    return True
 
 
 # ─────────────────── 各項同步 ───────────────────
@@ -326,17 +304,16 @@ async def sync_arp(session: AsyncSession, fw: PaloAltoFirewall) -> int:
             max_ttl = max(max_ttl, float((e.findtext("ttl") or "").strip()))
         except (TypeError, ValueError):
             continue
+    batch = SightingBatch(session, source="paloalto", subnet_ids=scope_ids)
     for e in entries:
         ip = (e.findtext("ip") or "").strip()
         mac = (e.findtext("mac") or "").strip()
         # PAN-OS 的 status：`c`＝complete、`s`＝static。靜態項目不會逾時淘汰，
         # 拿它宣稱上線就等於在說「這台永遠活著」。
         perm = (e.findtext("status") or "").strip().lower() in ("s", "static")
-        if await _stamp_ip_seen(session, ip, evidence="arp:paloalto", mac=_norm_mac(mac),
-                                subnet_ids=scope_ids, permanent=perm,
-                                seen_at=seen_from_remaining(
-                                    (e.findtext("ttl") or "").strip(), max_ttl)):
-            seen += 1
+        batch.add(ip, evidence="arp:paloalto", mac=_norm_mac(mac), permanent=perm,
+                  seen_at=seen_from_remaining((e.findtext("ttl") or "").strip(), max_ttl))
+    seen = sum(1 for found, _e in await batch.flush() if found)
     return seen
 
 
@@ -351,15 +328,24 @@ async def sync_dhcp_leases(session: AsyncSession, fw: PaloAltoFirewall) -> int:
         return 0
     scope_ids = _scope(fw)
     seen = 0
+    hn_run = HostnameRun(session, source="paloalto", origin=f"paloalto:{fw.id}",
+                         peers=await enabled_peers(session, PaloAltoFirewall))
+    lease_run = LeaseRun(session, source_type="paloalto", source_id=fw.id)
+    batch = SightingBatch(session, source="paloalto", subnet_ids=scope_ids, lease_run=lease_run,
+                          hn_run=hn_run)
     for e in result.iter("entry"):
         ip = (e.findtext("ip") or "").strip()
         mac = (e.findtext("mac") or "").strip()
         host = (e.findtext("hostname") or "").strip() or None
-        if await _stamp_ip_seen(
-            session, ip, evidence="lease:paloalto", mac=_norm_mac(mac), hostname=host,
-            subnet_ids=scope_ids, dhcp=True,
-        ):
-            seen += 1
+        # 明確過期的租約 PAN-OS 也會列出來（<state>expired</state>）：那不是有效租約
+        if lease_inactive({"state": e.findtext("state")}):
+            continue
+        batch.add(ip, evidence="lease:paloalto", mac=_norm_mac(mac), hostname=host)
+    seen = sum(1 for found, _e in await batch.flush() if found)
+    # 讀取失敗會往外拋；走到這裡就是完整的租約清單（op 指令涵蓋所有介面）
+    await hn_run.finish(complete=True)
+    # 租約旗標以前從來不清（其他整合至少有設範圍時會清）
+    await lease_run.finish(complete=True)
     return seen
 
 
@@ -458,7 +444,8 @@ async def sync_addresses(session: AsyncSession, fw: PaloAltoFirewall, vsys_list:
     return total
 
 
-async def sync_nat(session: AsyncSession, fw: PaloAltoFirewall, vsys_list: list[str]) -> int:
+async def sync_nat(session: AsyncSession, fw: PaloAltoFirewall, vsys_list: list[str],
+                   *, authoritative: bool = True) -> int:
     """NAT 政策 → 共用的 `nat_translations`（`source_origin = paloalto:<id>`）。
 
     只收**目的地轉換（destination-translation）**：那才是「對外開了什麼」。
@@ -489,6 +476,7 @@ async def sync_nat(session: AsyncSession, fw: PaloAltoFirewall, vsys_list: list[
                 source_origin=origin, external_id=ext_id)
             n.name = name[:255]
             n.type = "port_forward"
+            n.disabled = str(e.get("disabled") or "").strip().lower() == "yes"
             n.description = str(e.get("description") or "") or None
             # protocol 是 String(8) 且不可為空 —— PAN-OS 的 service 是物件名稱
             # （如 service-http），塞不進去也不該截斷成半個名字，統一記 any，
@@ -498,8 +486,9 @@ async def sync_nat(session: AsyncSession, fw: PaloAltoFirewall, vsys_list: list[
             if n.id is None:
                 session.add(n)
             total += 1
+    # vsys 清單是退回值（只看得到 vsys1）時不刪：其他 vsys 的 NAT 這一輪根本沒讀
     for ext_id, obj in existing.items():
-        if ext_id not in seen:
+        if authoritative and ext_id not in seen:
             await session.delete(obj)
     return total
 
@@ -544,10 +533,75 @@ async def diagnose(fw: PaloAltoFirewall) -> dict[str, Any]:
             "<show><dhcp><server><lease><interface>all</interface></lease>"
             "</server></dhcp></show>",
         ),
+        _xml_probe("vpn_flow", _VPN_FLOW_CMD),
     ))
     out["checks"] = checks
     out["ok_count"] = sum(1 for c in checks if c["ok"])
     return out
+
+
+_VPN_FLOW_CMD = "<show><vpn><flow></flow></vpn></show>"
+
+
+def _vpn_flow_rows(result: Any) -> list[dict[str, str]]:
+    """`show vpn flow` 的 IPsec 通道：名稱、狀態、本機與對端位址。
+
+    沒有實機可以驗，欄位名稱寫法不只一種都收（`localip`／`local-ip`／`local`）。
+    只取 `<IPSec>` 底下的項目（GlobalProtect 的 SSL-VPN 在另一段，不是站對站）。
+    """
+    if result is None:
+        return []
+    box = result.find("IPSec")
+    if box is None:
+        box = result.find("ipsec")
+    entries = list(box.iter("entry")) if box is not None else []
+
+    def _t(e: Any, *names: str) -> str:
+        for n in names:
+            v = (e.findtext(n) or "").strip()
+            if v:
+                return v
+        return ""
+    out = []
+    for e in entries:
+        name = _t(e, "name")
+        if not name:
+            continue
+        out.append({"name": name, "state": _t(e, "state").lower(),
+                    "local": _t(e, "localip", "local-ip", "local"),
+                    "peer": _t(e, "peerip", "peer-ip", "peer", "remote")})
+    return out
+
+
+async def sync_vpn(session: AsyncSession, fw: PaloAltoFirewall) -> dict[str, Any]:
+    """站對站 IPsec 通道 → 共用 vpn_tunnels（拓樸圖據此畫出與對端之間的 VPN）。"""
+    from app.models.physical import VPNTunnel
+    from app.services.vpn_pairing import link_peers, resolve_device_for
+
+    rows = _vpn_flow_rows(await _xml_get(fw, {"type": "op", "cmd": _VPN_FLOW_CMD}))
+    origin = f"paloalto:{fw.id}"
+    prefix = f"{fw.name}/ipsec/"
+    fw_dev = await resolve_device_for(session, api_url=fw.api_url, name=fw.name)
+    seen: set[str] = set()
+    for r in rows:
+        name = f"{prefix}{r['name']}"[:128]
+        seen.add(name)
+        t = (await session.execute(select(VPNTunnel).where(VPNTunnel.name == name))).scalars().first()
+        if t is None:
+            t = VPNTunnel(name=name, type="ipsec_ikev2")
+            session.add(t)
+        t.source_origin = origin
+        # active＝已建立；init 等其他狀態＝還沒通
+        t.status = "active" if r["state"] == "active" else "offline"
+        t.a_endpoint = _valid_ip(r["local"]) or (r["local"][:255] or None)
+        t.b_endpoint = _valid_ip(r["peer"]) or (r["peer"][:255] or None)
+        t.a_device_id = fw_dev
+    # 讀到了就清掉這台先前建立、這次沒看到的（歸屬看 source_origin，改名也認得）
+    for t in (await session.execute(select(VPNTunnel).where(VPNTunnel.source_origin == origin))).scalars().all():
+        if t.name not in seen:
+            await session.delete(t)
+    await link_peers(session)
+    return {"tunnels": len(seen)}
 
 
 # ─────────────────── 主流程 ───────────────────
@@ -560,9 +614,13 @@ async def sync_instance(session: AsyncSession, fw: PaloAltoFirewall) -> dict[str
     if not fw.api_version:
         # 偵測到就記下來，之後不必每輪再問一次
         fw.api_version = await detect_api_version(fw)
-    vsys_list = await list_vsys(fw)
+    vsys_list, vsys_ok = await list_vsys_ex(fw)
     counts: dict[str, Any] = {"vsys": len(vsys_list), "api_version": fw.api_version}
     errors: dict[str, str] = {}
+    if not vsys_ok and not fw.vsys_list:
+        # 單一 vsys 機型本來就讀不到清單 —— 只有在真的有別的 vsys 時才有影響，但我們無從得知，
+        # 所以照常同步、只是不刪 NAT，並講出來（可在整合設定明確指定 vsys）
+        errors["vsys"] = "讀不到 vsys 清單，這一輪不刪除 NAT（可在整合設定明確指定 vsys）"
 
     async def _section(name: str, coro_factory: Any) -> None:
         try:
@@ -581,9 +639,11 @@ async def sync_instance(session: AsyncSession, fw: PaloAltoFirewall) -> dict[str
             from app.services.fw_review import run_sentinel
             await run_sentinel(session, source_type="paloalto", instance=fw)
     if fw.sync_nat:
-        await _section("nat", lambda: sync_nat(session, fw, vsys_list))
+        await _section("nat", lambda: sync_nat(session, fw, vsys_list, authoritative=vsys_ok))
     if fw.sync_addresses:
         await _section("addresses", lambda: sync_addresses(session, fw, vsys_list))
+    if getattr(fw, "sync_vpn", True):
+        await _section("vpn", lambda: sync_vpn(session, fw))
 
     fw.last_sync_at = datetime.now(UTC)
     fw.last_error = ("部分區段失敗：" + "；".join(f"{k}: {v}" for k, v in errors.items())

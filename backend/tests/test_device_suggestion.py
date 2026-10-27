@@ -32,15 +32,19 @@ def test_suggestion_endpoint_exists_and_is_read_only():
 
 def test_suggestion_refuses_to_guess_when_several_devices_match():
     """同名裝置有多台時不給建議。猜錯的關聯比沒有關聯更難發現。"""
-    src = _src("device_suggestion")
+    # 比對邏輯 2026-10-20 抽成 _match_existing_device（單筆建議與批次增加裝置共用同一套規則）
+    assert "_match_existing_device(" in _src("device_suggestion"), "建議端點沒有走共用的比對規則"
+    src = _src("_match_existing_device")
     assert "limit(2)" in src, "沒有多取一筆來判斷「是不是不只一台」"
     assert "len(row) == 1" in src, "沒有『只有一台才採用』的判斷"
+    assert "_match_existing_device(" in _src("bulk_create_devices"), "批次增加裝置沒有走同一套比對規則"
 
 
 def test_sibling_list_is_scoped_to_what_the_user_can_see():
     src = _src("_sibling_rows")
     assert "visible_ids(" in src, "同名 IP 的清單沒有套可見性"
-    assert "IPAddress.subnet_id.in_(vis)" in src, "可見性沒有推進 SQL（先取再過濾會算錯）"
+    # 可見範圍用單一陣列參數（in_values）：部門帳號看得到超過 32767 個子網路時 .in_() 會超過參數上限
+    assert "in_values(IPAddress.subnet_id, vis)" in src, "可見性沒有推進 SQL（先取再過濾會算錯）"
     assert "device_id.is_(None)" in src, "把已經有裝置的 IP 也算進去了"
 
 

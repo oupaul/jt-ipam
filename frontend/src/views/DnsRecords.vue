@@ -28,6 +28,8 @@ const missingOnly = ref(false);
 const serverId = ref<string | null>(null);
 const serverOptions = ref<SelectOption[]>([]);
 const rtype = ref<string | null>(null);
+// 比對群組裡相同的紀錄合併成一筆（預設開；關掉就逐台列出）
+const merge = ref(true);
 const typeOptions = ref<SelectOption[]>([{ label: t("dns_records.all_types"), value: "" }]);
 
 // 型別下拉帶各型別筆數，例如 A (12)；筆數套用除「型別」外的相同篩選
@@ -38,6 +40,7 @@ async function loadTypeCounts() {
       ip: ipLookup.value.trim() || undefined,
       missing_ip: missingOnly.value || undefined,
       server_id: serverId.value || undefined,
+      merge: merge.value,
     });
     const total = counts.reduce((s, c) => s + c.count, 0);
     typeOptions.value = [
@@ -50,7 +53,7 @@ async function loadTypeCounts() {
 }
 
 const ALL_KEYS = ["name", "type", "value", "matched_ip_id", "consistency_state", "ttl", "source"];
-const { visibleKeys, setVisible, reset, isVisible } = useColumnPrefs(
+const { visibleKeys, setVisible, reset, isVisible, order, setOrder, orderColumns } = useColumnPrefs(
   "dns_records", ALL_KEYS, ALL_KEYS,
 );
 const pickerCols = computed(() => [
@@ -84,6 +87,7 @@ async function load() {
       missing_ip: missingOnly.value || undefined,
       server_id: serverId.value || undefined,
       rtype: rtype.value || undefined,
+      merge: merge.value,
       page: 1, page_size: 500,
     });
     rows.value = res.items;
@@ -126,12 +130,21 @@ const allColumns = computed<DataTableColumns<DnsRecord>>(() => [
   { title: t("dns_records.col_consistency"), key: "consistency_state", width: 120,
     render: (r) => { const c = consistencyTag(r.consistency_state); return h(NTag, { size: "small", type: c.type, bordered: false }, () => c.label); } },
   { title: "TTL", key: "ttl", width: 90 },
-  { title: t("dns_records.col_source"), key: "source", width: 150, ellipsis: { tooltip: true },
-    render: (r) => r.server_name || r.source || "—" },
+  { title: t("dns_records.col_source"), key: "source", minWidth: 170,
+    render: (r) => {
+      const servers = r.servers?.length ? r.servers : [r.server_name || r.source || "—"];
+      if (servers.length === 1 && !r.compare_group_name) return servers[0];
+      // 合併的紀錄：哪幾台都有，前面標出比對群組
+      return h(NSpace, { size: 4, wrapItem: false, align: "center" }, () => [
+        r.compare_group_name ? h(NTag, { size: "small", type: "info", bordered: false, round: true },
+                              () => t("dns_records.group_badge", { name: r.compare_group_name })) : null,
+        ...servers.map((n) => h(NTag, { size: "small", bordered: false }, () => n)),
+      ]);
+    } },
 ]);
 
 const columns = computed<DataTableColumns<DnsRecord>>(() =>
-  autoSort(allColumns.value.filter((c) => isVisible((c as any).key))));
+  autoSort(orderColumns(allColumns.value.filter((c) => isVisible((c as any).key)))));
 
 onMounted(() => {
   // 從全域搜尋點 DNS 記錄進來時，帶 ?q= 把該記錄名稱代入搜尋欄
@@ -169,6 +182,9 @@ onMounted(() => {
         <n-checkbox v-model:checked="missingOnly" @update:checked="load">
           {{ t("dns_records.only_missing") }}
         </n-checkbox>
+        <n-checkbox v-model:checked="merge" data-testid="dns-records-merge" @update:checked="load">
+          {{ t("dns_records.merge_groups") }}
+        </n-checkbox>
         <n-button type="primary" size="small" @click="load">
           <template #icon><n-icon><SearchIcon /></n-icon></template>
           {{ t("common.search") }}
@@ -178,11 +194,12 @@ onMounted(() => {
           {{ t("common.refresh") }}
         </n-button>
         <ColumnPicker :all="pickerCols" :visible="visibleKeys"
-                      @update:visible="setVisible" @reset="reset" />
+                      @update:visible="setVisible" @reset="reset"
+                      :order="order" @update:order="setOrder" />
       </n-space>
 
       <n-data-table
-        :columns="columns" :data="rows" :loading="loading" size="small"
+        :columns="columns" :data="rows" :loading="loading" size="small" :scroll-x="900"
         :pagination="pg" :row-key="(r: DnsRecord) => r.id"
       />
     </n-space>

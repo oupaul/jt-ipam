@@ -12,7 +12,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,6 +87,10 @@ class LLMConfig:
     mcp_external_enabled: bool = False
     mcp_api_key: str | None = None          # 明文（已解密）；僅程序內使用，不外傳
     mcp_principal_user_id: str | None = None  # MCP 金鑰所代表的管理員身份（唯讀，僅供 RBAC 可見範圍）
+    # MCP 金鑰到期時間（輪替時選天數；0199 起每把都有，到期前由 credential_expiry 通知管理員）
+    mcp_api_key_expires_at: datetime | None = None
+    # 金鑰編號：重產時隨機產生，跟金鑰本身無關；「最後使用」記錄綁這個（10-22 起，舊金鑰沒有編號＝legacy）
+    mcp_api_key_id: str | None = None
     # AI 巡檢：定期讓模型檢視 IPAM 資料找可疑之處。預設關閉 —— 它會把資料送給 LLM，
     # 該不該做是使用者的決定，不是升版就自動開始跑的事。
     ai_audit_enabled: bool = False
@@ -106,6 +110,14 @@ class LLMConfig:
     # 巡檢用的上下文長度。留空＝沿用對話模型的設定。開大一點可以一批塞更多資料
     # （批次少、跑得快），代價是更多記憶體／VRAM。
     ai_audit_num_ctx: int | None = None
+    # AI 判讀（未授權 IP 判讀／IP 調查／防火牆規則異動解讀）用的模型與上下文長度。
+    # 留空＝沿用對話模型。對話要快（互動、會叫工具），判讀要一次讀完一大包證據再下結論
+    # —— 適合的模型不一定同一個。
+    ai_interpret_model: str | None = None
+    ai_interpret_num_ctx: int | None = None
+    # AI 對話允不允許模型先思考。預設允許（畫面顯示「思考中」，與以前相同）；關掉時每一輪都送關閉思考的
+    # 參數 —— 接會思考的模型、尤其經過 LiteLLM 這類閘道時，回答快很多。巡檢與判讀一律關閉、不看這個
+    chat_thinking: bool = True
 
 
 _MCP_AAD = b"llm:mcp_api_key"
@@ -201,6 +213,13 @@ async def get_llm_config(session: AsyncSession) -> LLMConfig:
             cfg.mcp_api_key = _dec_mcp(str(v["mcp_api_key_enc"]))
         if v.get("mcp_principal_user_id"):
             cfg.mcp_principal_user_id = str(v["mcp_principal_user_id"])
+        if cfg.mcp_api_key:
+            cfg.mcp_api_key_id = str(v.get("mcp_api_key_id") or "legacy")
+        if v.get("mcp_api_key_expires_at"):
+            try:
+                cfg.mcp_api_key_expires_at = datetime.fromisoformat(str(v["mcp_api_key_expires_at"]))
+            except ValueError:
+                cfg.mcp_api_key_expires_at = None
         if isinstance(v.get("ai_audit_enabled"), bool):
             cfg.ai_audit_enabled = v["ai_audit_enabled"]
         if v.get("ai_audit_model"):
@@ -209,6 +228,16 @@ async def get_llm_config(session: AsyncSession) -> LLMConfig:
             try:
                 n = int(v["ai_audit_num_ctx"])
                 cfg.ai_audit_num_ctx = n if n > 0 else None
+            except (ValueError, TypeError):
+                pass
+        if isinstance(v.get("chat_thinking"), bool):
+            cfg.chat_thinking = v["chat_thinking"]
+        if v.get("ai_interpret_model"):
+            cfg.ai_interpret_model = str(v["ai_interpret_model"]).strip() or None
+        if v.get("ai_interpret_num_ctx") is not None:
+            try:
+                n = int(v["ai_interpret_num_ctx"])
+                cfg.ai_interpret_num_ctx = n if n > 0 else None
             except (ValueError, TypeError):
                 pass
         if isinstance(v.get("ai_audit_times"), list):
@@ -251,6 +280,9 @@ async def set_llm_config(
     ai_audit_month_day: int | None = None,
     ai_audit_model: str | None = None,
     ai_audit_num_ctx: int | None = None,
+    ai_interpret_model: str | None = None,
+    ai_interpret_num_ctx: int | None = None,
+    chat_thinking: bool | None = None,
     provider: str | None = None,
     api_key: str | None = None,
     updated_by_user_id: uuid.UUID | None = None,
@@ -273,6 +305,14 @@ async def set_llm_config(
     # 0 ＝清掉，回去沿用對話模型的上下文長度
     if ai_audit_num_ctx is not None:
         current["ai_audit_num_ctx"] = int(ai_audit_num_ctx) if int(ai_audit_num_ctx) > 0 else None
+    if chat_thinking is not None:
+        current["chat_thinking"] = bool(chat_thinking)
+    # 判讀：同上，空字串／0 ＝清掉，回去沿用對話模型
+    if ai_interpret_model is not None:
+        current["ai_interpret_model"] = ai_interpret_model.strip() or None
+    if ai_interpret_num_ctx is not None:
+        current["ai_interpret_num_ctx"] = (int(ai_interpret_num_ctx)
+                                           if int(ai_interpret_num_ctx) > 0 else None)
     if ai_audit_times is not None:
         times = normalize_times(ai_audit_times)
         # 一個時刻都排不出來就不要存 —— 存成空清單等於安靜地把排程關掉，
@@ -308,14 +348,79 @@ async def set_llm_config(
     return current
 
 
+#: 對外 MCP 金鑰的預設有效天數（輪替時可選 1–365）
+MCP_KEY_DEFAULT_DAYS = 90
+
+
+def mcp_key_valid(cfg: LLMConfig, token: str) -> bool:
+    """這把是不是目前有效的對外 MCP 金鑰（常數時間比對＋未過期）。"""
+    import secrets
+
+    if not (cfg.mcp_api_key and cfg.mcp_principal_user_id and token):
+        return False
+    if not secrets.compare_digest(token.encode(), cfg.mcp_api_key.encode()):
+        return False
+    return cfg.mcp_api_key_expires_at is None or cfg.mcp_api_key_expires_at > datetime.now(UTC)
+
+
+#: MCP 金鑰的最後使用（使用者 2026-10-21）：另存一個鍵，綁金鑰編號（重產時隨機產生）—— 重產後新金鑰自然是「從沒用過」。
+#: 以前綁的是金鑰的 SHA-256 前 16 碼，CodeQL #56 判定為「用弱雜湊處理敏感資料」；改成跟金鑰無關的隨機編號，
+#: 資料庫裡就沒有任何從金鑰衍生的值（10-22）。
+MCP_USAGE_KEY = "mcp_key_usage"
+MCP_USE_THROTTLE_S = 60
+_mcp_use_written: dict[str, float] = {}
+
+
+async def _save_mcp_use(session: AsyncSession, key_id: str, ip: str | None) -> None:
+    from sqlalchemy.orm.attributes import flag_modified
+    row = await session.get(SystemSetting, MCP_USAGE_KEY)
+    value = {"key_id": key_id, "at": datetime.now(UTC).isoformat(), "ip": (ip or "")[:64] or None}
+    if row is None:
+        session.add(SystemSetting(key=MCP_USAGE_KEY, value=value))
+    else:
+        row.value = value
+        flag_modified(row, "value")
+    await session.commit()
+
+
+async def record_mcp_key_use(session: AsyncSession, key_id: str | None, ip: str | None) -> None:
+    """MCP 請求用金鑰驗證成功時呼叫（傳 cfg.mcp_api_key_id）。同一把金鑰 MCP_USE_THROTTLE_S 秒內只寫一次。"""
+    import time
+    if not key_id:
+        return
+    now = time.monotonic()
+    if now - _mcp_use_written.get(key_id, -1e9) < MCP_USE_THROTTLE_S:
+        return
+    _mcp_use_written[key_id] = now
+    await _save_mcp_use(session, key_id, ip)
+
+
+async def get_mcp_key_usage(session: AsyncSession, key_id: str | None) -> tuple[datetime | None, str | None]:
+    """(最後使用時間, 來源 IP)；記錄是別把金鑰的（已重產）或從沒用過 → (None, None)。"""
+    if not key_id:
+        return None, None
+    row = await session.get(SystemSetting, MCP_USAGE_KEY)
+    v = row.value if row and isinstance(row.value, dict) else {}
+    if v.get("key_id") != key_id:
+        return None, None
+    try:
+        return datetime.fromisoformat(str(v.get("at"))), v.get("ip")
+    except ValueError:
+        return None, None
+
+
 async def rotate_mcp_api_key(
     session: AsyncSession,
     *,
     principal_user_id: uuid.UUID,
     updated_by_user_id: uuid.UUID | None = None,
+    expires_in_days: int = MCP_KEY_DEFAULT_DAYS,
 ) -> str:
-    """產生一把新的對外 MCP 金鑰（唯讀），加密保存並綁定代表身份；回傳明文（僅此一次完整顯示）。"""
+    """產生一把新的對外 MCP 金鑰（唯讀），加密保存並綁定代表身份；回傳明文（僅此一次完整顯示）。
+
+    金鑰會過期（2026-10-09 起）：以前不會，一把外流的金鑰可以永遠用下去。"""
     import secrets
+    from datetime import timedelta
 
     key = "jtmcp_" + secrets.token_urlsafe(32)
     row = await session.get(SystemSetting, LLM_KEY)
@@ -324,7 +429,9 @@ async def rotate_mcp_api_key(
         session.add(row)
     current: dict[str, Any] = dict(row.value or {})
     current["mcp_api_key_enc"] = _enc_mcp(key)
+    current["mcp_api_key_id"] = secrets.token_hex(8)       # 與金鑰無關的隨機編號（最後使用記錄綁它）
     current["mcp_principal_user_id"] = str(principal_user_id)
+    current["mcp_api_key_expires_at"] = (datetime.now(UTC) + timedelta(days=expires_in_days)).isoformat()
     row.value = current
     row.updated_by = updated_by_user_id
     from sqlalchemy.orm.attributes import flag_modified
@@ -339,7 +446,7 @@ AI_AUDIT_KEY = "ai_audit_state"
 
 
 async def get_ai_audit_last_run(session: AsyncSession) -> datetime | None:
-    """上次巡檢執行完成的時間（不論有沒有產生發現）。
+    """上次巡檢開始執行的時間（不論結果、有沒有產生發現；2026-10-12 起開始時就寫，見 mark_ai_audit_started）。
 
     這個必須獨立記錄，**不能拿最後一筆發現的時間當作「上次執行時間」**：一次乾淨的
     巡檢什麼都不會寫，於是排程會誤判成「從沒跑過」，每一輪同步（約 5 分鐘）就再打
@@ -357,14 +464,115 @@ async def get_ai_audit_last_run(session: AsyncSession) -> datetime | None:
 
 
 async def set_ai_audit_last_run(session: AsyncSession, *, at: datetime) -> None:
+    await _update_ai_audit_state(session, last_run_at=at.isoformat())
+
+
+async def _update_ai_audit_state(session: AsyncSession, **fields: Any) -> None:
     row = await session.get(SystemSetting, AI_AUDIT_KEY)
     if row is None:
         row = SystemSetting(key=AI_AUDIT_KEY, value={})
         session.add(row)
-    row.value = {**(row.value or {}), "last_run_at": at.isoformat()}
+    row.value = {**(row.value or {}), **fields}
     from sqlalchemy.orm.attributes import flag_modified
     flag_modified(row, "value")
     await session.commit()
+
+
+async def mark_ai_audit_started(session: AsyncSession, *, at: datetime) -> None:
+    """開始送 LLM 之前就記下這次嘗試（2026-10-12）。
+
+    以前「上次執行時間」要整個跑完才寫：巡檢被 systemd 砍掉、或 LLM 主機在途中掛掉時一筆都沒寫，
+    排程下一輪（5 分鐘後）就判定「還沒跑」又整個重來。現在開始時就算這個時段跑過，
+    並記下「正在跑」—— 手動與排程在不同行程，靠這個標記才不會疊在一起打同一台 LLM。
+    """
+    await _update_ai_audit_state(session, last_run_at=at.isoformat(), running_since=at.isoformat())
+
+
+async def mark_ai_audit_finished(session: AsyncSession, *, at: datetime,
+                                 outcome: dict[str, Any] | None = None) -> None:
+    """收尾：清掉正在跑的標記；有 outcome 時一併記下這次的結果（2026-10-23，戰情室 11 AI 巡檢結果用）。
+
+    outcome 只放**確定性**的欄位：狀態（completed／partial／failed）、粗分類的錯誤代碼、批次數、
+    取樣範圍的數量。**不放錯誤原文**：那裡面可能夾著模型的原始回應，看板與其他畫面都不該拿到。
+    completed／partial 的那一次另外記成「最近一次有結果的巡檢」，失敗的不會蓋掉它 ——
+    巡檢失敗時畫面要能說「顯示的是 X 完成的結果」，而不是把失敗當成沒有發現。
+    """
+    fields: dict[str, Any] = {"running_since": None, "finished_at": at.isoformat()}
+    if outcome:
+        status = outcome.get("status")
+        fields.update({
+            "last_status": status, "last_error_code": outcome.get("error_code"),
+            "last_run_id": outcome.get("run_id"), "last_started_at": outcome.get("started_at"),
+            "last_batches": outcome.get("batches"), "last_failed_batches": outcome.get("failed_batches"),
+        })
+        if status in ("completed", "partial"):
+            fields.update({
+                "completed_at": at.isoformat(), "completed_status": status,
+                "completed_run_id": outcome.get("run_id"),
+                "completed_started_at": outcome.get("started_at"),
+                "completed_scope": outcome.get("scope_counts"),
+                "completed_failed_batches": outcome.get("failed_batches"),
+                "completed_batches": outcome.get("batches"),
+            })
+    await _update_ai_audit_state(session, **fields)
+
+
+async def record_ai_audit_outcome(session: AsyncSession, *, at: datetime, outcome: dict[str, Any]) -> None:
+    """還沒開始打 LLM 就結束的那一次（例如可見範圍內沒有資料）：只記結果，不動上次執行時間與正在跑的標記。"""
+    await _update_ai_audit_state(session, last_status=outcome.get("status"),
+                                 last_error_code=outcome.get("error_code"),
+                                 last_run_id=outcome.get("run_id"), last_started_at=outcome.get("started_at"),
+                                 last_batches=0, last_failed_batches=0, finished_at=at.isoformat())
+
+
+async def get_ai_audit_state(session: AsyncSession) -> dict[str, Any]:
+    """巡檢狀態的原始欄位（唯讀；給戰情室判斷進行中／完成／部分完成／失敗）。"""
+    row = await session.get(SystemSetting, AI_AUDIT_KEY)
+    return dict(row.value) if row and isinstance(row.value, dict) else {}
+
+
+# 最近幾次有結果的巡檢「送進模型的是哪些物件」（子網路、IP、裝置的 id）。
+# 戰情室判斷模型寫的敘述能不能給非完整權限的帳號看：觀看者看得到這次巡檢送進去的全部物件，
+# 敘述裡才不可能夾著他看不到的資料。只留最近幾次（部分完成時舊發現會沿用舊的 run_id）。
+AI_AUDIT_RUNS_KEY = "ai_audit_runs"
+AI_AUDIT_RUNS_KEEP = 3
+
+
+async def remember_ai_audit_run_scope(session: AsyncSession, *, run_id: str, at: datetime,
+                                      scope: dict[str, list[str]]) -> None:
+    row = await session.get(SystemSetting, AI_AUDIT_RUNS_KEY)
+    if row is None:
+        row = SystemSetting(key=AI_AUDIT_RUNS_KEY, value={})
+        session.add(row)
+    runs = [r for r in ((row.value or {}).get("runs") or []) if isinstance(r, dict) and r.get("run_id") != run_id]
+    entry = {"run_id": run_id, "at": at.isoformat(),
+             **{k: [str(x) for x in scope.get(k) or []] for k in ("subnet_ids", "ip_ids", "device_ids")}}
+    row.value = {"runs": [entry, *runs][:AI_AUDIT_RUNS_KEEP]}
+    flag_modified(row, "value")
+    await session.commit()
+
+
+async def get_ai_audit_run_scopes(session: AsyncSession) -> dict[str, dict[str, set[str]]]:
+    """run_id → {subnet_ids, ip_ids, device_ids}（字串集合）。沒記到的巡檢不在裡面。"""
+    row = await session.get(SystemSetting, AI_AUDIT_RUNS_KEY)
+    out: dict[str, dict[str, set[str]]] = {}
+    for r in ((row.value or {}).get("runs") or []) if row and isinstance(row.value, dict) else []:
+        if isinstance(r, dict) and r.get("run_id"):
+            out[str(r["run_id"])] = {k: {str(x) for x in r.get(k) or []}
+                                     for k in ("subnet_ids", "ip_ids", "device_ids")}
+    return out
+
+
+async def get_ai_audit_running_since(session: AsyncSession) -> datetime | None:
+    """正在跑的巡檢從什麼時候開始（沒有＝None）。行程被砍會留下舊標記，由呼叫端判斷是否過期。"""
+    row = await session.get(SystemSetting, AI_AUDIT_KEY)
+    v = row.value.get("running_since") if row and isinstance(row.value, dict) else None
+    if not isinstance(v, str):
+        return None
+    try:
+        return datetime.fromisoformat(v)
+    except ValueError:
+        return None
 
 
 # ─────────────────── 異常偵測（排程）───────────────────
@@ -497,6 +705,41 @@ async def set_anomaly_seen(session: AsyncSession, seen: dict[str, list[str]]) ->
     await session.flush()
 
 
+#: 上一次偵測的結果（手動或排程）。另開一個鍵：結果可能有幾百 KB，不要跟設定擠在一起，
+#: 每次讀排程設定都得把它整份讀出來。
+ANOMALY_REPORT_KEY = "anomaly_report"
+
+
+async def set_anomaly_report(session: AsyncSession, report: dict[str, Any], *, trigger: str) -> None:
+    """保存這次的結果：進頁面先顯示上次的結果，不用每次都重跑（點去探測再返回，結果曾被清空）。"""
+    from fastapi.encoders import jsonable_encoder
+
+    now = datetime.now(UTC)
+    value = {"at": now.isoformat(), "trigger": trigger, "report": jsonable_encoder(report)}
+    row = await session.get(SystemSetting, ANOMALY_REPORT_KEY)
+    if row is None:
+        session.add(SystemSetting(key=ANOMALY_REPORT_KEY, value=value))
+    else:
+        row.value = value
+        flag_modified(row, "value")
+    await session.flush()
+    # 異常觀測（0224）：報告只留最新一份，逐筆的出現與消失時間另外記（戰情室的異常時序）
+    # 記錄失敗不可以讓異常偵測本身失敗：包在 SAVEPOINT 裡，出錯只記 log
+    from app.services.anomaly_history import record
+    try:
+        async with session.begin_nested():
+            await record(session, value["report"], at=now)
+    except Exception:  # pragma: no cover - 防護
+        import logging
+        logging.getLogger(__name__).exception("anomaly observation recording failed")
+
+
+async def get_anomaly_report(session: AsyncSession) -> dict[str, Any] | None:
+    row = await session.get(SystemSetting, ANOMALY_REPORT_KEY)
+    v = row.value if row and isinstance(row.value, dict) else None
+    return v if v and isinstance(v.get("report"), dict) else None
+
+
 # ─────────────────── AI chat 歷程保留設定 ───────────────────
 AI_CHAT_KEY = "ai_chat"
 _DEFAULT_RETENTION_DAYS = 90
@@ -559,6 +802,34 @@ async def set_rdp_clipboard_paste(
     return bool(enabled)
 
 
+async def get_console_relay_enabled(session: AsyncSession) -> bool:
+    """允許主控台經由掃描代理中繼（issue #24 階段二）。預設關閉。
+
+    兩道網頁開關之一：這裡（系統）與逐台代理的「允許中繼」，都開才會中繼（代理主機不必設定，可用 JT_IPAM_RELAY=0 否決）。
+    """
+    row = await session.get(SystemSetting, CONSOLE_SECURITY_KEY)
+    if row and isinstance(row.value, dict):
+        return bool(row.value.get("console_relay", False))
+    return False
+
+
+async def set_console_relay_enabled(
+    session: AsyncSession, *, enabled: bool, updated_by_user_id: uuid.UUID | None = None,
+) -> bool:
+    row = await session.get(SystemSetting, CONSOLE_SECURITY_KEY)
+    if row is None:
+        row = SystemSetting(key=CONSOLE_SECURITY_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    current = dict(row.value or {})
+    current["console_relay"] = bool(enabled)
+    row.value = current
+    row.updated_by = updated_by_user_id
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(row, "value")
+    await session.commit()
+    return bool(enabled)
+
+
 # RDP 主控台的連線引擎。
 #
 # `aardwolf` 是純 Python、零外部行程，一路以來的預設。它的限制在 asyauth 0.0.23：
@@ -569,10 +840,18 @@ async def set_rdp_clipboard_paste(
 #
 # `freerdp` 則相容性站在業界標準那邊，代價是要外部行程與虛擬顯示。
 #
-# ⚠️ 預設**留在 aardwolf**，直到 FreeRDP 後端完整做完並驗證過。Windows 目標本來就
-# 連得上，貿然換掉會讓能用的東西變不能用。有測試釘住這個預設值。
-RDP_ENGINES: tuple[str, ...] = ("aardwolf", "freerdp")
-_RDP_ENGINE_DEFAULT = "aardwolf"
+# `guacd`（2026-09-25 起）：Apache Guacamole 的伺服器端，預編檔由 scripts/guacd/ 提供、
+# 以 jt-ipam-guacd 服務跑在本機。
+#
+# **RDP 與 VNC 的預設是 guacd**（2026-09-27 使用者指示；已安裝的站台由遷移 0158 強制改過來，
+# 安裝／升級腳本預設會裝 guacd）。guacd 沒在跑時實際連線退回內建引擎（services/console_engine.py），
+# 不會因為某個 OS 還沒有預編檔就整個連不上。SSH 預設仍是內建。有測試釘住這些預設值。
+RDP_ENGINES: tuple[str, ...] = ("aardwolf", "freerdp", "guacd")
+_RDP_ENGINE_DEFAULT = "guacd"
+#: VNC／SSH：`builtin` 是一路以來的實作（VNC 走 aardwolf、SSH 走 asyncssh＋xterm.js）
+VNC_ENGINES: tuple[str, ...] = ("builtin", "guacd")
+SSH_ENGINES: tuple[str, ...] = ("builtin", "guacd")
+_VNC_ENGINE_DEFAULT = "guacd"
 
 
 async def get_rdp_engine(session: AsyncSession) -> str:
@@ -603,6 +882,86 @@ async def set_rdp_engine(
     flag_modified(row, "value")
     await session.commit()
     return engine
+
+
+async def _get_engine(session: AsyncSession, key: str, allowed: tuple[str, ...], default: str) -> str:
+    row = await session.get(SystemSetting, CONSOLE_SECURITY_KEY)
+    if row and isinstance(row.value, dict):
+        engine = row.value.get(key)
+        if engine in allowed:
+            return str(engine)
+    return default
+
+
+async def _set_engine(session: AsyncSession, key: str, engine: str, allowed: tuple[str, ...],
+                      updated_by_user_id: uuid.UUID | None) -> str:
+    if engine not in allowed:
+        raise ValueError(f"unknown {key}: {engine!r}")
+    row = await session.get(SystemSetting, CONSOLE_SECURITY_KEY)
+    if row is None:
+        row = SystemSetting(key=CONSOLE_SECURITY_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    current = dict(row.value or {})        # 同一把 key 底下還有別的設定，要合併
+    current[key] = engine
+    row.value = current
+    row.updated_by = updated_by_user_id
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(row, "value")
+    await session.commit()
+    return engine
+
+
+async def get_vnc_engine(session: AsyncSession) -> str:
+    return await _get_engine(session, "vnc_engine", VNC_ENGINES, _VNC_ENGINE_DEFAULT)
+
+
+async def set_vnc_engine(session: AsyncSession, *, engine: str,
+                         updated_by_user_id: uuid.UUID | None = None) -> str:
+    return await _set_engine(session, "vnc_engine", engine, VNC_ENGINES, updated_by_user_id)
+
+
+async def get_ssh_engine(session: AsyncSession) -> str:
+    return await _get_engine(session, "ssh_engine", SSH_ENGINES, "builtin")
+
+
+async def set_ssh_engine(session: AsyncSession, *, engine: str,
+                         updated_by_user_id: uuid.UUID | None = None) -> str:
+    return await _set_engine(session, "ssh_engine", engine, SSH_ENGINES, updated_by_user_id)
+
+
+# SFTP 單檔上下傳上限（MB）。預設 100 MB —— 這個功能的本意是設定檔、憑證、紀錄片段；
+# 管理者可以放大（例如要搬 ISO）。上界是防打錯字（多打三個 0），不是能力限制：
+# 後端逐塊串流、不會整個檔案放進記憶體；大檔下載在瀏覽器端改成直接寫入磁碟（SftpBrowser）。
+SFTP_MAX_FILE_MB_DEFAULT = 100
+SFTP_MAX_FILE_MB_LIMIT = 102_400          # 100 GB
+
+
+async def get_sftp_max_file_mb(session: AsyncSession) -> int:
+    row = await session.get(SystemSetting, CONSOLE_SECURITY_KEY)
+    if row and isinstance(row.value, dict):
+        v = row.value.get("sftp_max_file_mb")
+        # 壞掉的值（字串、越界）當成預設 —— 不要讓一筆壞設定把 SFTP 整個變成不能用
+        if isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= SFTP_MAX_FILE_MB_LIMIT:
+            return v
+    return SFTP_MAX_FILE_MB_DEFAULT
+
+
+async def set_sftp_max_file_mb(session: AsyncSession, *, mb: int,
+                               updated_by_user_id: uuid.UUID | None = None) -> int:
+    if not (1 <= int(mb) <= SFTP_MAX_FILE_MB_LIMIT):
+        raise ValueError(f"sftp_max_file_mb out of range: {mb!r}")
+    row = await session.get(SystemSetting, CONSOLE_SECURITY_KEY)
+    if row is None:
+        row = SystemSetting(key=CONSOLE_SECURITY_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    current = dict(row.value or {})        # 同一把 key 底下還有剪貼簿與引擎，要合併
+    current["sftp_max_file_mb"] = int(mb)
+    row.value = current
+    row.updated_by = updated_by_user_id
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(row, "value")
+    await session.commit()
+    return int(mb)
 
 
 # ─────────────────── 介面顯示設定（UI display）───────────────────
@@ -656,6 +1015,8 @@ DEFAULT_PORT_IGNORE_PATTERNS = [
     r"^loopback_\d+$",
     r"^isatap_\d+$",
     r"^teredo_\d+$",
+    # Docker／Podman 容器的 veth：每起一個容器多一個、停掉就消失（實機一台累積 41 個）
+    r"^veth[0-9a-f]+$",
 ]
 
 
@@ -710,23 +1071,78 @@ async def set_device_port_filter(
 RACK_EMBED_KEY = "rack_embed"
 
 
+# ── 公開端點的權杖（機櫃嵌入圖、Graylog DSV）──
+# 2026-10-09 起：權杖加密存放並綁定用途（以前明文存在設定 JSON 裡）、會到期（預設一年，
+# 到期前由 credential_expiry 通知管理員）。管理區的設定頁不再直接回權杖，要按「顯示」
+# （另一個端點，留稽核）才看得到。
+RACK_TOKEN_AAD = b"setting:rack_embed:token"
+DSV_TOKEN_AAD = b"setting:graylog_dsv:token"
+PUBLIC_TOKEN_DEFAULT_DAYS = 365
+PUBLIC_TOKEN_DAYS = (30, 90, 180, 365)
+
+
+def _public_token(v: dict[str, Any], aad: bytes) -> tuple[str, datetime | None]:
+    """(權杖明文, 到期時間)。沒有權杖回 ("", None)；0202 之前的明文欄位也讀得到。"""
+    tok = ""
+    if v.get("token_enc"):
+        tok = _dec(str(v["token_enc"]), aad) or ""
+    elif v.get("token"):
+        tok = str(v["token"])
+    exp = None
+    if v.get("token_expires_at"):
+        try:
+            exp = datetime.fromisoformat(str(v["token_expires_at"]))
+        except ValueError:
+            exp = None
+    return tok, exp
+
+
+def _new_public_token(cur: dict[str, Any], aad: bytes, days: int, nbytes: int) -> None:
+    import secrets as _secrets
+    from datetime import timedelta
+
+    cur["token_enc"] = _enc(_secrets.token_urlsafe(nbytes), aad)
+    cur.pop("token", None)
+    cur["token_expires_at"] = (datetime.now(UTC) + timedelta(days=days)).isoformat()
+
+
+def public_token_problem(cfg: dict[str, Any], supplied: str) -> str | None:
+    """公開端點的權杖檢查：None＝通過；否則 "invalid" 或 "expired"（常數時間比對）。"""
+    import hmac
+
+    expected = str(cfg.get("token") or "")
+    if not expected:
+        return "invalid"
+    try:
+        a = (supplied or "").encode("utf-8", "surrogatepass")
+        b = expected.encode("utf-8", "surrogatepass")
+    except (UnicodeEncodeError, AttributeError):
+        return "invalid"
+    if not hmac.compare_digest(a, b):
+        return "invalid"
+    exp = cfg.get("token_expires_at")
+    if isinstance(exp, datetime) and exp <= datetime.now(UTC):
+        return "expired"
+    return None
+
+
 async def get_rack_embed(session: AsyncSession) -> dict[str, Any]:
-    """機櫃示意圖對外嵌入設定：enabled / token。
+    """機櫃示意圖對外嵌入設定：enabled / token（明文，僅程序內用）/ token_set / token_expires_at。
 
     與 Graylog DSV 同一個模式（單一 token + 逐物件 expose 開關），刻意不共用同一把
     token：撤銷嵌入網址時不該把 Graylog 的查表一起打掉。
     """
     row = await session.get(SystemSetting, RACK_EMBED_KEY)
     v = dict(row.value) if (row and isinstance(row.value, dict)) else {}
-    return {"enabled": bool(v.get("enabled", False)), "token": str(v.get("token") or "")}
+    tok, exp = _public_token(v, RACK_TOKEN_AAD)
+    return {"enabled": bool(v.get("enabled", False)), "token": tok, "token_set": bool(tok),
+            "token_expires_at": exp}
 
 
 async def set_rack_embed(
     session: AsyncSession, *, enabled: bool, regenerate_token: bool = False,
-    updated_by_user_id: uuid.UUID | None = None,
+    token_days: int = PUBLIC_TOKEN_DEFAULT_DAYS, updated_by_user_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
-    import secrets as _secrets
-
     from sqlalchemy.orm.attributes import flag_modified
 
     row = await session.get(SystemSetting, RACK_EMBED_KEY)
@@ -735,33 +1151,59 @@ async def set_rack_embed(
         session.add(row)
     cur = dict(row.value or {})
     cur["enabled"] = bool(enabled)
-    if regenerate_token or not cur.get("token"):
-        cur["token"] = _secrets.token_urlsafe(32)
+    if regenerate_token or not (cur.get("token_enc") or cur.get("token")):
+        _new_public_token(cur, RACK_TOKEN_AAD, token_days, 32)
     row.value = cur
     row.updated_by = updated_by_user_id
     flag_modified(row, "value")
     await session.flush()
-    return dict(cur)
+    return await get_rack_embed(session)
 
 
 async def get_graylog_dsv(session: AsyncSession) -> dict[str, Any]:
-    """Graylog DSV 查表設定：enabled / token / fmt(csv|tsv) / path(URL slug)。"""
+    """Graylog DSV 查表設定：enabled / token（明文，僅程序內用）/ token_set / token_expires_at /
+    fmt(csv|tsv) / path(URL slug) / allow_plain_http / allowed_sources。
+
+    - allow_plain_http：明文 8088 埠要在這裡明確打開才服務（新安裝預設關；0202 升級時
+      已經在用 DSV 的站台保留原本的行為）
+    - allowed_sources：只接受這些網段來的查表請求（空＝不限制）
+    """
     row = await session.get(SystemSetting, GRAYLOG_DSV_KEY)
     v = dict(row.value) if (row and isinstance(row.value, dict)) else {}
+    tok, exp = _public_token(v, DSV_TOKEN_AAD)
+    srcs = v.get("allowed_sources")
     return {
         "enabled": bool(v.get("enabled", False)),
-        "token": str(v.get("token") or ""),
+        "token": tok,
+        "token_set": bool(tok),
+        "token_expires_at": exp,
         "fmt": v.get("fmt") if v.get("fmt") in ("csv", "tsv") else "csv",
         "path": str(v.get("path") or "ip-fqdn"),
+        "allow_plain_http": bool(v.get("allow_plain_http", False)),
+        "allowed_sources": [str(x) for x in srcs] if isinstance(srcs, list) else [],
     }
+
+
+def clean_cidrs(items: list[str] | None) -> list[str]:
+    """允許的來源：每行一個位址或網段；不合法的丟 ValueError（不要靜靜略過，否則以為限制了其實沒有）。"""
+    import ipaddress as _ip
+
+    out: list[str] = []
+    for raw in items or []:
+        raw = str(raw).strip()
+        if not raw:
+            continue
+        out.append(str(_ip.ip_network(raw, strict=False)))
+    return out[:200]
 
 
 async def set_graylog_dsv(
     session: AsyncSession, *, enabled: bool, fmt: str, path: str,
-    regenerate_token: bool = False, updated_by_user_id: uuid.UUID | None = None,
+    regenerate_token: bool = False, token_days: int = PUBLIC_TOKEN_DEFAULT_DAYS,
+    allow_plain_http: bool | None = None, allowed_sources: list[str] | None = None,
+    updated_by_user_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     import re
-    import secrets
 
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -775,8 +1217,12 @@ async def set_graylog_dsv(
     # path 限英數 / 連字號 / 底線，避免亂跑路由
     slug = re.sub(r"[^A-Za-z0-9_-]", "", path or "").strip("-") or "ip-fqdn"
     cur["path"] = slug[:48]
-    if regenerate_token or not cur.get("token"):
-        cur["token"] = secrets.token_urlsafe(24)
+    if allow_plain_http is not None:
+        cur["allow_plain_http"] = bool(allow_plain_http)
+    if allowed_sources is not None:
+        cur["allowed_sources"] = clean_cidrs(allowed_sources)
+    if regenerate_token or not (cur.get("token_enc") or cur.get("token")):
+        _new_public_token(cur, DSV_TOKEN_AAD, token_days, 24)
     row.value = cur
     row.updated_by = updated_by_user_id
     flag_modified(row, "value")
@@ -810,6 +1256,8 @@ class LdapConfig:
     admin_groups: list[str]
     timeout: float
     default_group_id: str | None = None   # 自動建立帳號時加入的群組（預設角色）
+    ca_cert_pem: str | None = None        # 驗證 LDAPS／StartTLS 用的 CA 憑證（企業內部 CA），沒設＝系統信任清單
+    allow_weak_tls: bool = False          # 接受 RSA 1024 位元等較弱金鑰的伺服器憑證（OpenSSL 安全等級 1）
 
 
 def _enc_pw(pw: str) -> str:
@@ -862,6 +1310,10 @@ async def get_ldap_config(session: AsyncSession) -> LdapConfig:
             cfg.admin_groups = [str(x) for x in v["admin_groups"]]
         if isinstance(v.get("default_group_id"), str) and v["default_group_id"]:
             cfg.default_group_id = v["default_group_id"]
+        if isinstance(v.get("ca_cert_pem"), str) and v["ca_cert_pem"].strip():
+            cfg.ca_cert_pem = v["ca_cert_pem"]
+        if isinstance(v.get("allow_weak_tls"), bool):
+            cfg.allow_weak_tls = v["allow_weak_tls"]
         if isinstance(v.get("bind_password_enc"), str) and v["bind_password_enc"]:
             pw = _dec_pw(v["bind_password_enc"])
             if pw is not None:
@@ -871,7 +1323,7 @@ async def get_ldap_config(session: AsyncSession) -> LdapConfig:
 
 _LDAP_SCALARS = ("enabled", "server", "port", "use_ssl", "use_starttls", "bind_dn",
                  "search_base", "user_filter", "attr_email", "attr_display_name",
-                 "attr_member_of", "admin_groups", "default_group_id")
+                 "attr_member_of", "admin_groups", "default_group_id", "ca_cert_pem", "allow_weak_tls")
 
 
 async def set_ldap_config(
@@ -1306,6 +1758,8 @@ NOTIFY_MATRIX_KEY = "notification_matrix"
 # 但**仍然是升級時的預設來源**：已經把異常通知的 Email 打開的站台，升級後十類都還開著。
 ANOMALY_EVENTS: tuple[str, ...] = (
     "anomaly.ip_conflicts",
+    "anomaly.arp_flux",
+    "anomaly.l2_subnet_bleed",
     "anomaly.mac_drifts",
     "anomaly.ghost_ips",
     "anomaly.unauthorized_ips",
@@ -1316,23 +1770,35 @@ ANOMALY_EVENTS: tuple[str, ...] = (
     "anomaly.suspicious_changes",
     "anomaly.fw_rule_rot",
     "anomaly.mac_flapping",
+    "anomaly.identity_changes",
 )
 LEGACY_ANOMALY_EVENT = "anomaly.detected"
+# 只是參考、預設不通知的類別：雙網卡 ARP flux 是 Linux 預設行為（arp_ignore=0），不是故障（使用者 2026-10-20）。
+# 舊的總開關也不帶過來；想收的人可以在通知設定自己打開
+INFO_ANOMALY_EVENTS: frozenset[str] = frozenset({"anomaly.arp_flux"})
 
 NOTIFY_EVENTS: tuple[tuple[str, bool, bool], ...] = (
     ("ip_request.created", True, True),    # 審核者：有新 IP 申請待審
     ("ip_request.approved", True, True),   # 申請人：申請已核准（含配發 IP）
     ("ip_request.rejected", True, True),   # 申請人：申請已拒絕
     ("cert.expiring", True, False),        # 憑證即將到期 / 已過期
+    # API 權杖、對外 MCP 金鑰、DSV／機櫃嵌入權杖即將到期（14／7／1 天與當天各一次）
+    ("credential.expiring", True, False),
     ("cert.deployed", True, False),        # 代理成功部署新憑證
     ("cert.drift", True, False),           # 憑證飄移（某代理未套到最新版）
-    *((ev, True, False) for ev in ANOMALY_EVENTS),   # 異常偵測（逐類別）
+    ("cert.push_failed", True, False),     # 憑證推送到防火牆失敗或確認不到而換回（0227）
+    *((ev, ev not in INFO_ANOMALY_EVENTS, False) for ev in ANOMALY_EVENTS),   # 異常偵測（逐類別）
     ("firewall.rules_changed", True, False),  # 防火牆規則有異動
     # 「東西壞了卻沒人知道」三類。只在開始與恢復時發（見 services/state_alert）。
     ("integration.sync_failed", True, False),  # 整合同步失敗／恢復
+    ("dns.compare_mismatch", True, False),        # DNS 比對群組各台的紀錄不一樣（超過寬限時間才發；services/dns_compare）
+    ("dns.compare_resolved", True, False),        # DNS 比對群組恢復一致
     ("agent.offline", True, False),            # 掃描／憑證代理失聯／恢復
+    ("agent.overloaded", True, False),         # 掃描代理負載過重（連續 3 輪）／恢復
+    ("identify.done", True, False),            # 自己發起的 IP 探測完成／失敗（只通知發起人）
     ("system.health", True, False),            # 系統檢查未通過／恢復
     ("dhcp.pool_exhausted", True, False),      # DHCP 集區快用完／回到門檻以下
+    ("external_dns.changed", True, False),     # 對外網域在外部 DNS 的解析變了（外部 DNS 解析，2026-10-19）
     ("jump_host.key_changed", True, True),     # 跳板主機金鑰改變（資安事件，預設連 Email 都開）
     ("cert.fetch_failed", True, False),        # 憑證來源抓取失敗／恢復
     # 這兩個原本直接推通知、設定頁上沒有對應的列 —— 使用者收得到卻關不掉
@@ -1340,16 +1806,33 @@ NOTIFY_EVENTS: tuple[tuple[str, bool, bool], ...] = (
     ("ip.stale", True, False),                 # 失聯 IP 提醒
     # 權限變更是低頻高影響 → 預設連 Email 都開；暴力破解只在「多個帳號同時被鎖」時發
     ("security.privilege_changed", True, True),
+    # 已經換掉的更新權杖又被使用（疑似盜用；工作階段已自動撤銷）
+    ("security.session_reuse", True, True),
     ("security.brute_force", True, False),
+    # RustDesk 客戶端回報的告警（密碼一分鐘錯 6 次、累計 30 次、允許清單違規…）；同一台同一類 10 分鐘內只發一次
+    ("rustdesk.alarm", True, False),
+    # IP 變更評估：送審通知審核人（跟 IP 申請一樣預設連 Email）、覆核結果通知建立者
+    ("change_impact.submitted", True, True),
+    ("change_impact.reviewed", True, False),
 )
+
+
+#: 通訊軟體欄（跟 notify_channels.WEBHOOK_CHANNELS 同一份）：每個事件可以逐一勾選要不要發到哪個通訊軟體。
+#: 沒存過的值跟「站內通知」那一欄一樣（10-25 使用者：「預設跟第一欄通知一樣」）。
+NOTIFY_IM_CHANNELS: tuple[str, ...] = ("telegram", "slack", "teams", "nextcloud", "zulip", "webhook")
 
 
 def _default_matrix() -> dict[str, dict[str, bool]]:
     return {k: {"in_app": ia, "email": em} for k, ia, em in NOTIFY_EVENTS}
 
 
+def notify_wanted(ch: dict[str, bool]) -> bool:
+    """這個事件至少有一個管道要發（站內、Email 或任何一個通訊軟體）。以前只看前兩欄，只勾通訊軟體的事件整個不發。"""
+    return any(bool(v) for v in ch.values())
+
+
 async def get_notification_matrix(session: AsyncSession) -> dict[str, dict[str, bool]]:
-    """回傳通知矩陣 {event: {in_app, email}}，未設定的事件用預設值補齊。"""
+    """回傳通知矩陣 {event: {in_app, email, telegram, slack, teams, nextcloud, zulip, webhook}}，未設定的用預設值補齊。"""
     out = _default_matrix()
     row = await session.get(SystemSetting, NOTIFY_MATRIX_KEY)
     stored = row.value if row and isinstance(row.value, dict) else {}
@@ -1360,7 +1843,7 @@ async def get_notification_matrix(session: AsyncSession) -> dict[str, dict[str, 
     legacy = stored.get(LEGACY_ANOMALY_EVENT)
     if isinstance(legacy, dict):
         for ev in ANOMALY_EVENTS:
-            if ev in stored:
+            if ev in stored or ev in INFO_ANOMALY_EVENTS:
                 continue
             if isinstance(legacy.get("in_app"), bool):
                 out[ev]["in_app"] = legacy["in_app"]
@@ -1373,6 +1856,11 @@ async def get_notification_matrix(session: AsyncSession) -> dict[str, dict[str, 
                 out[k]["in_app"] = v["in_app"]
             if isinstance(v.get("email"), bool):
                 out[k]["email"] = v["email"]
+    # 通訊軟體欄：存過就照存的，沒存過跟站內那一欄一樣
+    for k, row_v in out.items():
+        st = stored.get(k) if isinstance(stored.get(k), dict) else {}
+        for chn in NOTIFY_IM_CHANNELS:
+            row_v[chn] = st[chn] if isinstance(st.get(chn), bool) else row_v["in_app"]
     return out
 
 
@@ -1391,6 +1879,10 @@ async def set_notification_matrix(
         ia = bool(v["in_app"]) if isinstance(v, dict) and isinstance(v.get("in_app"), bool) else dflt["in_app"]
         em = bool(v["email"]) if isinstance(v, dict) and isinstance(v.get("email"), bool) else dflt["email"]
         val[k] = {"in_app": ia, "email": em}
+        # 通訊軟體欄只存有明確給的值；沒給的之後讀取時跟著站內那一欄
+        for chn in NOTIFY_IM_CHANNELS:
+            if isinstance(v, dict) and isinstance(v.get(chn), bool):
+                val[k][chn] = bool(v[chn])
     row.value = val
     row.updated_by = updated_by_user_id
     flag_modified(row, "value")
@@ -1410,7 +1902,11 @@ ONLINE_GRACE_KEY = "online_grace_minutes"
 
 async def get_liveness_config(session: AsyncSession) -> dict[str, Any]:
     """上線判定：閾值（分鐘）＋哪些來源算數。"""
-    from app.services.evidence import LIVENESS_SOURCES, default_liveness_sources
+    from app.services.evidence import (
+        LIVENESS_SOURCES,
+        SOURCES_ADDED_LATER,
+        default_liveness_sources,
+    )
     row = await session.get(SystemSetting, ONLINE_GRACE_KEY)
     v = row.value if row and isinstance(row.value, dict) else {}
     try:
@@ -1420,6 +1916,11 @@ async def get_liveness_config(session: AsyncSession) -> dict[str, Any]:
     raw = v.get("sources")
     if isinstance(raw, list):
         sources = [str(x) for x in raw if str(x) in LIVENESS_SOURCES]
+        # 存設定之後才新增的來源：會過期的預設採信（使用者當時根本沒看過，談不上「沒勾」）。
+        # `known`＝存設定時畫面上有哪些來源；更早的設定沒有這一欄，就以 SOURCES_ADDED_LATER 為準
+        known = ({str(x) for x in v["known"]} if isinstance(v.get("known"), list)
+                 else set(LIVENESS_SOURCES) - set(SOURCES_ADDED_LATER))
+        sources += [s for s in default_liveness_sources() if s not in known and s not in sources]
     else:
         sources = default_liveness_sources()
     return {"minutes": min(43200, max(1, minutes)), "sources": sources}
@@ -1495,3 +1996,35 @@ async def set_cert_expiry_days(
     row.value = {"days": clean}
     row.updated_by = updated_by_user_id
     return clean
+
+
+# ─────────────────── 每日備份加密（2026-10-09）───────────────────
+# 密碼加密存在這裡（綁定用途）；每日備份（root 的 jt-ipam-backup.sh）透過 app.cli.backup_encrypt
+# 取出來把整包備份加密成 .jtbak（格式見 services/backup_crypt）。沒設定就維持原本的明文目錄，
+# 系統診斷會提醒。
+BACKUP_ENC_KEY = "backup_encryption"
+BACKUP_PASS_AAD = b"setting:backup_encryption:passphrase"
+
+
+async def get_backup_encryption(session: AsyncSession) -> dict[str, Any]:
+    """{enabled, set_at, passphrase（明文，僅程序內用）}。"""
+    row = await session.get(SystemSetting, BACKUP_ENC_KEY)
+    v = dict(row.value) if (row and isinstance(row.value, dict)) else {}
+    pw = _dec(str(v["passphrase_enc"]), BACKUP_PASS_AAD) if v.get("passphrase_enc") else None
+    return {"enabled": bool(pw), "set_at": v.get("set_at"), "passphrase": pw}
+
+
+async def set_backup_encryption(session: AsyncSession, passphrase: str | None, *,
+                                updated_by: uuid.UUID | None) -> None:
+    """設定（或用 None 移除）備份加密密碼。"""
+    row = await session.get(SystemSetting, BACKUP_ENC_KEY)
+    value: dict[str, Any] = {}
+    if passphrase:
+        value = {"passphrase_enc": _enc(passphrase, BACKUP_PASS_AAD), "set_at": datetime.now(UTC).isoformat()}
+    if row is None:
+        session.add(SystemSetting(key=BACKUP_ENC_KEY, value=value, updated_by=updated_by))
+    else:
+        row.value = value
+        row.updated_by = updated_by
+        flag_modified(row, "value")
+    await session.flush()

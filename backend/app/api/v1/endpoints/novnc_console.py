@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import CurrentUser
 from app.core.audit import append_audit
 from app.core.config import get_settings
+from app.core.console_guard import note_ticket, ticket_fields, watch_console
 from app.core.db import SessionLocal, get_session
 from app.core.rate_limit import _redis_client
 from app.core.security import envelope_decrypt
@@ -71,8 +72,9 @@ class NovncTicketIn(BaseModel):
 
 async def _resolve_creds(
     session: AsyncSession, user: User, ip: IPAddress, payload: NovncTicketIn,
-) -> tuple[str, str]:
-    """回 (pve_username〔user@realm〕, password)。優先用金庫憑證，否則用輸入帳密。"""
+) -> tuple[str, str, str | None]:
+    """回 (pve_username〔user@realm〕, password, 已存帳密的名稱)。優先用金庫憑證，否則用輸入帳密
+    （手動輸入時名稱是 None）。名稱是給錯誤訊息用的：被拒時要講出是哪一組。"""
     if payload.credential_id is not None:
         from app.api.v1.endpoints.ssh_credentials import cred_aad
         cred = await session.get(SSHCredential, payload.credential_id)
@@ -81,10 +83,10 @@ async def _resolve_creds(
             raise HTTPException(status_code=404, detail=ui_detail("console_pve_cred_not_found", "找不到 PVE 憑證"))
         secrets_enc = dict(cred.secrets_enc or {})
         password = envelope_decrypt(secrets_enc["password"], aad=cred_aad(user.id, "password"))
-        return cred.username, password
+        return cred.username, password, cred.label
     if not payload.username or not payload.password:
         raise HTTPException(status_code=400, detail=ui_detail("console_pve_creds_missing", "缺少 PVE 帳號或密碼"))
-    return pvec.normalize_username(payload.username, payload.realm), payload.password
+    return pvec.normalize_username(payload.username, payload.realm), payload.password, None
 
 
 @router.post("/{address_id}/novnc/ticket")
@@ -111,7 +113,7 @@ async def issue_novnc_ticket(
     if target is None:
         raise HTTPException(status_code=409, detail=ui_detail("console_pve_no_vm", "此 IP 未對應到 Proxmox VE 的 VM/CT"))
 
-    pve_user, password = await _resolve_creds(session, user, ip, payload)
+    pve_user, password, cred_label = await _resolve_creds(session, user, ip, payload)
     # 用使用者帳密登入 PVE → vncproxy/termproxy（權限不足在這裡就擋下）
     try:
         pve_ticket, csrf = await pvec.pve_login(
@@ -120,6 +122,15 @@ async def issue_novnc_ticket(
         )
         vncticket, port = await pvec.pve_console_proxy(target, pve_ticket, csrf)
     except pvec.PveConsoleError as e:
+        if e.code == "pve_auth_failed" and cred_label is not None:
+            # 用已存帳密被拒：講出是哪一組 —— 存的時候密碼就打錯、或之後改過密碼，是最常見的原因
+            # （使用者回報，2026-09-24：那組從來沒有成功用過）
+            e = pvec.PveConsoleError(
+                f"PVE（{e.params.get('host')}）拒絕了已存帳密「{cred_label}」（{pve_user}）。"
+                "已存的密碼可能打錯或已變更，請改用手動輸入並重新儲存",
+                code="pve_auth_failed_saved", status=401,
+                label=cred_label, user=pve_user, host=e.params.get("host") or "",
+            )
         # 帶上 code：前端要能分辨 pve_tfa_required（跳出驗證碼輸入）與其他失敗，
         # 而且句子要能翻成使用者的語言（errors.<code>）。
         raise HTTPException(
@@ -142,7 +153,7 @@ async def issue_novnc_ticket(
 
     ticket = secrets.token_urlsafe(32)
     payload_json = json.dumps({
-        "user_id": str(user.id), "ip_id": str(ip.id),
+        "user_id": str(user.id), "ip_id": str(ip.id), **ticket_fields(request),
         "kind": target.kind, "base_url": target.base_url, "node": target.node,
         "vmid": target.vmid, "port": port, "vncticket": vncticket,
         "pve_cookie": pve_ticket, "verify_tls": target.verify_tls,
@@ -165,6 +176,7 @@ async def _redeem(ticket: str, address_id: uuid.UUID) -> dict[str, Any] | None:
     if not ticket:
         return None
     raw = await take_once(_redis_client(), _ticket_key(ticket))
+    note_ticket(raw)
     if not raw:
         return None
     try:
@@ -186,6 +198,7 @@ async def _audit(*, user_id: str, actor_ip: str | None, ip_id: str, action: str,
 
 
 @router.websocket("/{address_id}/novnc/ws")
+@watch_console("novnc")
 async def novnc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") -> None:
     global _active_sessions
 
@@ -229,6 +242,12 @@ async def novnc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = ""
     counted = False
     pve_ws = None
     try:
+        # PVE 整合：跟 HTTP 相同的出站規則，連線前檢查（core/net_guard 的 strict）
+        from urllib.parse import urlparse
+
+        from app.core.net_guard import acheck_target
+        _pve = urlparse(pve_url)
+        await acheck_target(_pve.hostname or "", _pve.port or 8006, policy="strict")
         pve_ws = await websockets.connect(
             pve_url,
             additional_headers={"Cookie": f"PVEAuthCookie={data['pve_cookie']}"},

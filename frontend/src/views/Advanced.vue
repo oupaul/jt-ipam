@@ -19,6 +19,7 @@ import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
+import { withExportValue } from "@/utils/tableExport";
 import { useTablePagination } from "@/composables/useTablePagination";
 
 const { t } = useI18n();
@@ -252,15 +253,22 @@ function fmtBandwidth(r: any): string {
   if (r.commit_rate_kbps != null) return fmtKbps(r.commit_rate_kbps);
   return "—";
 }
+function circuitStatusText(r: any): string {
+  const k = `circuits.status_${r.status}`;
+  const o = t(k);
+  return o === k ? (r.status ?? "—") : o;
+}
 const circuitCols = computed<DataTableColumns<any>>(() => autoSort([
   { title: t("cols.cid"), key: "cid", minWidth: 160, ellipsis: { tooltip: true } },
   { title: t("circuits.provider"), key: "provider_id", width: 180, ellipsis: { tooltip: true },
     render: (r) => providers.value.find((p) => p.id === r.provider_id)?.name ?? "—" },
   { title: t("circuits.type"), key: "type_id", width: 160, ellipsis: { tooltip: true },
     render: (r) => circuitTypes.value.find((p) => p.id === r.type_id)?.name ?? "—" },
-  { title: t("common.status"), key: "status", width: 120,
-    render: (r) => { const k = `circuits.status_${r.status}`; const o = t(k); return o === k ? (r.status ?? "—") : o; } },
-  { title: t("circuits.bandwidth"), key: "down_kbps", width: 170, render: (r) => fmtBandwidth(r) },
+  // 狀態、頻寬匯出時也用畫面上的文字（issue #50：以前匯出 active 與原始 kbps 數字）
+  withExportValue({ title: t("common.status"), key: "status", width: 120,
+    render: (r: any) => circuitStatusText(r) }, (r) => circuitStatusText(r)),
+  withExportValue({ title: t("circuits.bandwidth"), key: "down_kbps", width: 170,
+    render: (r: any) => fmtBandwidth(r) }, (r) => fmtBandwidth(r)),
   { title: t("circuits.ip_address"), key: "ip_address", width: 150, ellipsis: { tooltip: true }, render: (r) => r.ip_address || "—" },
   { title: t("circuits.gateway"), key: "gateway", width: 140, ellipsis: { tooltip: true }, render: (r) => r.gateway || "—" },
   { title: t("circuits.device"), key: "device_id", width: 160, ellipsis: { tooltip: true },
@@ -296,14 +304,15 @@ const ssidCols = computed<DataTableColumns<any>>(() => autoSort([
 // 每張表的欄位顯示偏好（ColumnPicker + useColumnPrefs）+ 即時篩選。actions 欄(key="_")永遠保留。
 function useTablePrefs(name: string, cols: typeof tenantCols, rows: typeof tenants) {
   const allKeys = cols.value.filter((c: any) => c.key && c.key !== "_").map((c: any) => String(c.key));
-  const { visibleKeys, setVisible, reset } = useColumnPrefs(`advanced_${name}`, allKeys, allKeys);
+  const { visibleKeys, setVisible, reset, order, setOrder, orderColumns } =
+    useColumnPrefs(`advanced_${name}`, allKeys, allKeys);
   const items = computed(() => cols.value
     .filter((c: any) => c.key && c.key !== "_")
     .map((c: any) => ({ key: String(c.key), label: typeof c.title === "string" ? c.title : String(c.key) })));
   const visibleCols = computed<DataTableColumns<any>>(() =>
-    cols.value.filter((c: any) => c.key === "_" || visibleKeys.value.includes(String(c.key))));
+    orderColumns(cols.value.filter((c: any) => c.key === "_" || visibleKeys.value.includes(String(c.key)))));
   const { query, filtered } = useTableQuickFilter(rows);
-  return reactive({ visibleKeys, setVisible, reset, items, visibleCols, query, filtered });
+  return reactive({ visibleKeys, setVisible, reset, order, setOrder, items, visibleCols, query, filtered });
 }
 const tenantP = useTablePrefs("tenants", tenantCols, tenants);
 const tenantGroupP = useTablePrefs("tenant_groups", tenantGroupCols, tenantGroups);
@@ -347,7 +356,8 @@ onMounted(() => { void loadAll(); });
                 {{ t("common.create") }}
               </n-button>
               <ColumnPicker :all="tenantP.items" :visible="tenantP.visibleKeys"
-                            @update:visible="tenantP.setVisible" @reset="tenantP.reset" />
+                            @update:visible="tenantP.setVisible" @reset="tenantP.reset"
+                            :order="tenantP.order" @update:order="tenantP.setOrder" />
               <ExportButton :columns="tenantP.visibleCols" :rows="tenantP.filtered" filename="tenants" :title="t('advanced.tenants')" />
             </n-space>
             <n-data-table :columns="tenantP.visibleCols" :data="tenantP.filtered" :loading="loading" :bordered="false" :scroll-x="596" :pagination="pg" />
@@ -366,7 +376,8 @@ onMounted(() => { void loadAll(); });
                 {{ t("common.create") }}
               </n-button>
               <ColumnPicker :all="tenantGroupP.items" :visible="tenantGroupP.visibleKeys"
-                            @update:visible="tenantGroupP.setVisible" @reset="tenantGroupP.reset" />
+                            @update:visible="tenantGroupP.setVisible" @reset="tenantGroupP.reset"
+                            :order="tenantGroupP.order" @update:order="tenantGroupP.setOrder" />
               <ExportButton :columns="tenantGroupP.visibleCols" :rows="tenantGroupP.filtered" filename="tenant-groups" :title="t('advanced.tenant_groups')" />
             </n-space>
             <n-data-table :columns="tenantGroupP.visibleCols" :data="tenantGroupP.filtered" :loading="loading" :bordered="false" :scroll-x="456" :pagination="pg" />
@@ -388,7 +399,8 @@ onMounted(() => { void loadAll(); });
             {{ t("common.create") }}
           </n-button>
           <ColumnPicker :all="asnP.items" :visible="asnP.visibleKeys"
-                        @update:visible="asnP.setVisible" @reset="asnP.reset" />
+                        @update:visible="asnP.setVisible" @reset="asnP.reset"
+                        :order="asnP.order" @update:order="asnP.setOrder" />
           <ExportButton :columns="asnP.visibleCols" :rows="asnP.filtered" filename="asns" title="ASN" />
         </n-space>
         <n-data-table :columns="asnP.visibleCols" :data="asnP.filtered" :loading="loading" :bordered="false" :scroll-x="536" :pagination="pg" />
@@ -413,7 +425,8 @@ onMounted(() => { void loadAll(); });
                 {{ t("common.create") }}
               </n-button>
               <ColumnPicker :all="providerP.items" :visible="providerP.visibleKeys"
-                            @update:visible="providerP.setVisible" @reset="providerP.reset" />
+                            @update:visible="providerP.setVisible" @reset="providerP.reset"
+                            :order="providerP.order" @update:order="providerP.setOrder" />
               <ExportButton :columns="providerP.visibleCols" :rows="providerP.filtered" filename="providers" :title="t('circuits.providers')" />
             </n-space>
             <n-data-table :columns="providerP.visibleCols" :data="providerP.filtered" :loading="loading" :bordered="false" :scroll-x="596" :pagination="pg" />
@@ -432,7 +445,8 @@ onMounted(() => { void loadAll(); });
                 {{ t("common.create") }}
               </n-button>
               <ColumnPicker :all="circuitP.items" :visible="circuitP.visibleKeys"
-                            @update:visible="circuitP.setVisible" @reset="circuitP.reset" />
+                            @update:visible="circuitP.setVisible" @reset="circuitP.reset"
+                            :order="circuitP.order" @update:order="circuitP.setOrder" />
               <ExportButton :columns="circuitP.visibleCols" :rows="circuitP.filtered" filename="circuits" :title="t('advanced.circuits')" />
             </n-space>
             <n-data-table :columns="circuitP.visibleCols" :data="circuitP.filtered" :loading="loading" :bordered="false" :scroll-x="1460" :pagination="pg" />
@@ -452,7 +466,8 @@ onMounted(() => { void loadAll(); });
                 {{ t("common.create") }}
               </n-button>
               <ColumnPicker :all="circuitTypeP.items" :visible="circuitTypeP.visibleKeys"
-                            @update:visible="circuitTypeP.setVisible" @reset="circuitTypeP.reset" />
+                            @update:visible="circuitTypeP.setVisible" @reset="circuitTypeP.reset"
+                            :order="circuitTypeP.order" @update:order="circuitTypeP.setOrder" />
               <ExportButton :columns="circuitTypeP.visibleCols" :rows="circuitTypeP.filtered" filename="circuit-types" :title="t('circuits.types')" />
             </n-space>
             <n-data-table :columns="circuitTypeP.visibleCols" :data="circuitTypeP.filtered" :loading="loading" :bordered="false" :scroll-x="472" :pagination="pg" />
@@ -479,7 +494,8 @@ onMounted(() => { void loadAll(); });
                 {{ t("common.create") }}
               </n-button>
               <ColumnPicker :all="contactP.items" :visible="contactP.visibleKeys"
-                            @update:visible="contactP.setVisible" @reset="contactP.reset" />
+                            @update:visible="contactP.setVisible" @reset="contactP.reset"
+                            :order="contactP.order" @update:order="contactP.setOrder" />
               <ExportButton :columns="contactP.visibleCols" :rows="contactP.filtered" filename="contacts" :title="t('advanced.contacts')" />
             </n-space>
             <n-data-table :columns="contactP.visibleCols" :data="contactP.filtered" :loading="loading" :bordered="false" :scroll-x="696" :pagination="pg" />
@@ -498,7 +514,8 @@ onMounted(() => { void loadAll(); });
                 {{ t("common.create") }}
               </n-button>
               <ColumnPicker :all="contactGroupP.items" :visible="contactGroupP.visibleKeys"
-                            @update:visible="contactGroupP.setVisible" @reset="contactGroupP.reset" />
+                            @update:visible="contactGroupP.setVisible" @reset="contactGroupP.reset"
+                            :order="contactGroupP.order" @update:order="contactGroupP.setOrder" />
               <ExportButton :columns="contactGroupP.visibleCols" :rows="contactGroupP.filtered" filename="contact-groups" :title="t('advanced.contact_groups')" />
             </n-space>
             <n-data-table :columns="contactGroupP.visibleCols" :data="contactGroupP.filtered" :loading="loading" :bordered="false" :scroll-x="456" :pagination="pg" />
@@ -520,7 +537,8 @@ onMounted(() => { void loadAll(); });
             {{ t("common.create") }}
           </n-button>
           <ColumnPicker :all="ssidP.items" :visible="ssidP.visibleKeys"
-                        @update:visible="ssidP.setVisible" @reset="ssidP.reset" />
+                        @update:visible="ssidP.setVisible" @reset="ssidP.reset"
+                        :order="ssidP.order" @update:order="ssidP.setOrder" />
           <ExportButton :columns="ssidP.visibleCols" :rows="ssidP.filtered" filename="ssids" title="SSID" />
         </n-space>
         <n-data-table :columns="ssidP.visibleCols" :data="ssidP.filtered" :loading="loading" :bordered="false" :scroll-x="456" :pagination="pg" />

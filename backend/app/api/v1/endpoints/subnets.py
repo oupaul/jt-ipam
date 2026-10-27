@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ipaddress
 import uuid
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, or_, select, text
+from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import (
@@ -15,10 +17,16 @@ from app.api.v1.dependencies import (
     require_object_perm,
     require_ops_admin,
 )
+from app.api.v1.write_guards import (
+    require_admin_for_infra,
+    require_admin_for_monitoring,
+    require_move,
+    require_visible,
+)
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.sqlin import in_values
 from app.core.ui_error import detail_of, ui_detail
-from app.models.section import Section
 from app.models.subnet import Subnet
 from app.schemas.base import Paginated, StrictModel
 from app.schemas.subnet import (
@@ -39,15 +47,24 @@ from app.services.permission import (
 from app.services.subnet import (
     SubnetOverlap,
     assert_no_overlap,
-    compute_master_subnet,
     find_first_free_address,
     get_usage,
     has_overlapping_subnets,
     rebuild_subnet_hierarchy,
 )
+from app.services.subnet_write import create_subnet_checked
 
 router = APIRouter(prefix="/subnets", tags=["subnets"])
 
+
+
+async def _egress_or_422(session: AsyncSession, changes: dict[str, Any], *, scan_agent_id: Any) -> None:
+    """主控台出口（跳板／掃描代理擇一）的驗證；子網路與 IP 的編輯共用 console_route.normalize_egress。"""
+    from app.services.console_route import EgressError, normalize_egress
+    try:
+        await normalize_egress(session, changes, scan_agent_id=scan_agent_id)
+    except EgressError as exc:
+        raise HTTPException(status_code=422, detail=ui_detail(exc.code, str(exc), **exc.params)) from exc
 
 @router.get("/overlaps/exists", dependencies=[Depends(require_ops_admin)])
 async def overlaps_exist(
@@ -58,12 +75,30 @@ async def overlaps_exist(
     return {"has_overlap": await has_overlapping_subnets(session)}
 
 
+def _search_clause(q: str) -> Any:
+    """CIDR／描述的子字串；q 是一個完整位址時，包含它的子網路也算命中。"""
+    # 跳脫 LIKE 萬用字元：使用者打的 % / _ 是字面上的字
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = f"%{escaped}%"
+    conds = [cast(Subnet.cidr, String).ilike(pattern, escape="\\"),
+             Subnet.description.ilike(pattern, escape="\\")]
+    try:
+        addr = ipaddress.ip_address(q)
+    except ValueError:
+        addr = None
+    if addr is not None:
+        conds.append(Subnet.cidr.op(">>=")(cast(str(addr), INET)))
+    return or_(*conds)
+
+
 @router.get("", response_model=Paginated[SubnetRead])
 async def list_subnets(
     user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
     section_id: uuid.UUID | None = Query(None),
     archived: bool = Query(False),  # 預設只列未歸檔；archived=true 看歸檔區
+    q: str | None = Query(None, max_length=128,
+                          description="搜尋：CIDR 或描述的子字串（不分大小寫）；給完整位址時也列出包含它的子網路"),
     page: int = Query(1, ge=1, le=10_000),
     page_size: int = Query(50, ge=1, le=500),
 ) -> Paginated[SubnetRead]:
@@ -72,6 +107,11 @@ async def list_subnets(
     arch_clause = Subnet.archived_at.is_not(None) if archived else Subnet.archived_at.is_(None)
     stmt = stmt.where(arch_clause)
     count_stmt = count_stmt.where(arch_clause)
+    if q and q.strip():
+        # 伺服器端搜尋（2026-10-23 儀表板挑子網路）：子網路多的站台不能整包載入再在瀏覽器裡篩
+        search = _search_clause(q.strip())
+        stmt = stmt.where(search)
+        count_stmt = count_stmt.where(search)
     if section_id is not None:
         stmt = stmt.where(Subnet.section_id == section_id)
         count_stmt = count_stmt.where(Subnet.section_id == section_id)
@@ -83,8 +123,8 @@ async def list_subnets(
     if vis is not None:                    # None＝全部可見（admin 或萬用授權）
         if not vis:                        # 空 set＝完全沒有可見範圍
             return Paginated[SubnetRead](items=[], total=0, page=page, page_size=page_size)
-        stmt = stmt.where(Subnet.id.in_(vis))
-        count_stmt = count_stmt.where(Subnet.id.in_(vis))
+        stmt = stmt.where(in_values(Subnet.id, vis))
+        count_stmt = count_stmt.where(in_values(Subnet.id, vis))
 
     stmt = stmt.order_by(Subnet.cidr).offset((page - 1) * page_size).limit(page_size)
     vis_rows = list((await session.execute(stmt)).scalars().all())
@@ -94,7 +134,7 @@ async def list_subnets(
     if cust_ids:
         from app.models.customer import Customer
         cust_name = {c.id: c.name for c in (await session.execute(
-            select(Customer).where(Customer.id.in_(cust_ids))
+            select(Customer).where(in_values(Customer.id, cust_ids))
         )).scalars().all()}
     items = []
     for r in vis_rows:
@@ -151,6 +191,28 @@ async def subnet_usage(
 
 
 @router.get(
+    "/{subnet_id}/blocks",
+    dependencies=[Depends(require_object_perm("subnet", "read", path_param="subnet_id"))],
+)
+async def subnet_blocks(
+    subnet_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """每個 /24 區塊的已用數（大網段的 IP 指示計用）。
+
+    超大規模：子網路頁一次最多載入 1,000 個位址，/16 的六萬多個位址拿前面那些來畫指示計，
+    只會剩幾格、而且看起來像「其他區塊都沒人用」。這裡直接在資料庫彙總（IPv4）。
+    """
+    subnet = await session.get(Subnet, subnet_id)
+    if subnet is None:
+        raise HTTPException(status_code=404, detail="Subnet not found")
+    rows = (await session.execute(text(
+        "SELECT host(network(set_masklen(ip, 24))) AS blk, count(*) FROM ip_addresses "
+        "WHERE subnet_id = :sid AND family(ip) = 4 GROUP BY 1 ORDER BY min(ip)"), {"sid": subnet_id})).all()
+    return {"prefix": 24, "blocks": [{"start": blk, "used": int(n)} for blk, n in rows]}
+
+
+@router.get(
     "/{subnet_id}/first_free_address",
     response_model=FirstFreeAddress,
     dependencies=[Depends(require_object_perm("subnet", "read", path_param="subnet_id"))],
@@ -173,48 +235,8 @@ async def create_subnet(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> SubnetRead:
-    # A01：要在指定 section 有 write 權限
-    section = await session.get(Section, payload.section_id)
-    if section is None:
-        raise HTTPException(status_code=400, detail="Invalid section_id")
-    level = await get_object_permission(
-        session, user=user, object_type="section", object_id=section.id
-    )
-    if not has_permission(level, "write"):
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-    try:
-        await assert_no_overlap(
-            session, cidr=payload.cidr, vrf_id=payload.vrf_id,
-            allow_overlap=payload.allow_overlap,
-        )
-    except SubnetOverlap as exc:
-        raise HTTPException(status_code=409, detail=detail_of(exc, "subnet_overlap")) from exc
-
-    try:
-        validated_cf = await validate_custom_fields(
-            session, object_type="subnet", payload=payload.custom_fields
-        )
-    except CustomFieldError as exc:
-        raise HTTPException(status_code=400, detail=detail_of(exc, "custom_field_error")) from exc
-
-    master_id = await compute_master_subnet(
-        session, cidr=payload.cidr, vrf_id=payload.vrf_id
-    )
-
-    data = payload.model_dump()
-    data.pop("allow_overlap", None)   # 僅建立時的旗標，非欄位
-    data["master_subnet_id"] = master_id
-    # 新增的若是某子網路的下層、且未指定單位 → 繼承父網段的單位
-    #（側邊選單依單位分組，這樣子網段才會自動歸到與父網段同一個單位群組下）
-    if not data.get("customer_id") and master_id:
-        parent = await session.get(Subnet, master_id)
-        if parent is not None and parent.customer_id is not None:
-            data["customer_id"] = parent.customer_id
-    data["custom_fields"] = validated_cf or None
-    subnet = Subnet(**data)
-    session.add(subnet)
-    await session.flush()
+    # 區段寫入權、守門、重疊、上層子網路、繼承單位、主控台出口：與 AI 工具 create_subnet 共用（services/subnet_write）
+    subnet = await create_subnet_checked(session, user=user, payload=payload)
 
     await append_audit(
         session,
@@ -284,6 +306,27 @@ async def update_subnet(
             ) or None
         except CustomFieldError as exc:
             raise HTTPException(status_code=400, detail=detail_of(exc, "custom_field_error")) from exc
+    require_admin_for_infra(user, changes, subnet)
+    require_admin_for_monitoring(user, changes, subnet)
+    if "section_id" in changes and changes["section_id"] != subnet.section_id:
+        await require_move(session, user, object_type="subnet", object_id=subnet.id,
+                           dest_type="section", dest_id=changes["section_id"])
+    if "customer_id" in changes and changes["customer_id"] != subnet.customer_id:
+        await require_move(session, user, object_type="subnet", object_id=subnet.id,
+                           dest_type="customer", dest_id=changes["customer_id"])
+    if "master_subnet_id" in changes and changes["master_subnet_id"] != subnet.master_subnet_id:
+        await require_visible(session, user, "subnet", changes["master_subnet_id"], "Subnet not found")
+    new_scan_agent = changes.get("scan_agent_id", subnet.scan_agent_id)
+    if "jump_host_id" in changes or "console_agent_id" in changes:
+        await _egress_or_422(session, changes, scan_agent_id=new_scan_agent)
+    elif (subnet.console_agent_id is not None and "scan_agent_id" in changes
+          and new_scan_agent != subnet.console_agent_id):
+        # 換掉掃描代理、主控台出口卻還指著舊的那台：代理的允許清單只認自己掃描的子網路，出口會變成無效。
+        # 不替使用者默默改掉或清空（清空＝直連，在重疊網段會連錯主機），請他重新選出口
+        raise HTTPException(status_code=422, detail=ui_detail(
+            "console_agent_not_assigned",
+            "這個子網路的主控台出口指定了原本的掃描代理；換掃描代理時請一併重新選擇主控台出口",
+            name=""))
     for key, value in changes.items():
         setattr(subnet, key, value)
 
@@ -432,7 +475,6 @@ async def bulk_delete_subnets(
         return {"deleted": 0, "failed": 0, "errors": []}
     if len(payload.ids) > 500:
         raise HTTPException(400, detail="too many ids (max 500)")
-    from app.services.permission import get_object_permission, has_permission
     deleted = 0
     errors: list[dict[str, str]] = []
     actor_ip = request.client.host if request.client else None

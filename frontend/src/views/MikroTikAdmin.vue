@@ -10,6 +10,7 @@ import { srvText, type ServerMessage } from "@/utils/wsError";
 import { computed, h, onMounted, ref } from "vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
+import { trackTask } from "@/composables/useTaskTracker";
 import ScopeOverlapWarning from "@/components/ScopeOverlapWarning.vue";
 import {
   NCard, NDataTable, NSpace, NButton, NTag, NIcon, NTooltip, NAlert, NModal, NForm,
@@ -17,6 +18,7 @@ import {
   useMessage, type DataTableColumns,
 } from "naive-ui";
 import { listSubnets } from "@/api/subnets";
+import { listDevices, getDevice } from "@/api/basic";
 import {
   listMikroTik, createMikroTik, updateMikroTik, deleteMikroTik,
   testMikroTik, syncMikroTik,
@@ -36,7 +38,7 @@ const msg = useMessage();
 
 const COLS = ["name", "api_url", "enabled", "model", "sync_flags", "last_sync_at",
   "last_error", "actions"];
-const { visibleKeys: vis, setVisible: setVis, reset: resetVis } =
+const { visibleKeys: vis, setVisible: setVis, reset: resetVis, order, setOrder, orderColumns } =
   useColumnPrefs("mikrotik", COLS, COLS);
 const picker = computed(() => [
   { key: "name", label: t("cols.name") },
@@ -66,12 +68,39 @@ function blankForm() {
     sync_nat: true, sync_address_lists: true, sync_vpn: true,
     // 預設關：先看診斷的列數與耗時再決定
     sync_arp: false,
+    // 第二階段：介面、鄰居輕量預設開；FDB 可能上萬列，預設關
+    sync_interfaces: true, sync_neighbors: true, sync_fdb: false,
+    device_id: null as string | null,
     cpu_load_limit: 70, section_delay_ms: 300, max_response_mb: 8,
     sync_interval_seconds: 900, description: "",
     scope_subnet_ids: [] as string[],
   };
 }
 const form = ref(blankForm());
+
+/** 對應裝置：伺服器端搜尋（裝置可能上萬台，只抓一頁會找不到） */
+const deviceOptions = ref<{ label: string; value: string }[]>([]);
+const deviceSearching = ref(false);
+let deviceSeq = 0;
+async function searchDevices(q: string) {
+  const seq = ++deviceSeq;
+  deviceSearching.value = true;
+  try {
+    const r = await listDevices({ q, pageSize: 20 });
+    if (seq !== deviceSeq) return;
+    const keep = deviceOptions.value.filter((o) => o.value === form.value.device_id);
+    deviceOptions.value = [...keep, ...r.items.filter((d) => d.id !== form.value.device_id)
+      .map((d) => ({ label: d.name, value: d.id }))];
+  } catch { /* silent */ }
+  finally { if (seq === deviceSeq) deviceSearching.value = false; }
+}
+async function ensureDeviceOption(id: string | null) {
+  if (!id || deviceOptions.value.some((o) => o.value === id)) return;
+  try {
+    const d = await getDevice(id);
+    deviceOptions.value = [{ label: d.name, value: d.id }, ...deviceOptions.value];
+  } catch { /* 沒權限或已刪除 */ }
+}
 
 const subnetOptions = ref<{ label: string; value: string }[]>([]);
 async function loadSubnetOptions() {
@@ -92,6 +121,7 @@ async function refresh() {
 function openCreate() {
   editing.value = null;
   form.value = blankForm();
+  void searchDevices("");
   show.value = true;
 }
 
@@ -104,12 +134,15 @@ function openEdit(r: MikroTikRouter) {
     sync_firewall: r.sync_firewall, sync_nat: r.sync_nat,
     sync_address_lists: r.sync_address_lists, sync_vpn: r.sync_vpn,
     sync_arp: r.sync_arp,
+    sync_interfaces: r.sync_interfaces, sync_neighbors: r.sync_neighbors, sync_fdb: r.sync_fdb,
+    device_id: r.device_id ?? null,
     cpu_load_limit: r.cpu_load_limit, section_delay_ms: r.section_delay_ms,
     max_response_mb: r.max_response_mb,
     sync_interval_seconds: r.sync_interval_seconds,
     description: r.description ?? "",
     scope_subnet_ids: r.scope_subnet_ids ?? [],
   };
+  void searchDevices("").then(() => ensureDeviceOption(r.device_id ?? null));
   show.value = true;
 }
 
@@ -122,11 +155,14 @@ async function submit() {
     sync_firewall: form.value.sync_firewall, sync_nat: form.value.sync_nat,
     sync_address_lists: form.value.sync_address_lists, sync_vpn: form.value.sync_vpn,
     sync_arp: form.value.sync_arp,
+    sync_interfaces: form.value.sync_interfaces, sync_neighbors: form.value.sync_neighbors,
+    sync_fdb: form.value.sync_fdb,
+    device_id: form.value.device_id,
     cpu_load_limit: form.value.cpu_load_limit,
     section_delay_ms: form.value.section_delay_ms,
     max_response_mb: form.value.max_response_mb,
     sync_interval_seconds: form.value.sync_interval_seconds,
-    description: form.value.description || undefined,
+    description: form.value.description ?? "",
     scope_subnet_ids: form.value.scope_subnet_ids,
   };
   try {
@@ -152,10 +188,9 @@ async function test(r: MikroTikRouter) {
 }
 
 async function sync(id: string) {
-  const name = rows.value.find((r) => r.id === id)?.name ?? id.slice(0, 8);
   try {
-    await syncMikroTik(id);
-    msg.success(t("tasks.queued_toast", { kind: "MikroTik sync", target: name }));
+    const r = await syncMikroTik(id);
+    trackTask(r.task_id, { onDone: () => void refresh() });
   } catch (e) { msg.error(apiErrMsg(e)); }
 }
 
@@ -176,8 +211,14 @@ function iconAction(icon: unknown, label: string, onClick: () => void, type?: st
 const SYNC_TAGS: [keyof MikroTikRouter, string][] = [
   ["sync_dhcp", "DHCP"], ["sync_dhcp_ranges", "pool"], ["sync_firewall", "filter"],
   ["sync_nat", "NAT"], ["sync_address_lists", "addr-list"], ["sync_vpn", "VPN"],
-  ["sync_arp", "ARP"],
+  ["sync_arp", "ARP"], ["sync_interfaces", "if"], ["sync_neighbors", "LLDP"], ["sync_fdb", "FDB"],
 ];
+
+/** 上一輪有區段因為「還沒對應裝置」而略過（待設定，不算失敗）。 */
+function needsDevice(r: MikroTikRouter): boolean {
+  const cost = (r.last_cost ?? {}) as Record<string, { skipped?: string } | undefined>;
+  return Object.values(cost).some((v) => v && typeof v === "object" && v.skipped === "no_device");
+}
 
 /** 上一輪是否因為路由器忙碌而提早停止（`last_cost.stopped`）。 */
 function stoppedReason(r: MikroTikRouter): string | null {
@@ -210,6 +251,17 @@ const allCols = computed<DataTableColumns<MikroTikRouter>>(() => autoSort([
     title: t("cols.last_sync"), key: "last_sync_at", width: 165,
     render: (r) => {
       const reason = stoppedReason(r);
+      const noDev = needsDevice(r)
+        ? h(NTooltip, null, {
+          trigger: () => h(NTag, { size: "tiny", type: "warning", bordered: false },
+            () => t("mikrotik.no_device_tag")),
+          default: () => t("errors.ros_no_device"),
+        })
+        : null;
+      if (noDev && !reason) {
+        return h(NSpace, { size: 4, align: "center", wrapItem: false },
+          () => [fmtDateTime(r.last_sync_at), noDev]);
+      }
       // 提早停止不是失敗（`last_error` 是空的）—— 但畫面上一定要看得出來，
       // 否則使用者只會覺得「有些資料怎麼沒更新」。
       return reason
@@ -220,6 +272,7 @@ const allCols = computed<DataTableColumns<MikroTikRouter>>(() => autoSort([
               () => t("mikrotik.stopped_tag")),
             default: () => reason,
           }),
+          noDev,
         ])
         : fmtDateTime(r.last_sync_at);
     },
@@ -242,7 +295,7 @@ const allCols = computed<DataTableColumns<MikroTikRouter>>(() => autoSort([
   },
 ]));
 const cols = computed<DataTableColumns<MikroTikRouter>>(() =>
-  allCols.value.filter((c) => vis.value.includes((c as { key: string }).key)),
+  orderColumns(allCols.value.filter((c) => vis.value.includes((c as { key: string }).key))),
 );
 
 onMounted(() => { void refresh(); void loadSubnetOptions(); });
@@ -271,7 +324,8 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         <template #icon><n-icon><PlusIcon /></n-icon></template>
         {{ t("common.create") }}
       </n-button>
-      <ColumnPicker :all="picker" :visible="vis" @update:visible="setVis" @reset="resetVis" />
+      <ColumnPicker :all="picker" :visible="vis" @update:visible="setVis" @reset="resetVis"
+                    :order="order" @update:order="setOrder" />
     </n-space>
 
     <n-data-table :columns="cols" :data="rows" :loading="loading" :bordered="false"
@@ -318,8 +372,23 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
               </n-checkbox>
               <n-checkbox v-model:checked="form.sync_vpn">VPN</n-checkbox>
               <n-checkbox v-model:checked="form.sync_arp">ARP</n-checkbox>
+              <n-checkbox v-model:checked="form.sync_interfaces">
+                {{ t("mikrotik.interfaces") }}
+              </n-checkbox>
+              <n-checkbox v-model:checked="form.sync_neighbors">
+                {{ t("mikrotik.neighbors") }}
+              </n-checkbox>
+              <n-checkbox v-model:checked="form.sync_fdb">FDB</n-checkbox>
             </n-space>
             <div class="mt-hint">{{ t("mikrotik.heavy_hint") }}</div>
+          </div>
+        </n-form-item>
+        <n-form-item :label="t('mikrotik.device')">
+          <div style="width: 100%">
+            <n-select v-model:value="form.device_id" :options="deviceOptions" filterable remote
+                      clearable :loading="deviceSearching" :placeholder="t('mikrotik.device_auto')"
+                      @search="searchDevices" />
+            <div class="mt-hint">{{ t("mikrotik.device_hint") }}</div>
           </div>
         </n-form-item>
 

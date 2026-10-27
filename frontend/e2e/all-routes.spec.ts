@@ -29,7 +29,7 @@ test.setTimeout(900_000);   // 七十幾頁逐一走訪
  * 帶參數的詳細資料頁沒有可靠的假 id（deep-sweep.spec 從清單點進去測）。
  */
 const SKIP = new Set([
-  "/login", "/ssh/:id", "/sftp/:id", "/rdp/:id", "/vnc/:id", "/novnc/:id", "/bmc/:id",
+  "/login", "/ssh/:id", "/sftp/:id", "/rdp/:id", "/vnc/:id", "/novnc/:id", "/bmc/:id", "/rustdesk/:id",
 ]);
 
 function routePaths(): string[] {
@@ -67,6 +67,7 @@ function i18nNamespaces(): Set<string> {
 const NOT_I18N = [
   /^(anomaly|firewall|ip|subnet)\.[a-z_.]+$/,   // 事件規則的事件名稱
   /\.(created_at|updated_at|deleted_at)$/,      // 日誌／SQL 裡的欄位名
+  /^app\.cli\./,                                // CLI 指令裡的 Python 模組路徑（python -m app.cli.recog）
 ];
 
 function isNoise(text: string): boolean {

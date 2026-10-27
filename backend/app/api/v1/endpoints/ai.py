@@ -7,7 +7,9 @@ POST /api/v1/ai/chat             (auth)：自然語言 + jt-ipam tools（Ollama�
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import uuid
 from typing import Annotated, Any
 
@@ -17,16 +19,31 @@ from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser, require_admin, require_ops_admin
+from app.core import sse
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.rate_limit import limit_per_ip
-from app.core.ui_error import detail_of
+from app.core.ui_error import detail_of, ui_detail
 from app.schemas.base import StrictModel
 from app.services import ai as ai_service
 from app.services import ai_chat_store, system_config
 from app.services.ai_guard import AIInputRejected, screen_user_messages
 
+log = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/ai", tags=["ai"])
+
+
+def _ai_http_error(exc: Exception, user: Any) -> HTTPException:
+    """模型那一端失敗：管理員拿到帶原因的訊息（診斷用）；一般帳號只拿到代碼。
+
+    以前任何登入帳號都看得到原文：內部 LLM 主機名稱、出站防護規則、上游回應片段
+    （CodeQL 判讀，2026-10-01；HTTPException 的 detail 不在 CodeQL 的模型裡，所以沒被標出來）。
+    """
+    if bool(getattr(user, "is_admin", False)):
+        return HTTPException(status_code=502, detail=detail_of(exc, "ai_error"))
+    ev = ai_service.ai_error_event(exc, admin=False)
+    return HTTPException(status_code=502, detail=ui_detail(ev["code"], ev["detail"]))
 
 
 @router.get("/semantic-search")
@@ -37,11 +54,11 @@ async def semantic_search(
     limit: int = Query(20, ge=1, le=100),
 ) -> dict[str, Any]:
     try:
-        return await ai_service.semantic_search(session, query=q, limit=limit)
+        return await ai_service.semantic_search(session, query=q, limit=limit, user=_user)
     except ai_service.AINotConfigured as exc:
         raise HTTPException(status_code=503, detail=detail_of(exc, "ai_not_configured")) from exc
     except ai_service.AIError as exc:
-        raise HTTPException(status_code=502, detail=detail_of(exc, "ai_error")) from exc
+        raise _ai_http_error(exc, _user) from exc
 
 
 class ChatMessage(StrictModel):
@@ -108,7 +125,7 @@ async def chat(
     except ai_service.AINotConfigured as exc:
         raise HTTPException(status_code=503, detail=detail_of(exc, "ai_not_configured")) from exc
     except ai_service.AIError as exc:
-        raise HTTPException(status_code=502, detail=detail_of(exc, "ai_error")) from exc
+        raise _ai_http_error(exc, user) from exc
     await append_audit(
         session,
         actor_user_id=str(user.id),
@@ -155,13 +172,25 @@ async def chat_confirm(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    """執行使用者在 AI 對話中按下「確認」的異動動作（白名單工具；權限仍由工具本身把關）。"""
+    """執行使用者在 AI 對話中按下「確認」的異動動作（允許清單工具；權限仍由工具本身把關）。"""
     await limit_per_ip(request, name="ai")
-    from app.mcp.tools import MUTATING_TOOLS, TOOLS, IPAMToolError, summarize_action
+    from app.mcp.tools import (
+        MUTATING_TOOLS,
+        TOOLS,
+        IPAMToolError,
+        authorize_tool,
+        call_tool,
+        summarize_action,
+    )
     if payload.tool not in MUTATING_TOOLS or payload.tool not in TOOLS:
         raise HTTPException(status_code=400, detail="not a confirmable action")
+    # 執行前再過一次 RBAC 閘（跟模型提出動作時同一個）：以前只靠每個工具自己的 is_admin 檢查，
+    # 新增的工具漏寫就會被確認端點直接執行（2026-10-09 合規核對）
+    denied = await authorize_tool(session, user, payload.tool)
+    if denied is not None:
+        raise HTTPException(status_code=403, detail=denied)
     try:
-        result = await TOOLS[payload.tool]["fn"](session, user=user, **payload.args)
+        result = await call_tool(session, user, payload.tool, payload.args)
     except IPAMToolError as exc:
         await session.rollback()
         raise HTTPException(status_code=400, detail=detail_of(exc, "ai_tool_error")) from exc
@@ -208,34 +237,50 @@ async def chat_stream(
     if not cfg.enabled:
         raise HTTPException(status_code=503, detail="LLM is disabled")
 
+    # 存對話紀錄失敗時會還原交易，ORM 物件跟著過期（之後在串流裡讀 user.id 會變成同步延遲載入而失敗）
+    user_id, user_is_admin = user.id, bool(user.is_admin)
+
     async def event_gen() -> Any:
         iterations = 0
         try:
-            async for ev in ai_service.chat_stream(
+            async for ev in sse.with_keepalive(ai_service.chat_stream(
                 session, user=user, messages=msgs,
                 locale=user_locale, max_iterations=payload.max_iterations,
                 page_context=payload.context.model_dump() if payload.context else None,
-            ):
+            )):
+                if ev is None:      # 模型還在想／查工具：送保活，免得反向代理逾時切斷
+                    yield sse.KEEPALIVE
+                    continue
                 if ev.get("type") == "done":
                     iterations = len(ev.get("trace_messages") or [])
-                    conv = await ai_chat_store.save_turn(
-                        session,
-                        user_id=user.id,
-                        conversation_id=_parse_uuid(payload.conversation_id),
-                        user_text=_last_user_text(msgs),
-                        assistant_text=ev.get("answer") or "",
-                        model=ev.get("model"),
-                        elapsed_ms=ev.get("elapsed_ms"),
-                    )
-                    ev = {**ev, "conversation_id": str(conv.id)}
+                    # 存紀錄失敗不可以把回答吃掉（2026-10-13：模型其實答好了，存檔失敗讓整段變成錯誤、畫面空白）
+                    try:
+                        conv = await ai_chat_store.save_turn(
+                            session,
+                            user_id=user_id,
+                            conversation_id=_parse_uuid(payload.conversation_id),
+                            user_text=_last_user_text(msgs),
+                            assistant_text=ev.get("answer") or "",
+                            model=ev.get("model"),
+                            elapsed_ms=ev.get("elapsed_ms"),
+                        )
+                        ev = {**ev, "conversation_id": str(conv.id)}
+                    except Exception:
+                        log.warning("AI chat history save failed", exc_info=True)
+                        with contextlib.suppress(Exception):
+                            await session.rollback()
+                        ev = {**ev, "history_saved": False}
                 yield f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
         except Exception as exc:
-            yield f'data: {json.dumps({"type": "error", "detail": f"stream failed: {exc.__class__.__name__}"})}\n\n'
+            from app.services.ai import ai_error_event
+            ev = {"type": "error", **ai_error_event(exc, admin=user_is_admin, code="ai_failed",
+                                                    reason=f"stream failed: {exc.__class__.__name__}")}
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
             return
         # 串流正常結束才寫 audit（與非串流 chat 對齊）
         await append_audit(
             session,
-            actor_user_id=str(user.id),
+            actor_user_id=str(user_id),
             actor_ip=request.client.host if request.client else None,
             actor_user_agent=request.headers.get("user-agent"),
             object_type="ai", object_id=None, action="chat",
@@ -265,6 +310,36 @@ async def embedding_check(
     維度不合 —— 這支就是把那件事講出來。
     """
     return await ai_service.probe_embedding(session)
+
+
+@router.get("/index-status", dependencies=[Depends(require_admin)])
+async def index_status(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """語意搜尋的索引需不需要重建、為什麼（使用者 2026-10-13：「看不出來要不要按」）。只讀資料庫，不呼叫模型。"""
+    return await ai_service.index_status(session)
+
+
+@router.get("/thinking-check", dependencies=[Depends(require_admin)])
+async def thinking_check(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """對話模型，以及另外指定的巡檢／判讀模型，照不照「關閉思考」的參數做。
+
+    AI 巡檢與判讀一律送這組參數；伺服器或閘道沒照做時只會「很慢」或答案被思考吃掉，
+    不會報錯 —— 這支把它問出來（見 ai_service.probe_thinking）。同一個模型只問一次。
+    """
+    from app.services.system_config import get_llm_config
+    cfg = await get_llm_config(session)
+    roles: list[tuple[str, str]] = []
+    for role, model in (("chat", cfg.chat_model), ("audit", getattr(cfg, "ai_audit_model", None)),
+                        ("interpret", getattr(cfg, "ai_interpret_model", None))):
+        if model and model not in {m for _, m in roles}:
+            roles.append((role, model))
+    results = []
+    for role, model in roles:
+        results.append({"role": role, **await ai_service.probe_thinking(session, model)})
+    return {"results": results}
 
 
 @router.post("/reindex", dependencies=[Depends(require_ops_admin)])
@@ -369,7 +444,7 @@ async def list_all_conversations(
     if uids:
         from sqlalchemy import select
         for uid, uname in (await session.execute(
-            select(User.id, User.username).where(User.id.in_(uids))
+            select(User.id, User.username).where(User.id.in_(uids))  # bounded: users on one page
         )).all():
             unames[str(uid)] = uname
     items = []

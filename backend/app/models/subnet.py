@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import (
     ARRAY,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -85,6 +86,9 @@ class Subnet(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         UUID(as_uuid=True),
         ForeignKey("scan_agents.id", ondelete="SET NULL"),
     )
+    #: 掃描範圍（0205）：auto（4,096 個以內全掃，更大的改成已知位址每輪掃＋其餘背景探索）／all（一律全掃）／
+    #: known（只掃已知位址）／ranges（只掃這個子網路的位址範圍）。規則在 services/scan_plan.py
+    scan_scope: Mapped[str] = mapped_column(String(16), default="auto", server_default="auto", nullable=False)
 
     customer_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -96,9 +100,16 @@ class Subnet(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     jump_host_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("jump_hosts.id", ondelete="SET NULL"), index=True,
     )
+    # 或經由掃描代理中繼（issue #24 階段二，0175）：必須是這個子網路的掃描代理；與 jump_host_id 只能擇一
+    console_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scan_agents.id", ondelete="SET NULL"), index=True,
+    )
 
     custom_fields: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     __table_args__ = (
         Index("ix_subnets_cidr_gist", "cidr", postgresql_using="gist"),
+        CheckConstraint("jump_host_id IS NULL OR console_agent_id IS NULL",
+                        name="subnet_console_egress_one"),
+        CheckConstraint("scan_scope IN ('auto','all','known','ranges')", name="ck_subnets_scan_scope"),
     )

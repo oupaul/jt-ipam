@@ -7,13 +7,14 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import Field, HttpUrl, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import String, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser, require_global_read, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.sqlin import in_values
 from app.core.ui_error import detail_of
 from app.models.virt import (
     ProxmoxInstance,
@@ -63,6 +64,10 @@ class VMRead(StrictModel):
     disk_gb: int | None
     primary_ip_id: uuid.UUID | None
     is_template: bool
+    # 客體作業系統（Hyper-V 的 KVP、SCVMM；0222）
+    os_name: str | None = None
+    # CubeCOS／OpenStack 的 project 名稱（同步時寫在說明「project: <名稱>」；其他平台是 null）
+    project: str | None = None
     # 從 VMInterface 帶上來（list_vms 批次填）
     ips: list[str] = []
     macs: list[str] = []
@@ -71,6 +76,9 @@ class VMRead(StrictModel):
     # **重疊網段下同一個位址字串會有多筆**（本專案的設計），分不出是哪一筆時
     # 就不放進來 —— 給錯的連結比沒有連結更糟，因為使用者會信它。
     ip_links: dict[str, str] = {}
+    # 平台沒回報 IP（Hyper-V 沒裝整合服務、PVE 沒 guest agent），但同步時用網卡 MAC 比對到 IPAM 既有位址
+    # （primary_ip_id）→ 放這裡，畫面標「MAC 比對」，不和平台回報的 ips 混在一起（2026-10-21）
+    ips_by_mac: list[str] = []
 
 
 class VMInterfaceRead(StrictModel):
@@ -88,7 +96,16 @@ class VMInterfaceRead(StrictModel):
         return None if v is None else str(v)
 
 
+def _host_name(url: str) -> str:
+    """API 網址主機名稱的第一段（pve-a.example.net → pve-a；IP 就是整個 IP）。"""
+    from urllib.parse import urlsplit
+    host = urlsplit(url).hostname or url
+    return host if host.replace(".", "").isdigit() else host.split(".")[0]
+
+
 class ProxmoxInstanceCreate(StrictModel):
+    #: 顯示名稱（0228）；留空＝API 網址主機名稱的第一段
+    name: Annotated[str | None, Field(max_length=128)] = None
     cluster_id: uuid.UUID | None = None   # 留空 → 同步時以 PVE 叢集名稱自動建立/指派
     api_url: HttpUrl
     extra_api_urls: list[HttpUrl] = []
@@ -104,6 +121,7 @@ class ProxmoxInstanceCreate(StrictModel):
 
 
 class ProxmoxInstanceUpdate(StrictModel):
+    name: Annotated[str | None, Field(max_length=128)] = None
     api_url: HttpUrl | None = None
     extra_api_urls: list[HttpUrl] | None = None
     auth_username: Annotated[str | None, Field(min_length=1, max_length=128)] = None
@@ -119,6 +137,7 @@ class ProxmoxInstanceUpdate(StrictModel):
 
 class ProxmoxInstanceRead(StrictModel):
     id: uuid.UUID
+    name: str | None = None
     cluster_id: uuid.UUID | None = None
     api_url: str
     extra_api_urls: list[str] = []
@@ -162,7 +181,7 @@ async def list_clusters(
     if cust_ids:
         from app.models.customer import Customer
         cust_names = dict((await session.execute(  # type: ignore[arg-type]
-            select(Customer.id, Customer.name).where(Customer.id.in_(cust_ids))
+            select(Customer.id, Customer.name).where(Customer.id.in_(cust_ids))  # bounded: customers on one page
         )).all())
     items = []
     for r in rows:
@@ -302,12 +321,20 @@ async def list_vms(
     )).scalars().all())
     total = int(await session.scalar(cstmt) or 0)
     items = [VMRead.model_validate(r) for r in rows]
+    # OpenStack 的 VM：project 從說明欄取（services/openstack 寫成「project: <名稱>」）
+    cids = {r.cluster_id for r in rows}
+    if cids:
+        os_clusters = set((await session.execute(select(VirtCluster.id).where(
+            VirtCluster.id.in_(cids), VirtCluster.type == "openstack"))).scalars())  # bounded: 一頁最多 500 台的叢集
+        for it, r in zip(items, rows, strict=True):
+            if r.cluster_id in os_clusters and (r.description or "").startswith("project: "):
+                it.project = (r.description or "")[len("project: "):] or None
 
     # 批次帶上每台 VM/CT 的網卡 IP / MAC / bridge
     vm_ids = [r.id for r in rows]
     if vm_ids:
         ifaces = (await session.execute(
-            select(VMInterface).where(VMInterface.vm_id.in_(vm_ids))
+            select(VMInterface).where(in_values(VMInterface.vm_id, vm_ids))
             .order_by(VMInterface.name)
         )).scalars().all()
         by_vm: dict[uuid.UUID, dict[str, list[str]]] = {}
@@ -331,12 +358,24 @@ async def list_vms(
         if wanted:
             seen: dict[str, list[str]] = {}
             for aid, ahost in (await session.execute(
-                select(_IPA.id, func.host(_IPA.ip)).where(func.host(_IPA.ip).in_(wanted))
+                select(_IPA.id, func.host(_IPA.ip)).where(in_values(func.host(_IPA.ip), wanted, type_=String()))
             )).all():
                 seen.setdefault(str(ahost), []).append(str(aid))
             unique = {ip: ids[0] for ip, ids in seen.items() if len(ids) == 1}
             for it in items:
                 it.ip_links = {ip: unique[ip] for ip in it.ips if ip in unique}
+
+        # 沒有回報 IP、但已經關聯到 IPAM 位址的：直接用那筆位址（同步時 MAC 唯一比對到才會設）
+        need = {it.primary_ip_id for it in items if not it.ips and it.primary_ip_id}
+        if need:
+            hosts = dict((await session.execute(
+                select(_IPA.id, func.host(_IPA.ip)).where(in_values(_IPA.id, list(need)))
+            )).all())
+            for it in items:
+                h = hosts.get(it.primary_ip_id) if not it.ips and it.primary_ip_id else None
+                if h:
+                    it.ips_by_mac = [str(h)]
+                    it.ip_links = {**it.ip_links, str(h): str(it.primary_ip_id)}
 
     return Paginated[VMRead](items=items, total=total, page=page, page_size=page_size)
 
@@ -368,6 +407,7 @@ async def create_proxmox(
         if cluster is None:
             raise HTTPException(400, detail="Invalid cluster_id")
     obj = ProxmoxInstance(
+        name=(payload.name or "").strip() or _host_name(str(payload.api_url)),
         cluster_id=payload.cluster_id,
         api_url=str(payload.api_url).rstrip("/"),
         extra_api_urls=("\n".join(str(u).rstrip("/") for u in payload.extra_api_urls)
@@ -398,7 +438,7 @@ async def create_proxmox(
         actor_ip=request.client.host if request.client else None,
         actor_user_agent=request.headers.get("user-agent"),
         object_type="proxmox_instance", object_id=str(obj.id), action="create",
-        diff={"api_url": obj.api_url, "auth_username": obj.auth_username,
+        diff={"name": obj.name, "api_url": obj.api_url, "auth_username": obj.auth_username,
               "auth_token_id": obj.auth_token_id},
         request_id=getattr(request.state, "request_id", None),
     )
@@ -414,7 +454,7 @@ async def list_proxmox(
     page: int = Query(1, ge=1, le=10_000), page_size: int = Query(50, ge=1, le=500),
 ) -> Paginated[ProxmoxInstanceRead]:
     rows = list((await session.execute(
-        select(ProxmoxInstance).order_by(ProxmoxInstance.api_url)
+        select(ProxmoxInstance).order_by(ProxmoxInstance.name, ProxmoxInstance.api_url)
         .offset((page - 1) * page_size).limit(page_size)
     )).scalars().all())
     total = int(await session.scalar(select(func.count()).select_from(ProxmoxInstance)) or 0)
@@ -438,6 +478,8 @@ async def update_proxmox(
     secret = data.pop("token_secret", None)
     if "api_url" in data and data["api_url"] is not None:
         obj.api_url = str(data["api_url"]).rstrip("/")
+    if "name" in data:
+        obj.name = (data["name"] or "").strip() or _host_name(obj.api_url)
     if "extra_api_urls" in data:
         urls = data["extra_api_urls"] or []
         obj.extra_api_urls = "\n".join(str(u).rstrip("/") for u in urls) or None
@@ -566,6 +608,9 @@ async def delete_proxmox(
         object_type="proxmox_instance", object_id=str(obj.id), action="delete",
         diff={"api_url": obj.api_url}, request_id=getattr(request.state, "request_id", None),
     )
+    # 它回報的主機名稱與（叢集沒有別的實例時）VM 鏡像一併收回
+    from app.services.integration_cleanup import forget_proxmox_instance
+    await forget_proxmox_instance(session, obj)
     await session.delete(obj)
     await session.commit()
 

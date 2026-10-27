@@ -496,7 +496,7 @@ OS 路由表查詢：192.168.1.0/24 → dev wg0  （WireGuard 自動處理）
 
 | 現象 | 可能原因 | 檢查指令 |
 |------|---------|---------|
-| wg show 顯示 peer 無 handshake | 客戶出口 IP 未在 ufw 白名單、設定錯誤 | `sudo ufw status`、`sudo journalctl -u wg-quick@wg0` |
+| wg show 顯示 peer 無 handshake | 客戶出口 IP 未在 ufw 允許清單、設定錯誤 | `sudo ufw status`、`sudo journalctl -u wg-quick@wg0` |
 | ping 客戶內網失敗（有 handshake）| AllowedIPs 未包含目標網段、IP forward 未啟用 | `sudo wg show wg0`、`sysctl net.ipv4.ip_forward` |
 | ping 客戶內網失敗（無 handshake）| 客戶端 WireGuard 未啟動 | 在客戶端：`sudo wg show wg0` |
 | 路由到錯誤的客戶 | AllowedIPs 網段有重疊 | `ip route show` 確認路由無衝突 |

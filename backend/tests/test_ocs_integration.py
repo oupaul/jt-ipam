@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -41,6 +41,32 @@ def test_usable_nics_drops_virtual_and_zero_mac() -> None:
     macs = [n["MACADDR"] for n in svc.usable_nics(nics)]
     assert macs == ["aa:bb:cc:00:00:07", "aa:bb:cc:00:00:08"]
     assert svc.usable_nics(None) == []
+
+
+def test_old_agent_in_lxc_marks_the_only_nic_virtual() -> None:
+    """舊版 agent（2.4.2 以前）在 LXC 裡把 eth0 標成 VIRTUALDEV=1 —— 容器的網卡背後是 veth。
+
+    全部照「虛擬就丟」的話，這種容器一張網卡都不剩，jt-ipam 永遠對不上它的 IP（2026-09-25
+    實際部署時有兩台容器就是這樣，OCS 收到了、jt-ipam 卻顯示沒盤點過）。
+    規則：有非虛擬網卡時照舊只用那些；**全部都是虛擬**時，退回用有 MAC、有 IP 的那幾張。
+    """
+    lxc = [
+        {"DESCRIPTION": "eth0", "MACADDR": "00:00:5e:00:53:31", "VIRTUALDEV": 1,
+         "IPADDRESS": "198.51.100.67", "TYPE": "ethernet", "STATUS": "Up"},
+        {"DESCRIPTION": "eth1", "MACADDR": "00:00:5e:00:53:32", "VIRTUALDEV": 1,
+         "IPADDRESS": "203.0.113.67", "TYPE": "ethernet", "STATUS": "Up"},
+        {"DESCRIPTION": "tun0", "MACADDR": "", "VIRTUALDEV": 1, "IPADDRESS": "10.8.0.2"},
+    ]
+    assert [n["DESCRIPTION"] for n in svc.usable_nics(lxc)] == ["eth0", "eth1"]
+
+    # 筆電：有實體網卡時，虛擬的 docker0 仍然丟掉（原本的行為不變）
+    laptop = [
+        {"DESCRIPTION": "Wi-Fi", "MACADDR": "aa:bb:cc:00:00:08", "VIRTUALDEV": 0,
+         "IPADDRESS": "198.51.100.8"},
+        {"DESCRIPTION": "docker0", "MACADDR": "02:42:ac:11:00:01", "VIRTUALDEV": 1,
+         "IPADDRESS": "172.17.0.1"},
+    ]
+    assert [n["DESCRIPTION"] for n in svc.usable_nics(laptop)] == ["Wi-Fi"]
 
 
 def test_parse_os_prefers_comments_and_maps_family() -> None:
@@ -201,7 +227,7 @@ async def _mk_ip(session, ip_str: str, mac: str, *, device_id=None):
 def _server(**kw: Any) -> Any:
     from types import SimpleNamespace
     base = {"id": uuid.uuid4(), "name": "ocs", "source_type": "rest",
-            "base_url": "https://192.0.2.10", "sync_bios": True, "stale_after_days": 30}
+            "base_url": "https://192.0.2.10", "sync_bios": True, "stale_after_days": 30, "timezone": "UTC"}
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -500,8 +526,10 @@ async def test_full_sync_pages_and_applies(monkeypatch, db_session) -> None:
 
     ip = await _mk_ip(db_session, "198.51.100.41", "aa:bb:cc:00:00:41")
 
+    # 盤點時間要相對於今天：寫死日期過了 stale_after_days 就變成「過期不採用」（2026-10-19 踩到）
+    recent = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
     page = {"1": {"hardware": {"NAME": "host-x", "OSNAME": "Linux",
-                              "OSCOMMENTS": "Ubuntu 24.04 LTS", "LASTDATE": "2026-09-18 08:00:00"},
+                              "OSCOMMENTS": "Ubuntu 24.04 LTS", "LASTDATE": recent},
                   "networks": [{"MACADDR": "aa:bb:cc:00:00:41", "VIRTUALDEV": 0}],
                   "bios": [{"SSN": "SN-1", "SMODEL": "M", "SMANUFACTURER": "V"}]}}
 
@@ -526,7 +554,7 @@ async def test_full_sync_pages_and_applies(monkeypatch, db_session) -> None:
     srv = SimpleNamespace(
         id=uuid.uuid4(), name="ocs", source_type="rest", base_url="https://192.0.2.10",
         verify_tls=False, api_username=None, api_password_enc=None, api_password_nonce=None,
-        sync_bios=True, stale_after_days=30, last_incremental_epoch=None,
+        sync_bios=True, stale_after_days=30, timezone="UTC", last_incremental_epoch=None,
         detected_version=None, last_sync_at=None, last_success_at=None,
         last_error="x", last_cost=None)
     summary = await ocs.sync_instance(db_session, srv)
@@ -567,13 +595,15 @@ async def test_scanner_still_wins_when_ocs_has_nothing(db_session) -> None:
 async def test_device_integrations_exposes_ocs_block(client, auth_headers, db_session) -> None:
     """裝置明細的 /integrations 要回一個 ocs 區塊：作業系統／盤點時間＋序號型號廠牌。
 
-    OCS 沒有自己的每台記錄表，是把資料補進 IP（os_ocs / last_seen_ocs）與裝置
+    OCS 沒有自己的每台記錄表，是把資料補進 IP（os_ocs / last_seen_ocs / ocs_hw）與裝置
     （serial / model / vendor）。有 IP 被盤點過就算此裝置在 OCS 有資料。
+    卡片的製造商／型號／序號顯示 OCS 自己回報的（ocs_hw），不是裝置欄位 —— 裝置欄位
+    這裡刻意放別的來源的值（2026-09-27 實機：LibreNMS 填的「windows／Intel x64」）。
     """
     from datetime import UTC, datetime
 
     from app.models.device import Device
-    dev = Device(name="pc-ocs", serial="SN-OCS-1", model="OptiPlex", vendor="Dell Inc.")
+    dev = Device(name="pc-ocs", model="Intel x64", vendor="windows")
     db_session.add(dev)
     await db_session.flush()
     from app.models.ocs import OcsServer
@@ -587,6 +617,9 @@ async def test_device_integrations_exposes_ocs_block(client, auth_headers, db_se
     ip.ocs_agent = "OCS-NG_unified_unix_agent_v2.10.0"
     ip.ocs_notes = [{"date": "2026-09-19", "user": "admin", "comment": "加入資產編碼",
                      "action": "ADD_NOTE_BY_USER"}]
+    ip.ocs_hw = {"system": {"vendor": "Dell Inc.", "model": "OptiPlex", "serial": "SN-OCS-1",
+                            "chassis": "Desktop"},
+                 "board": {"vendor": None, "model": None, "serial": None}}
     await db_session.commit()
 
     r = await client.get(f"/api/v1/devices/{dev.id}/integrations", headers=auth_headers)
@@ -651,12 +684,16 @@ async def test_mcp_list_ocs_computers(db_session, admin_user) -> None:
 
 
 def test_ocs_tool_is_registered_with_the_right_permission_tier() -> None:
-    """整合開了 REST/UI 就要同步開 MCP 工具，且權限分層要跟同類工具一致（唯讀、全域讀取）。"""
+    """整合開了 REST/UI 就要同步開 MCP 工具，且權限分層要跟同類工具與 REST 一致。
+
+    2026-09-30 起是 admin：`/api/v1/ocs/agents` 只給 admin，工具以前放在全域讀取 ——
+    網頁打不開的資料在 AI 對話裡問得到（見 test_mcp_tools_match_rest_permissions.py）。"""
     from app.mcp.tools import ADMIN_TOOLS, GLOBAL_READ_TOOLS, MUTATING_TOOLS, TOOLS
     assert "list_ocs_computers" in TOOLS
-    assert "list_ocs_computers" in GLOBAL_READ_TOOLS   # 與 list_wazuh_agents 同級
+    assert "list_ocs_computers" in ADMIN_TOOLS          # 與 list_wazuh_agents 同級
+    assert "list_wazuh_agents" in ADMIN_TOOLS
     assert "list_ocs_computers" not in MUTATING_TOOLS  # 唯讀
-    assert "list_ocs_computers" not in ADMIN_TOOLS
+    assert "list_ocs_computers" not in GLOBAL_READ_TOOLS
 
 
 @pytest.mark.anyio
@@ -676,3 +713,90 @@ async def test_get_ip_detail_exposes_ocs_fields(db_session, admin_user) -> None:
     assert d["ocs_tag"] == "ASSET-000114"
     assert d["ocs_agent"] == "agent-2.10"
     assert d["last_seen_ocs"] is not None
+
+
+# ── 2026-09-26：new-host 裝了 OCS agent，jt-ipam 卻對到 BMC 的位址、主機本身沒對上 ──
+
+def test_the_bmc_interface_is_not_the_hosts_nic() -> None:
+    """Linux agent 會把 IPMI 控制器列成一張 DESCRIPTION=bmc 的網卡：那是另一台設備（BMC）的
+    位址與 MAC，把主機的 OS／主機名稱寫到 BMC 的 IP 上是錯的。"""
+    nics = [{"DESCRIPTION": "bmc", "MACADDR": "aa:bb:cc:00:0f:3f", "IPADDRESS": "198.51.100.46",
+             "VIRTUALDEV": 0},
+            {"DESCRIPTION": "eno2", "MACADDR": "aa:bb:cc:00:0d:7d", "IPADDRESS": "198.51.100.139",
+             "VIRTUALDEV": 0}]
+    assert [n["DESCRIPTION"] for n in svc.usable_nics(nics)] == ["eno2"]
+
+
+def test_an_ambiguous_mac_is_settled_by_the_ip_the_nic_reports() -> None:
+    """同一個 MAC 在兩筆 IP 上：常見是舊的 DHCP 位址（改固定 IP 之前拿的）留著同一個 MAC。
+    OCS 回報這張網卡目前的 IP 正好是其中一筆 → MAC 與 IP 都對上，就是它。"""
+    new, old = uuid.uuid4(), uuid.uuid4()
+    idx = {"aabbcc000d7d": [old, new]}
+    addr = {old: "198.51.100.69", new: "198.51.100.139"}
+    assert svc.decide_match("aa:bb:cc:00:0d:7d", idx, reported_ip="198.51.100.139", addr_of=addr) == new
+    # 回報的 IP 不在候選裡 → 仍然不猜
+    assert svc.decide_match("aa:bb:cc:00:0d:7d", idx, reported_ip="198.51.100.7", addr_of=addr) is None
+    assert svc.decide_match("aa:bb:cc:00:0d:7d", idx) is None
+
+
+async def test_ocs_fields_are_cleared_from_an_ip_that_no_longer_matches(monkeypatch, db_session) -> None:
+    """上一輪對到（例如 BMC 的位址、或換掉的舊機器），這一輪完整同步沒對到 → OCS 的資料要清掉，
+    不然 IP 會一直頂著別台機器的 OS 與盤點編號。"""
+    import app.services.ocs as ocs
+
+    host = await _mk_ip(db_session, "198.51.100.139", "aa:bb:cc:00:0d:7d")
+    bmc = await _mk_ip(db_session, "198.51.100.46", "aa:bb:cc:00:0f:3f")
+    bmc.ocs_id, bmc.os_ocs, bmc.ocs_tag = 53, "Fedora Linux 44", "old"
+    bmc.last_seen_ocs = datetime(2026, 9, 26, tzinfo=UTC)
+    await db_session.flush()
+
+    page = {"53": {"hardware": {"NAME": "new-host", "OSNAME": "Linux", "OSCOMMENTS": "Fedora Linux 44",
+                                "LASTDATE": "2026-09-26 08:00:00"},
+                   "networks": [
+                       {"DESCRIPTION": "bmc", "MACADDR": "aa:bb:cc:00:0f:3f", "IPADDRESS": "198.51.100.46"},
+                       {"DESCRIPTION": "eno2", "MACADDR": "aa:bb:cc:00:0d:7d", "IPADDRESS": "198.51.100.139"}]}}
+
+    class _C2:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *e): return False
+
+    async def fake_request(method, url, *, client=None, headers=None, verify=True, **extra):
+        if "lastupdate" in url:
+            return _FakeResp(404, None)
+        return _FakeResp(200, page if "start=0" in url else {})
+
+    monkeypatch.setattr(ocs, "safe_client", lambda *a, **k: _C2())
+    monkeypatch.setattr(ocs, "safe_request", fake_request)
+    from types import SimpleNamespace
+    srv = SimpleNamespace(
+        id=uuid.uuid4(), name="ocs", source_type="rest", base_url="https://192.0.2.10",
+        verify_tls=False, api_username=None, api_password_enc=None, api_password_nonce=None,
+        sync_bios=False, stale_after_days=3650, last_incremental_epoch=None, timezone="UTC",
+        detected_version=None, last_sync_at=None, last_success_at=None,
+        last_error=None, last_cost=None, scope_subnet_ids=None)
+    await ocs.sync_instance(db_session, srv)
+    await db_session.flush()
+    await db_session.refresh(host)
+    await db_session.refresh(bmc)
+    assert host.ocs_id == 53
+    assert host.os_ocs == "Fedora Linux 44"
+    assert bmc.ocs_id is None
+    assert bmc.os_ocs is None
+    assert bmc.ocs_tag is None
+    assert bmc.last_seen_ocs is None
+
+
+async def test_a_stale_inventory_clears_the_ocs_os(db_session) -> None:
+    """過期的盤點以前只是「不寫」，舊的 OS 一直留著、繼續蓋過掃描代理的即時結果。"""
+    from app.services.arp_precedence import normalize_mac
+    ip = await _mk_ip(db_session, "198.51.100.98", "aa:bb:cc:00:00:98")
+    ip.os_ocs = "Windows 7"
+    await db_session.flush()
+    idx = {normalize_mac("aa:bb:cc:00:00:98"): [ip.id]}
+    await svc._apply_computer(
+        db_session, _server(),
+        _computer("host-old", "aa:bb:cc:00:00:98", lastdate="2025-08-01 08:00:00"),
+        idx, datetime(2026, 9, 18, 12, 0, tzinfo=UTC))
+    await db_session.flush()
+    await db_session.refresh(ip)
+    assert ip.os_ocs is None

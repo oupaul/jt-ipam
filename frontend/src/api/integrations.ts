@@ -3,10 +3,11 @@
  */
 import { apiClient } from "@/api/client";
 import type { Paginated } from "@/api/admin";
+import type { MissingPage, MissingQuery } from "@/composables/useRemoteMissing";
 
 // 整合同步/測試可能要打外部 API、跑數百筆 ingest，遠遠超過全域 15s 預設。
 // 給長時操作 5 分鐘空間。
-const LONG_OP_TIMEOUT_MS = 300_000;
+export const LONG_OP_TIMEOUT_MS = 300_000;
 
 // 是否存在重疊網段（同 IP 可能跨子網路多筆）→ 用來提醒未設 scope 的整合可能標錯筆。
 export async function getSubnetOverlapExists(): Promise<boolean> {
@@ -26,6 +27,8 @@ export interface DNSServer {
   enabled: boolean;
   sync_interval_seconds: number;
   scope_subnet_ids?: string[] | null;
+  /** 比對群組（互相同步的 DNS 伺服器） */
+  compare_group_id?: string | null;
   last_sync_at?: string | null;
   last_error?: string | null;
   created_at: string;
@@ -37,7 +40,7 @@ export async function listDNSServers(): Promise<{ items: DNSServer[] }> {
   return data;
 }
 
-export type DNSServerType = "powerdns" | "bind9" | "unbound_opnsense" | "windows_dns" | "univention_ucs";
+export type DNSServerType = "powerdns" | "bind9" | "unbound_opnsense" | "windows_dns" | "univention_ucs" | "technitium";
 
 export interface DNSServerCreate {
   name: string;
@@ -48,6 +51,8 @@ export interface DNSServerCreate {
   enabled?: boolean;
   sync_interval_seconds?: number;
   scope_subnet_ids?: string[] | null;
+  /** 有帶才更新：null＝移出群組 */
+  compare_group_id?: string | null;
   api_key?: string | null;
   api_secret?: string | null;
   tsig_key?: string | null;
@@ -68,14 +73,105 @@ export async function deleteDNSServer(id: string): Promise<void> {
   await apiClient.delete(`/api/v1/dns/servers/${id}`);
 }
 
-export async function syncDNSServer(id: string): Promise<unknown> {
+export async function syncDNSServer(id: string): Promise<{ task_id: string }> {
   const { data } = await apiClient.post(`/api/v1/dns/servers/${id}/sync`, null);
   return data;
 }
 
-export async function testDNSServer(id: string): Promise<unknown> {
+export async function testDNSServer(id: string): Promise<{ ok: boolean; server?: Record<string, unknown> }> {
   const { data } = await apiClient.post(`/api/v1/dns/servers/${id}/test`);
   return data;
+}
+
+// ── DNS 比對群組：互相同步的伺服器；同步後比對各台、合併顯示（2026-10-10）──
+export type DNSCompareStatus = "ok" | "mismatch" | "pending" | "incomplete" | "single" | "incompatible";
+
+export interface DNSCompareGroupMember {
+  id: string; name: string; type: string; enabled: boolean;
+  last_sync_at: string | null; last_error: string | null;
+}
+
+export interface DNSCompareGroup {
+  id: string;
+  name: string;
+  description: string | null;
+  notify_enabled: boolean;
+  grace_minutes: number;
+  last_checked_at: string | null;
+  last_status: DNSCompareStatus | null;
+  last_message: string | null;
+  alerted_at: string | null;
+  created_at: string;
+  updated_at: string;
+  members: DNSCompareGroupMember[];
+  diff_count: number;
+  /** 不比對的 zone（主從只複寫部分 zone、或某台另外放自己的 zone） */
+  excluded_zones: string[];
+  /** 成員拉回來的 zone：給「不比對的 zone」選單用 */
+  zones: string[];
+  /** 比對哪些紀錄類型（預設 A、AAAA、PTR） */
+  compare_types: string[];
+}
+
+export interface DNSCompareGroupInput {
+  name: string;
+  description?: string | null;
+  notify_enabled?: boolean;
+  grace_minutes?: number;
+  server_ids?: string[];
+  excluded_zones?: string[];
+  compare_types?: string[];
+}
+
+/** 比對群組可以選的紀錄類型（與後端 dns_compare.COMPARE_TYPES 同順序） */
+export const DNS_COMPARE_TYPES = ["A", "AAAA", "PTR", "CNAME", "MX", "TXT", "NS", "SRV", "CAA"] as const;
+export const DNS_COMPARE_DEFAULT_TYPES = ["A", "AAAA", "PTR"];
+
+export interface DNSCompareGroupDiff {
+  id: string;
+  kind: "zone" | "record";
+  zone: string;
+  name: string;
+  type: string;
+  value: string;
+  present_on: { id: string; name: string }[];
+  missing_on: { id: string; name: string }[];
+  first_seen_at: string;
+  last_seen_at: string;
+  confirmed: boolean;
+}
+
+export async function listDNSCompareGroups(): Promise<DNSCompareGroup[]> {
+  return (await apiClient.get<DNSCompareGroup[]>("/api/v1/dns/compare-groups")).data;
+}
+
+/** 「不比對的 zone」選單：目前選的成員拉回來的 zone（新增時、編輯時改了成員都適用） */
+export async function getDNSCompareGroupZoneOptions(serverIds: string[]): Promise<string[]> {
+  if (!serverIds.length) return [];
+  return (await apiClient.get<string[]>("/api/v1/dns/compare-groups/zone-options", {
+    params: { server_ids: serverIds },
+    paramsSerializer: { indexes: null },   // server_ids 重複同一個 key
+  })).data;
+}
+
+export async function createDNSCompareGroup(payload: DNSCompareGroupInput): Promise<DNSCompareGroup> {
+  return (await apiClient.post<DNSCompareGroup>("/api/v1/dns/compare-groups", payload)).data;
+}
+
+export async function updateDNSCompareGroup(id: string, payload: Partial<DNSCompareGroupInput>): Promise<DNSCompareGroup> {
+  return (await apiClient.patch<DNSCompareGroup>(`/api/v1/dns/compare-groups/${id}`, payload)).data;
+}
+
+export async function deleteDNSCompareGroup(id: string): Promise<void> {
+  await apiClient.delete(`/api/v1/dns/compare-groups/${id}`);
+}
+
+export async function checkDNSCompareGroup(id: string): Promise<{ status: DNSCompareStatus; message?: string | null }> {
+  return (await apiClient.post(`/api/v1/dns/compare-groups/${id}/check`)).data;
+}
+
+export async function listDNSCompareGroupDiffs(id: string): Promise<DNSCompareGroupDiff[]> {
+  return (await apiClient.get<DNSCompareGroupDiff[]>(`/api/v1/dns/compare-groups/${id}/diffs`)).data;
 }
 
 // ─────────────────── LibreNMS ───────────────────
@@ -95,6 +191,13 @@ export interface LibreNMSInstance {
   use_for_status: boolean;
   auto_add_devices: boolean;
   auto_create_ips: boolean;
+  /** 依 ARP 表自動建立 IP（#48，預設關） */
+  auto_create_from_arp?: boolean;
+  arp_create_require_fdb?: boolean;
+  arp_create_skip_dhcp?: boolean;
+  /** VLAN 同步寫進哪個 domain（issue #53）；null＝專用的 LibreNMS domain */
+  vlan_domain_id?: string | null;
+  vlan_create_missing?: boolean;
   sync_interval_seconds: number;
   last_sync_at: string | null;
   last_error: string | null;
@@ -145,7 +248,7 @@ export async function testLibreNMS(id: string): Promise<unknown> {
   return data;
 }
 
-export async function syncLibreNMS(id: string): Promise<unknown> {
+export async function syncLibreNMS(id: string): Promise<{ task_id: string }> {
   const { data } = await apiClient.post(`/api/v1/librenms/instances/${id}/sync`,
     undefined, { timeout: LONG_OP_TIMEOUT_MS });
   return data;
@@ -326,7 +429,7 @@ export async function testFirewall(id: string): Promise<unknown> {
   return data;
 }
 
-export async function syncFirewall(id: string): Promise<unknown> {
+export async function syncFirewall(id: string): Promise<{ task_id: string }> {
   const { data } = await apiClient.post(`/api/v1/firewalls/opnsense/${id}/sync`,
     undefined, { timeout: LONG_OP_TIMEOUT_MS });
   return data;
@@ -418,6 +521,9 @@ export interface WazuhAgent {
   ip: string | null;
   status: string | null;
   os_platform: string | null;
+  /** 顯示用：產品名稱（os.name）優先，沒有時退回平台＋版本 */
+  os?: string | null;
+  os_name?: string | null;
   agent_version: string | null;
   last_keep_alive: string | null;
   jt_ipam_address_id: string | null;
@@ -427,6 +533,16 @@ export interface MissingAgent {
   ip_address_id: string;
   ip: string | null;
   hostname: string | null;
+  // 所屬範圍（依區段／子網路／單位篩選用）
+  subnet_id?: string | null;
+  subnet_cidr?: string | null;
+  section_id?: string | null;
+  section_name?: string | null;
+  customer_id?: string | null;
+  customer_name?: string | null;
+  // 設備類型欄（掃描代理判讀出的類型與型號）
+  device_kind?: string | null;
+  device_model?: string | null;
 }
 
 export async function listWazuh(
@@ -481,8 +597,10 @@ export async function listWazuhAgents(
   return data;
 }
 
-export async function listMissingAgents(): Promise<MissingAgent[]> {
-  const { data } = await apiClient.get<MissingAgent[]>("/api/v1/wazuh/missing-agents");
+/** 帶 page ＝ 伺服器端分頁：篩選、排序、篩選選項都由後端算（見 useRemoteMissing）。
+ *  API 不帶 page 仍回整份清單（相容舊的呼叫端），畫面已不再使用。 */
+export async function listMissingAgentsPage(params: MissingQuery): Promise<MissingPage<MissingAgent>> {
+  const { data } = await apiClient.get<MissingPage<MissingAgent>>("/api/v1/wazuh/missing-agents", { params });
   return data;
 }
 
@@ -558,7 +676,7 @@ export async function testAdGuard(id: string): Promise<unknown> {
     { timeout: LONG_OP_TIMEOUT_MS });
   return data;
 }
-export async function syncAdGuard(id: string): Promise<unknown> {
+export async function syncAdGuard(id: string): Promise<{ task_id: string }> {
   const { data } = await apiClient.post(`/api/v1/adguard/instances/${id}/sync`, null,
     { timeout: LONG_OP_TIMEOUT_MS });
   return data;
@@ -579,14 +697,18 @@ export interface DnsRecord {
   server_id: string | null;       // 來源整合 DNS 伺服器
   server_name: string | null;
   last_seen_at: string | null;
+  /** merge=true：同一個比對群組裡相同的紀錄合成這一筆，哪幾台都有 */
+  servers?: string[] | null;
+  compare_group_name?: string | null;
 }
 
 export async function listDnsRecords(params: {
   q?: string; ip?: string; missing_ip?: boolean; consistency?: string;
-  server_id?: string; rtype?: string; page?: number; page_size?: number;
+  server_id?: string; rtype?: string; page?: number; page_size?: number; merge?: boolean;
 } = {}): Promise<{ items: DnsRecord[]; total: number; page: number; page_size: number }> {
   const { data } = await apiClient.get("/api/v1/dns/records", {
     params: {
+      merge: params.merge || undefined,
       q: params.q || undefined,
       ip: params.ip || undefined,
       missing_ip: params.missing_ip || undefined,
@@ -601,10 +723,11 @@ export async function listDnsRecords(params: {
 }
 
 export async function listDnsRecordTypeCounts(params: {
-  q?: string; ip?: string; missing_ip?: boolean; server_id?: string;
+  q?: string; ip?: string; missing_ip?: boolean; server_id?: string; merge?: boolean;
 } = {}): Promise<{ type: string; count: number }[]> {
   const { data } = await apiClient.get("/api/v1/dns/records/type-counts", {
     params: {
+      merge: params.merge || undefined,
       q: params.q || undefined,
       ip: params.ip || undefined,
       missing_ip: params.missing_ip || undefined,

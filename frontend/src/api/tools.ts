@@ -1,3 +1,4 @@
+import { getAccessToken } from "@/api/token";
 export interface TraceHopEvent {
   type: "hop" | "done" | "error";
   hop?: number;
@@ -12,6 +13,9 @@ export interface TraceHopEvent {
   truncated?: boolean;
   reached?: boolean;
   detail?: string;
+  /** 錯誤事件：代碼＋參數（errors.<code>）；底層原因只有管理員拿得到（params.reason） */
+  code?: string;
+  params?: Record<string, unknown>;
 }
 
 /**
@@ -28,7 +32,7 @@ export async function traceStream(
 ): Promise<void> {
   // 與 chat 串流同一套取法（apiClient 的 baseURL 是 "/"，這裡要自己組）
   const base = import.meta.env.VITE_API_BASE_URL || "";
-  const token = localStorage.getItem("access_token");
+  const token = getAccessToken();
   const resp = await fetch(`${base}/api/v1/tools/net/traceroute/stream`, {
     method: "POST",
     headers: {

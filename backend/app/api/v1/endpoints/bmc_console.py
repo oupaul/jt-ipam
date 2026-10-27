@@ -13,6 +13,7 @@ import contextlib
 import json
 import os
 import secrets
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any
@@ -22,6 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser
 from app.core.audit import append_audit
+from app.core.console_guard import (
+    console_target_blocked,
+    note_ticket,
+    require_console_target,
+    ticket_fields,
+    watch_console,
+)
 from app.core.db import SessionLocal, get_session
 from app.core.rate_limit import _redis_client
 from app.core.security import envelope_decrypt
@@ -62,9 +70,10 @@ async def issue_bmc_ticket(
         raise HTTPException(status_code=404, detail="Address not found")
     if not await can_use_bmc(session, user=user, ip=ip):
         raise HTTPException(status_code=403, detail=ui_detail("bmc_forbidden", "無 BMC 連線權限"))
+    await require_console_target(str(ip.ip).split("/")[0])
 
     ticket = secrets.token_urlsafe(32)
-    payload = json.dumps({"user_id": str(user.id), "ip_id": str(ip.id)})
+    payload = json.dumps({"user_id": str(user.id), "ip_id": str(ip.id), **ticket_fields(request)})
     await _redis_client().set(_ticket_key(ticket), payload, ex=_TICKET_TTL)
     return {
         "ticket": ticket,
@@ -77,6 +86,7 @@ async def _redeem_ticket(ticket: str, address_id: uuid.UUID) -> uuid.UUID | None
     if not ticket:
         return None
     raw = await take_once(_redis_client(), _ticket_key(ticket))
+    note_ticket(raw)
     if not raw:
         return None
     try:
@@ -88,18 +98,20 @@ async def _redeem_ticket(ticket: str, address_id: uuid.UUID) -> uuid.UUID | None
         return None
 
 
-async def _audit_bmc(action: str, *, user_id: uuid.UUID, ip_id: uuid.UUID, actor_ip: str | None) -> None:
+async def _audit_bmc(action: str, *, user_id: uuid.UUID, ip_id: uuid.UUID, actor_ip: str | None,
+                     diff: dict[str, Any] | None = None) -> None:
     async with SessionLocal() as s:
         with contextlib.suppress(Exception):
             await append_audit(
                 s, actor_user_id=str(user_id), actor_ip=actor_ip, actor_user_agent=None,
-                object_type="ip", object_id=str(ip_id), action=action, diff=None,
+                object_type="ip", object_id=str(ip_id), action=action, diff=diff,
                 request_id=None,
             )
             await s.commit()
 
 
 @router.websocket("/{address_id}/bmc/ws")
+@watch_console("bmc")
 async def bmc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") -> None:
     user_id = await _redeem_ticket(ticket, address_id)
     if user_id is None:
@@ -117,6 +129,9 @@ async def bmc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
             return
         bmc_ip = str(ip.ip).split("/")[0]
         route = await console_route.resolve_route(s, ip)
+    if await console_target_blocked(bmc_ip):
+        await websocket.close(code=4403)
+        return
 
     # 這個 IP 被指派了跳板，但 BMC 走不了跳板 —— **必須擋下來，不能默默直連**。
     # IPMI（SOL）是 UDP 623，而 SSH 的本機轉發只支援 TCP。默默改走直連的後果不是
@@ -225,6 +240,7 @@ async def bmc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
     proc, master = bmc_svc.spawn_sol(bmc_ip, username, password, cipher)
     del password
     await _audit_bmc("bmc.session_open", user_id=user_id, ip_id=address_id, actor_ip=actor_ip)
+    opened = time.monotonic()
     await send({"type": "status", "state": "connected", "cipher": cipher, "vendor": chk["vendor"]})
 
     loop = asyncio.get_event_loop()
@@ -265,7 +281,9 @@ async def bmc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
             proc.wait(timeout=3)
         with contextlib.suppress(Exception):
             proc.kill()
-        await _audit_bmc("bmc.session_close", user_id=user_id, ip_id=address_id, actor_ip=actor_ip)
+        # 跟其他主控台一樣記連了多久（使用者 2026-10-06 問到；以前只有開與關兩筆，要自己相減）
+        await _audit_bmc("bmc.session_close", user_id=user_id, ip_id=address_id, actor_ip=actor_ip,
+                         diff={"duration_seconds": round(time.monotonic() - opened, 1)})
         with contextlib.suppress(Exception):
             await websocket.close()
 

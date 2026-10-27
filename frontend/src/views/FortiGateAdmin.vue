@@ -7,6 +7,7 @@
 import { computed, h, onMounted, ref } from "vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
+import { trackTask } from "@/composables/useTaskTracker";
 import ScopeOverlapWarning from "@/components/ScopeOverlapWarning.vue";
 import {
   NCard, NDataTable, NSpace, NButton, NTag, NIcon, NTooltip, NAlert, NModal, NForm,
@@ -32,7 +33,8 @@ const { t } = useI18n();
 const msg = useMessage();
 
 const COLS = ["name", "api_url", "enabled", "vdoms", "sync_flags", "last_sync_at", "last_error", "actions"];
-const { visibleKeys: vis, setVisible: setVis, reset: resetVis } = useColumnPrefs("fortigate", COLS, COLS);
+const { visibleKeys: vis, setVisible: setVis, reset: resetVis, order, setOrder, orderColumns } =
+  useColumnPrefs("fortigate", COLS, COLS);
 const picker = computed(() => [
   { key: "name", label: t("cols.name") },
   { key: "api_url", label: "API URL" },
@@ -115,7 +117,7 @@ async function submit() {
     sync_policies: form.value.sync_policies, sync_nat: form.value.sync_nat,
     sync_addresses: form.value.sync_addresses,
     sync_interval_seconds: form.value.sync_interval_seconds,
-    description: form.value.description || undefined,
+    description: form.value.description ?? "",
     scope_subnet_ids: form.value.scope_subnet_ids,
   };
   try {
@@ -141,10 +143,9 @@ async function test(r: FortiGateFirewall) {
 }
 
 async function sync(id: string) {
-  const name = rows.value.find((r) => r.id === id)?.name ?? id.slice(0, 8);
   try {
-    await syncFortiGate(id);
-    msg.success(t("tasks.queued_toast", { kind: "FortiGate sync", target: name }));
+    const r = await syncFortiGate(id);
+    trackTask(r.task_id, { onDone: () => void refresh() });
   } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
 
@@ -205,7 +206,7 @@ const allCols = computed<DataTableColumns<FortiGateFirewall>>(() => autoSort([
   },
 ]));
 const cols = computed<DataTableColumns<FortiGateFirewall>>(() =>
-  allCols.value.filter((c: any) => vis.value.includes(c.key)),
+  orderColumns(allCols.value.filter((c: any) => vis.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); void loadSubnetOptions(); });
@@ -233,7 +234,8 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         <template #icon><n-icon><PlusIcon /></n-icon></template>
         {{ t("common.create") }}
       </n-button>
-      <ColumnPicker :all="picker" :visible="vis" @update:visible="setVis" @reset="resetVis" />
+      <ColumnPicker :all="picker" :visible="vis" @update:visible="setVis" @reset="resetVis"
+                    :order="order" @update:order="setOrder" />
     </n-space>
 
     <n-data-table :columns="cols" :data="rows" :loading="loading" :bordered="false" :scroll-x="1200" />

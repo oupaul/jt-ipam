@@ -91,7 +91,8 @@ async def test_count_is_total_not_page(db_session, admin_user) -> None:
 async def test_scoped_tools_expose_subnet_param() -> None:
     """這批工具的 schema 一定要有 subnet_cidr，否則模型無從限縮（事故根因）。"""
     for name in ("wazuh_missing_agents", "list_wazuh_agents", "list_fdb",
-                 "list_dhcp_ranges", "list_vms", "list_nat"):
+                 "list_dhcp_ranges", "list_vms", "list_nat", "list_rustdesk_peers", "list_rustdesk_audit",
+                 "list_isoinsight_leases"):
         props = TOOLS[name]["parameters"]["properties"]
         assert "subnet_cidr" in props, f"{name} 沒有子網路參數 → 問某網段只能回全站"
 
@@ -125,7 +126,7 @@ async def test_attack_surface_tool_answers_by_fqdn(db_session, admin_user) -> No
     by_name = await fn(db_session, user=admin_user, fqdn="meet.example.net")
     assert by_name["count"] == 1, "用 FQDN 問不到自己的對外開口"
     assert by_name["items"][0]["port"] == 443
-    assert "meet.example.net" in by_name["items"][0]["fqdns"]
+    assert {"meet.example.net"} <= set(by_name["items"][0]["fqdns"])
     assert by_name["scope"] == "fqdn:meet.example.net"
 
     other = await fn(db_session, user=admin_user, fqdn="nope.example.net")
@@ -141,3 +142,17 @@ async def test_anomaly_tool_exposes_fw_rule_rot() -> None:
 
     src = inspect.getsource(TOOLS["list_anomalies"]["fn"])
     assert "fw_rule_rot" in src, "AI 問不到防火牆規則劣化"
+
+
+@pytest.mark.anyio
+async def test_missing_agents_default_to_the_integration_scope(db_session, admin_user) -> None:
+    """沒帶網段時跟畫面一致：Wazuh 整合限定了子網路，就只算這些子網路（2026-09-25）。"""
+    from app.models.wazuh import WazuhInstance
+    a, _b, _ips = await _two_subnets(db_session)
+    db_session.add(WazuhInstance(
+        name=f"wz-{uuid.uuid4().hex[:6]}", api_url="https://192.0.2.5:55000", api_user="ro",
+        api_password_enc=b"x", api_password_nonce=b"y", scope_subnet_ids=[str(a.id)]))
+    await db_session.flush()
+    got = await TOOLS["wazuh_missing_agents"]["fn"](db_session, user=admin_user)
+    assert got["scope"] == "integration_scope", "要讓模型知道這是整合範圍、不是全站"
+    assert {r["hostname"] for r in got["missing"]} == {"in-scope-1", "in-scope-2"}

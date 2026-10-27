@@ -3,7 +3,8 @@
 設計：
 - LibreNMSInstance：多站點支援（規格書 §6.10）；api_token 加密
 - LibreNMSDevice：每次 sync 從 LibreNMS 抓回的裝置；legacy_id = LibreNMS device_id
-- ARPEntry：從 LibreNMS API /resources/ip/arp/ 取得，自動補 IP 的 MAC
+- ARPEntry：從 LibreNMS API /resources/ip/arp/ 取得，自動補 IP 的 MAC；
+  掃描代理與防火牆 ARP 表的觀測也寫這裡（IP 衝突偵測的依據，issue #41）
 - FDBEntry：從 LibreNMS API /devices/{id}/fdb 取得，定位 MAC 在哪個 switch port
 """
 
@@ -18,6 +19,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -65,6 +67,31 @@ class LibreNMSInstance(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     auto_create_ips: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False, server_default=text("true"),
     )
+    # 依 ARP 表自動建立 IP（GitHub #48，0173）：**預設關**。開了之後私接的設備也會被收錄，
+    # 而且從此不再出現在「未授權 IP」異常偵測（那道偵測看的就是「ARP 看得到、IPAM 沒有」）。
+    # 規則與把關見 services/arp_autocreate.py。
+    auto_create_from_arp: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false"),
+    )
+    # 要交換器 MAC 表（FDB）在 24 小時內也看過這個 MAC 才建。LibreNMS 的 ARP 沒有時間欄位，
+    # 而有些設備的 ARP 快取幾小時到幾天才清（Cisco 預設 4 小時，有的要到介面斷線或重開機）；
+    # MAC 表通常 5 分鐘就老化，所以拿它證明「最近真的有在講話」。
+    arp_create_require_fdb: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default=text("true"),
+    )
+    # 略過 DHCP 動態範圍內的位址（那段會回收再發給別台，建了只是一直換人）
+    arp_create_skip_dhcp: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default=text("true"),
+    )
+
+    # VLAN 同步寫進哪個 domain（GitHub issue #53，0211）：NULL＝專用的「LibreNMS」domain（原本的行為）。
+    # 指定了就沿用那個 domain 裡同編號的 VLAN、只補 device↔VLAN 對應，已有的名稱不覆寫
+    vlan_domain_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("vlan_domains.id", ondelete="SET NULL"), nullable=True, index=True)
+    # 指定 domain 時，交換器上有、domain 裡沒有的 VLAN 要不要新建（關掉＝只對應既有的，
+    # 交換器預設的 1002–1005 之類就不會被帶進來）
+    vlan_create_missing: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default=text("true"))
 
     # 限定 sync 解析 IP 的子網路範圍（解決重疊網段：A/B 客戶都用 192.168.1.x）。
     # 空 = 全域比對（向下相容）。存 subnet UUID 字串陣列。
@@ -131,7 +158,12 @@ class ARPEntry(Base, UUIDPrimaryKeyMixin):
     )
     interface: Mapped[str | None] = mapped_column(String(64))
     vrf: Mapped[str | None] = mapped_column(String(64))
+    # librenms / scanner / arp:<廠牌>（防火牆 ARP 表）。非 LibreNMS 的觀測沒有 device_id，
+    # 改用 subnet_id 界定範圍 —— 重疊網段不可以互相判成衝突（issue #41，見 services/arp_evidence.py）
     source: Mapped[str] = mapped_column(String(16), default="librenms", nullable=False)
+    subnet_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("subnets.id", ondelete="CASCADE"), index=True,
+    )
 
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
@@ -142,6 +174,9 @@ class ARPEntry(Base, UUIDPrimaryKeyMixin):
 
     __table_args__ = (
         UniqueConstraint("ip", "mac", "device_id", name="arp_entry_unique"),
+        # 掃描代理／防火牆的觀測：同一個 IP、MAC、來源、子網路只一筆，再看到只更新時間
+        Index("arp_entry_observed_unique", "ip", "mac", "source", "subnet_id", unique=True,
+              postgresql_where=text("device_id IS NULL AND subnet_id IS NOT NULL")),
     )
 
 
@@ -160,6 +195,15 @@ class FDBEntry(Base, UUIDPrimaryKeyMixin):
     )
     port_name: Mapped[str | None] = mapped_column(String(64))
     source: Mapped[str] = mapped_column(String(16), default="librenms", nullable=False)
+    #: source=mikrotik 的列（0170）：直接記 jt-ipam 裝置（`device_id` 是 LibreNMS 裝置，這裡沒有），
+    #: 以及是哪台路由器回報的（刪路由器時跟著刪）
+    switch_device_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    mikrotik_router_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("mikrotik_routers.id", ondelete="CASCADE"), index=True)
+    #: source=snmp 的列（0217）：哪個 SNMP 收集目標回報的（刪目標時跟著刪）；switch_device_id 同樣記目標裝置
+    snmp_target_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("snmp_targets.id", ondelete="CASCADE"), index=True)
 
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,

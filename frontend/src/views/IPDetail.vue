@@ -6,6 +6,7 @@ import { NCard, NDescriptions, NDescriptionsItem, NSpin, NSpace, NTag, useMessag
 import { getAddress } from "@/api/addresses";
 import IPAddressEditModal from "@/components/IPAddressEditModal.vue";
 import UptimeBar from "@/components/UptimeBar.vue";
+import OpenStackPortsCard from "@/components/OpenStackPortsCard.vue";
 import { useScanProbes, probeLabel } from "@/api/scanProbes";
 import type { IPAddress } from "@/types";
 import { openInNewTab } from "@/utils/openInNewTab";
@@ -83,6 +84,17 @@ function openBmcPopout() {
   window.open(bmcHref(), `bmc-${addr.value.id}`, "width=1040,height=680");
 }
 
+// 相容 RustDesk 的網頁連線：新分頁（與其他主控台一樣）
+function openRustDesk() {
+  if (!addr.value) return;
+  openInNewTab(router.resolve({ name: "rustdesk-console", params: { id: addr.value.id } }).href);
+}
+// 檔案傳輸（附錄 J.6）：另一條連線，也是新分頁
+function openRustDeskFiles() {
+  if (!addr.value) return;
+  openInNewTab(router.resolve({ name: "rustdesk-files", params: { id: addr.value.id } }).href);
+}
+
 // 把探測 key 轉成顯示 label（比不到目錄就直接顯示 key）
 function labelForProbe(key: string): string {
   const p = catalog.value.probes.find((x) => x.key === key);
@@ -133,12 +145,17 @@ watch(() => route.params.id, (id) => { if (id) load(String(id)); });
         @novnc-popout="openNovncPopout"
         @bmc-open="openBmc"
         @bmc-popout="openBmcPopout"
+        @rustdesk-open="openRustDesk"
+        @rustdesk-files-open="openRustDeskFiles"
       />
 
       <!-- 存活狀況長條圖：由 effective_status 的轉換記錄重建每日狀態 -->
       <n-card v-if="addr" size="small" :bordered="true">
         <UptimeBar :address-id="addr.id" :days="90" />
       </n-card>
+
+      <!-- OpenStack 網卡（Neutron port）：只有掛在 OpenStack 上的位址才會出現 -->
+      <OpenStackPortsCard v-if="addr" :address-id="addr.id" />
 
       <!-- 掃描項目（唯讀，由探測結果推導）；OS 已併入上方主要欄位表 -->
       <n-card v-if="addr && showScanSection" size="small" :bordered="true">

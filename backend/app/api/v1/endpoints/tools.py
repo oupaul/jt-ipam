@@ -9,6 +9,7 @@ OWASP A05：所有輸入透過 stdlib `ipaddress` 解析（service 層），拒�
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import asdict
 from typing import Annotated, Any
@@ -19,13 +20,16 @@ from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser, require_admin
+from app.core import sse
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.rate_limit import check_rate_limit
-from app.core.ui_error import detail_of
+from app.core.ui_error import detail_of, ui_detail
 from app.schemas.base import StrictModel
 from app.services import netdiag, nettools
 from app.services.nettools import NetToolError
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -358,6 +362,25 @@ async def net_traceroute(
             "truncated": res.truncated, "hops": [asdict(h) for h in res.hops]}
 
 
+def _trace_error_event(exc: netdiag.NetDiagError, *, admin: bool) -> dict[str, Any]:
+    """路徑追蹤串流的錯誤事件：代碼＋參數，前端照語系翻譯（以前直接送中文句子，英日文介面也看到中文）。
+
+    底層例外原文（例如無法啟動 traceroute 的 OSError）只給管理員看；一般帳號只拿到例外的類別名稱
+    （CodeQL #20）。完整原因寫日誌。
+    """
+    code = exc.code or "nd_error"
+    params = {k: v for k, v in (exc.params or {}).items() if k != "reason"}
+    raw = str((exc.params or {}).get("reason") or exc)
+    if admin:
+        params["reason"] = raw[:300]
+    else:
+        cause = exc.__cause__
+        params["reason"] = type(cause).__name__ if cause is not None else ""
+    log.warning("traceroute stream failed (%s): %s", code, raw[:300])
+    return {"type": "error", "code": code, "params": params,
+            "detail": raw[:300] if admin else "traceroute failed"}
+
+
 @router.post("/net/traceroute/stream")
 async def net_traceroute_stream(
     payload: _TraceIn, user: CurrentUser, request: Request,
@@ -374,14 +397,17 @@ async def net_traceroute_stream(
         raise _bad(exc) from exc
     await _diag_guard(session, user, request, "net_traceroute", {"target": target})
 
+    admin = bool(user.is_admin)
+
     async def gen() -> Any:
         try:
-            async for ev in netdiag.traceroute_stream(target, max_hops=payload.max_hops):
+            async for ev in sse.with_keepalive(netdiag.traceroute_stream(target, max_hops=payload.max_hops)):
+                if ev is None:      # 連續幾個沒回應的躍點：送保活，免得反向代理逾時切斷
+                    yield sse.KEEPALIVE
+                    continue
                 yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
-        except netdiag.NetDiagUnavailable as exc:
-            yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"
-        except netdiag.NetDiagError as exc:
-            yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"
+        except netdiag.NetDiagError as exc:          # 含 NetDiagUnavailable
+            yield f"data: {json.dumps(_trace_error_event(exc, admin=admin), ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         gen(), media_type="text/event-stream",
@@ -482,7 +508,15 @@ async def net_http(
     payload: _HttpIn, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    """狀態碼、轉址鏈與關鍵回應標頭。"""
+    """狀態碼、轉址鏈與關鍵回應標頭。
+
+    完全沒有任何檢視權限的帳號不能用（比照 AI 對話的 has_no_visibility 總閘）：這支會讓伺服器替呼叫者
+    對內網送出 GET，零權限帳號不該拿得到這個能力（2026-10-06 CodeQL 判讀）。
+    """
+    from app.mcp.tools import has_no_visibility
+    if await has_no_visibility(session, user):
+        raise HTTPException(status_code=403, detail=ui_detail(
+            "nd_no_visibility", "這個帳號沒有任何檢視權限，不能使用 HTTP 檢查"))
     await _diag_guard(session, user, request, "net_http", {"url": payload.url[:200]})
     res = await netdiag.http_check(
         payload.url, timeout=payload.timeout, max_redirects=payload.max_redirects,
@@ -541,6 +575,11 @@ async def agent_probe(
     from app.models.scan_agent import ScanAgent
     from app.services.agent_probe import ProbeJobError, create_job
 
+    # identify（深度識別）只能從 IP 詳細頁對 jt-ipam 裡的 IP 發起（endpoints/ip_identify），
+    # 不開放在這裡對任意位址跑
+    if payload.kind == "identify":
+        raise HTTPException(status_code=400, detail=ui_detail(
+            "identify_use_ip_page", "探測請從 IP 詳細頁發起"))
     agent = await session.get(ScanAgent, payload.agent_id)
     if agent is None or not agent.enabled:
         raise HTTPException(status_code=404, detail="agent not found or disabled")

@@ -541,7 +541,7 @@ ALTER TABLE subnets ADD COLUMN socks5_port INTEGER NULL;
 
 | 現象 | 可能原因 | 檢查指令 |
 |------|---------|---------|
-| frpc 無法連到 frps | 客戶出口 IP 未在 ufw 白名單、憑證錯誤 | `sudo ufw status`、`docker compose logs frpc` |
+| frpc 無法連到 frps | 客戶出口 IP 未在 ufw 允許清單、憑證錯誤 | `sudo ufw status`、`docker compose logs frpc` |
 | frps log 顯示 TLS 錯誤 | 憑證 CN 不符或 CA 不對 | `openssl verify -CAfile ca.crt client.crt` |
 | curl SOCKS5 測試失敗 | container 未正常啟動 | `docker compose ps`、`docker compose logs` |
 | SSH 連線 timeout | 目標主機不可達（防火牆）| 在客戶端主機直接 `ping <目標IP>` |

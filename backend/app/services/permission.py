@@ -26,6 +26,7 @@ from typing import Any, Literal
 from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.sqlin import in_values
 from app.models.permission import Permission
 from app.models.user import User, UserGroupMember
 
@@ -204,6 +205,23 @@ async def can_use_ssh(session: AsyncSession, *, user: User, ip: Any) -> bool:
     return bool(getattr(user, "can_ssh", False))
 
 
+async def can_use_rustdesk(session: AsyncSession, *, user: User, ip: Any) -> bool:
+    """是否給「以 RustDesk 連線」的網址。比照 VNC：這個 IP 要勾了 rustdesk_enabled，再看遠端主控台權限
+    （admin、子網路 write、或 can_ssh 且看得到）。連線本身在 RustDesk 客戶端與對方之間，對方的 RustDesk 密碼仍是最後一道。"""
+    if not getattr(ip, "rustdesk_enabled", False):
+        return False
+    if user.is_admin:
+        return True
+    level = await get_object_permission(
+        session, user=user, object_type="subnet", object_id=ip.subnet_id
+    )
+    if level == "none":
+        return False
+    if has_permission(level, "write"):
+        return True
+    return bool(getattr(user, "can_ssh", False))
+
+
 async def can_use_sftp(session: AsyncSession, *, user: User, ip: Any) -> bool:
     """是否可對此 IP 開 SFTP 檔案瀏覽器（deny-by-default）。
 
@@ -355,35 +373,35 @@ async def _resolve_visible(
         return set(granted.get("location", set()))
     if object_type == "section":
         conds = []
-        if granted.get("section"): conds.append(Section.id.in_(granted["section"]))
-        if granted.get("customer"): conds.append(Section.customer_id.in_(granted["customer"]))
+        if granted.get("section"): conds.append(in_values(Section.id, granted["section"]))
+        if granted.get("customer"): conds.append(in_values(Section.customer_id, granted["customer"]))
         return await ids_of(Section.id, *conds)
     if object_type == "rack":
         conds = []
-        if granted.get("rack"): conds.append(Rack.id.in_(granted["rack"]))
-        if granted.get("location"): conds.append(Rack.location_id.in_(granted["location"]))
+        if granted.get("rack"): conds.append(in_values(Rack.id, granted["rack"]))
+        if granted.get("location"): conds.append(in_values(Rack.location_id, granted["location"]))
         return await ids_of(Rack.id, *conds)
     if object_type == "subnet":
         vis_sections = await _resolve_visible(session, "section", granted)  # 含 customer→section
         conds = []
-        if granted.get("subnet"): conds.append(Subnet.id.in_(granted["subnet"]))
-        if vis_sections: conds.append(Subnet.section_id.in_(vis_sections))
-        if granted.get("customer"): conds.append(Subnet.customer_id.in_(granted["customer"]))
+        if granted.get("subnet"): conds.append(in_values(Subnet.id, granted["subnet"]))
+        if vis_sections: conds.append(in_values(Subnet.section_id, vis_sections))
+        if granted.get("customer"): conds.append(in_values(Subnet.customer_id, granted["customer"]))
         return await ids_of(Subnet.id, *conds)
     if object_type == "ip":
         vis_subnets = await _resolve_visible(session, "subnet", granted)
         conds = []
-        if granted.get("ip"): conds.append(IPAddress.id.in_(granted["ip"]))
-        if vis_subnets: conds.append(IPAddress.subnet_id.in_(vis_subnets))
-        if granted.get("customer"): conds.append(IPAddress.customer_id.in_(granted["customer"]))
+        if granted.get("ip"): conds.append(in_values(IPAddress.id, granted["ip"]))
+        if vis_subnets: conds.append(in_values(IPAddress.subnet_id, vis_subnets))
+        if granted.get("customer"): conds.append(in_values(IPAddress.customer_id, granted["customer"]))
         return await ids_of(IPAddress.id, *conds)
     if object_type == "device":
         vis_racks = await _resolve_visible(session, "rack", granted)
         conds = []
-        if granted.get("device"): conds.append(Device.id.in_(granted["device"]))
-        if vis_racks: conds.append(Device.rack_id.in_(vis_racks))
-        if granted.get("location"): conds.append(Device.location_id.in_(granted["location"]))
-        if granted.get("customer"): conds.append(Device.customer_id.in_(granted["customer"]))
+        if granted.get("device"): conds.append(in_values(Device.id, granted["device"]))
+        if vis_racks: conds.append(in_values(Device.rack_id, vis_racks))
+        if granted.get("location"): conds.append(in_values(Device.location_id, granted["location"]))
+        if granted.get("customer"): conds.append(in_values(Device.customer_id, granted["customer"]))
         return await ids_of(Device.id, *conds)
     return set()
 
@@ -410,6 +428,14 @@ DEFAULT_ROLES: dict[str, dict[str, str]] = {
                    "subnet": "write", "ip": "write", "device": "write"},
     "稽核員": dict.fromkeys(_ALL_TYPES, "read"),
     "部門管理員": {},  # 無 wildcard；由管理員指派特定單位/區段為 admin
+    # 戰情室檢視者（2026-10-22）：所有物件唯讀，另外在戰情室（唯讀看板）看得到管理員限定的統計
+    # （異常、DNS 比對、憑證、監控覆蓋、IP 變更評估、採集）。只放寬戰情室：那些功能自己的頁面、
+    # REST 與 MCP 照舊只給管理員（見 services/warroom/common.full_access）。給電視用的帳號就掛這個
+    "戰情室檢視者": dict.fromkeys(_ALL_TYPES, "read"),
+}
+WARROOM_ROLE = "戰情室檢視者"
+ROLE_DESCRIPTIONS: dict[str, str] = {
+    WARROOM_ROLE: "戰情室看得到全部主題（含異常、憑證、採集等統計）；其他頁面唯讀、不能修改",
 }
 
 
@@ -436,7 +462,7 @@ async def seed_default_roles(session: AsyncSession) -> int:
             select(Group).where(Group.name == role_name)
         )).scalar_one_or_none()
         if grp is None:
-            grp = Group(name=role_name, is_builtin=True)
+            grp = Group(name=role_name, is_builtin=True, description=ROLE_DESCRIPTIONS.get(role_name))
             session.add(grp)
             await session.flush()
             created += 1
@@ -478,3 +504,37 @@ async def purge_permissions_for_object(
         ).returning(Permission.id)
     )).scalars().all()
     return len(rows)
+
+
+_CHAIN_TYPES = {"location": "location", "rack": "rack", "device": "device", "vmnode": "device",
+                "ip": "ip", "subnet": "subnet", "section": "section"}
+
+
+async def visible_chain(session: AsyncSession, user: User, chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """關係鏈（IP 頁、裝置頁的上下關係圖）依讀者逐一過濾：看不到的物件整個節點拿掉。
+
+    以前只檢查起點，鏈上串出來的裝置、機櫃、地點、子網路、區段名稱都直接回（2026-10-07 稽核）。
+    虛擬機與只有名稱的 PVE 節點來自虛擬化整合，屬於全域資料，要全域讀取。
+    """
+    if user.is_admin:
+        return chain
+    from app.mcp.tools import has_global_read
+    global_read: bool | None = None
+    out = []
+    for node in chain:
+        t, nid = node.get("type"), str(node.get("id") or "")
+        otype = _CHAIN_TYPES.get(str(t))
+        try:
+            oid = uuid.UUID(nid) if otype else None
+        except ValueError:
+            oid = None
+        if otype and oid is not None:
+            ok = has_permission(await get_object_permission(session, user=user, object_type=otype, object_id=oid),  # type: ignore[arg-type]
+                                "read")
+        else:
+            if global_read is None:
+                global_read = await has_global_read(session, user)
+            ok = global_read
+        if ok:
+            out.append(node)
+    return out

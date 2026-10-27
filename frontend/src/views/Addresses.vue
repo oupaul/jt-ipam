@@ -26,7 +26,9 @@ import type { SubnetUsage } from "@/types";
 import { listSections } from "@/api/sections";
 import { useCustomers } from "@/composables/useCustomers";
 import type { IPAddress, Subnet } from "@/types";
-import { AddressesIcon, RefreshIcon, DeleteIcon } from "@/icons";
+import { AddressesIcon, RefreshIcon, DeleteIcon, DevicesIcon, CancelIcon } from "@/icons";
+import { useAuthStore } from "@/stores/auth";
+import { useBulkCreateDevices } from "@/composables/useBulkCreateDevices";
 import IPAddressEditModal from "@/components/IPAddressEditModal.vue";
 import LiveStatusDot from "@/components/LiveStatusDot.vue";
 import SwitchPortLabel from "@/components/SwitchPortLabel.vue";
@@ -34,12 +36,17 @@ import IpRoleTags from "@/components/IpRoleTags.vue";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import OsIcon from "@/components/OsIcon.vue";
-import { useScanProbes, osFamilyLabel } from "@/api/scanProbes";
+import { renderDeviceKind } from "@/utils/deviceKindCell";
+import { useScanProbes, osDisplayLabel } from "@/api/scanProbes";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { computed } from "vue";
 import { renderMacWithVendor } from "@/utils/macVendor";
+import { listDhcpRanges } from "@/api/integrations";
+import {
+  dhcpInfoFor, lastSeenText, renderDeviceLink, renderDhcpCell, staleDaysLabel, toDhcpRanges, type DhcpRangeInfo,
+} from "@/utils/ipColumns";
 
-const { t, locale } = useI18n();
+const { t, te, locale } = useI18n();
 const { catalog } = useScanProbes();
 const msg = useMessage();
 const route = useRoute();
@@ -78,8 +85,19 @@ const usageSubnetLabel = computed(() => {
 });
 const sectionOptions = ref<SelectOption[]>([]);
 const { options: customerOptions, ensureLoaded: ensureCustomersLoaded } = useCustomers();
-const page = ref(1);
-const pageSize = ref(100);
+// 頁碼與每頁筆數也記在網址上：點進一筆再按上一頁，回到原本那一頁（使用者 2026-10-05）
+const PAGE_SIZES = [50, 100, 200, 500];
+const page = ref(Math.max(1, Math.floor(Number(route.query.page) || 1)));
+const pageSize = ref(PAGE_SIZES.includes(Number(route.query.ps)) ? Number(route.query.ps) : 100);
+watch([page, pageSize], () => {
+  // 篩選條件的 router.replace 可能還沒完成；排到下一輪再讀 route.query，才不會把剛寫進去的篩選蓋掉
+  setTimeout(() => {
+    const want = { page: page.value > 1 ? String(page.value) : undefined,
+                   ps: pageSize.value !== 100 ? String(pageSize.value) : undefined };
+    if (route.query.page === want.page && route.query.ps === want.ps) return;
+    router.replace({ query: { ...route.query, ...want } }).catch(() => {});
+  }, 0);
+});
 
 async function loadSubnets() {
   try {
@@ -104,6 +122,13 @@ const modalShow = ref(false);
 
 const checkedKeys = ref<DataTableRowKey[]>([]);
 const bulkBusy = ref(false);
+const authStore = useAuthStore();
+const isAdmin = computed(() => !!authStore.me?.is_admin);
+const { creatingDevices, createDevices } = useBulkCreateDevices();
+async function doBulkCreateDevices() {
+  const res = await createDevices(checkedKeys.value.map(String), refresh);
+  if (res) checkedKeys.value = [];
+}
 
 function openRow(row: IPAddress) {
   // 點既有 IP → 進獨立詳細資料頁（不再彈 modal）
@@ -211,13 +236,22 @@ function labelSource(v: string | null | undefined): string {
   return out === key ? v : out;
 }
 
+// DHCP 欄：後端判定「在 DHCP 範圍內」（照子網路歸屬算，重疊網段不會標到別的單位）才標；滑過去的伺服器與範圍從
+// 發放範圍清單查。跟子網路詳細頁同一個儲存格（utils/ipColumns）
+const dhcpRanges = ref<DhcpRangeInfo[]>([]);
+async function loadDhcpRanges() {
+  try {
+    dhcpRanges.value = toDhcpRanges(await listDhcpRanges(), t("ranges.manual"));
+  } catch { dhcpRanges.value = []; }
+}
+
 const allColumns: DataTableColumns<IPAddress> = [
   { type: "selection" },
   { title: "", key: "live", width: 28, render: (r) => liveDot(r) },
   {
     title: () => t("addresses.ip"), key: "ip", width: 200,
     sorter: true,
-    render: (r) => h("span", { style: "display:inline-flex;align-items:center;white-space:nowrap" }, [String(r.ip), h(IpRoleTags, { row: r })]),
+    render: (r) => h("span", { class: "ip-cell" }, [h("span", { class: "ip-cell-addr" }, String(r.ip)), h(IpRoleTags, { row: r })]),
   },
   {
     title: () => t("addresses.hostname"), key: "hostname", minWidth: 140, ellipsis: { tooltip: true },
@@ -225,9 +259,17 @@ const allColumns: DataTableColumns<IPAddress> = [
     sorter: true,
   },
   {
+    title: "DHCP", key: "dhcp", width: 80,
+    render: (r) => r.in_dhcp_range ? renderDhcpCell(t, dhcpInfoFor(dhcpRanges.value, r.ip)) : "",
+  },
+  {
     title: () => t("addresses.mac"), key: "mac", width: 150,
     render: (r) => renderMacWithVendor(r.mac, r.mac_vendor),
     sorter: true,
+  },
+  {
+    title: () => t("cols.vendor"), key: "mac_vendor", width: 140, ellipsis: { tooltip: true },
+    render: (r) => r.mac_vendor ?? "—", sorter: true,
   },
   {
     title: () => t("common.status"), key: "state", width: 110,
@@ -244,6 +286,22 @@ const allColumns: DataTableColumns<IPAddress> = [
     render: (r) => switchPortCell(r), sorter: true,
   },
   {
+    title: () => t("cols.device"), key: "device", width: 150, ellipsis: { tooltip: true }, sorter: true,
+    render: (r) => renderDeviceLink(r, (id) => { void router.push({ name: "device-detail", params: { id } }); }),
+  },
+  {
+    title: () => t("common.description"), key: "description", width: 200, ellipsis: { tooltip: true },
+    render: (r) => r.description ?? "", sorter: true,
+  },
+  {
+    title: () => t("addresses.last_seen"), key: "last_seen", width: 170, sorter: true,
+    render: (r) => lastSeenText(r),
+  },
+  {
+    title: () => t("stale.col_stale"), key: "stale_days", width: 110, sorter: true,
+    render: (r) => staleDaysLabel(t, r),
+  },
+  {
     title: () => t("addresses.note"), key: "note", minWidth: 160, ellipsis: { tooltip: true },
     render: (r) => r.note ?? "—", sorter: true,
   },
@@ -255,7 +313,7 @@ const allColumns: DataTableColumns<IPAddress> = [
     title: () => t("cols.os"), key: "os", width: 150,
     render: (r) => {
       if (!r.os_family) return "—";
-      const label = osFamilyLabel(catalog.value.os_families, r.os_family, locale.value);
+      const label = osDisplayLabel(catalog.value.os_families, r.os_family, r.os_guess, locale.value);
       // 一行顯示，icon 永遠不縮；空間不夠時 label 被裁掉、只剩 icon
       return h("div", {
         style: "display:flex;align-items:center;gap:4px;min-width:0;white-space:nowrap",
@@ -266,22 +324,28 @@ const allColumns: DataTableColumns<IPAddress> = [
       ]);
     },
   },
+  {
+    // 掃描代理定期偵測判讀出的設備類型（含 Recog 指紋庫）；滑過去看廠牌型號
+    title: () => t("cols.device_kind"), key: "device_kind", width: 140, sorter: true,
+    render: (r) => renderDeviceKind(r, t, te),
+  },
 ];
 
 // 欄位顯示偏好 (per-user，後端 user_preferences.table_columns)
-const { visibleKeys, setVisible, reset } = useColumnPrefs(
+const { visibleKeys, setVisible, reset, order, setOrder, orderColumns } = useColumnPrefs(
   "addresses",
-  ["live", "ip", "hostname", "mac", "state", "owner", "switch_port", "note", "discovery_source", "os"],
+  ["live", "ip", "hostname", "mac", "state", "owner", "switch_port", "note", "discovery_source", "os",
+   "device_kind", "dhcp", "mac_vendor", "device", "description", "last_seen", "stale_days"],
   ["live", "ip", "hostname", "mac", "state", "discovery_source"],
 );
 
-// selection column 永遠顯示；其他依 visibleKeys
+// selection column 永遠顯示；其他依 visibleKeys，再照使用者拖拉的順序排
 const columns = computed<DataTableColumns<IPAddress>>(() => {
-  return allColumns.filter((c: any) => {
+  return orderColumns(allColumns.filter((c: any) => {
     if (c.type === "selection") return true;
     if (!c.key) return true;
     return visibleKeys.value.includes(String(c.key));
-  });
+  }));
 });
 
 // scroll-x 依「目前顯示的欄位」動態算總寬，而非固定 1228；隱藏欄位後就不會
@@ -296,17 +360,26 @@ const scrollX = computed(() => {
 });
 
 // 給 ColumnPicker 用的全選用欄位 label
+// 欄位跟子網路詳細頁的 IP 表一樣（使用者 2026-10-12：IP 位址頁缺了 DHCP、製造商、裝置、說明、最後出現、失聯），
+// 再加上這頁才有的「來源」
 const columnPickerItems = computed(() => [
   { key: "live", label: t("cols.live_dot") },
   { key: "ip", label: "IP" },
   { key: "hostname", label: t("cols.hostname") },
+  { key: "dhcp", label: "DHCP" },
   { key: "mac", label: "MAC" },
+  { key: "mac_vendor", label: t("cols.vendor") },
   { key: "state", label: t("cols.status") },
+  { key: "os", label: t("cols.os") },
+  { key: "device_kind", label: t("cols.device_kind") },
   { key: "owner", label: t("cols.owner") },
   { key: "switch_port", label: t("cols.switch_port") },
+  { key: "device", label: t("cols.device") },
+  { key: "description", label: t("cols.description") },
+  { key: "last_seen", label: t("cols.last_seen") },
+  { key: "stale_days", label: t("stale.col_stale") },
   { key: "note", label: t("cols.note") },
   { key: "discovery_source", label: t("cols.source") },
-  { key: "os", label: t("cols.os") },
 ]);
 
 const sortField = ref<string | null>(null);
@@ -376,6 +449,7 @@ let pendingOpenId: string | null =
   typeof route.query.open === "string" ? route.query.open : null;
 
 onMounted(() => {
+  void loadDhcpRanges();
   void loadSubnets();
   void loadSections();
   void ensureCustomersLoaded();
@@ -432,7 +506,9 @@ onMounted(() => {
       <ColumnPicker
         :all="columnPickerItems"
         :visible="visibleKeys"
+        :order="order"
         @update:visible="setVisible"
+        @update:order="setOrder"
         @reset="reset"
       />
       <ExportButton :columns="columns" :rows="rows" :fetch-all="fetchAllForExport"
@@ -459,7 +535,20 @@ onMounted(() => {
         </template>
         {{ t("common.confirm_delete_n_irreversible", { n: checkedKeys.length }) }}
       </n-popconfirm>
-      <n-button size="small" @click="checkedKeys = []">{{ t("common.clear_selection") }}</n-button>
+      <n-popconfirm v-if="isAdmin" @positive-click="doBulkCreateDevices">
+        <template #trigger>
+          <n-button type="primary" size="small" :loading="creatingDevices" :disabled="creatingDevices"
+                    data-testid="bulk-create-devices">
+            <template #icon><n-icon><DevicesIcon /></n-icon></template>
+            {{ t("addresses.bulk_devices") }}
+          </n-button>
+        </template>
+        <div style="max-width: 360px">{{ t("addresses.bulk_devices_confirm", { n: checkedKeys.length }) }}</div>
+      </n-popconfirm>
+      <n-button size="small" @click="checkedKeys = []">
+        <template #icon><n-icon><CancelIcon /></n-icon></template>
+        {{ t("common.clear_selection") }}
+      </n-button>
     </n-space>
     <n-data-table
       :columns="columns"
@@ -476,7 +565,7 @@ onMounted(() => {
         pageSize: pageSize,
         itemCount: total,
         showSizePicker: true,
-        pageSizes: [50, 100, 200, 500],
+        pageSizes: PAGE_SIZES,
         prefix: ({ itemCount }) => t('common.total_rows', { n: itemCount ?? 0 }),
         onUpdatePage: (p) => { page = p; void refresh(); },
         onUpdatePageSize: (ps) => { pageSize = ps; page = 1; void refresh(); },

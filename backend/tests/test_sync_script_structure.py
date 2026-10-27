@@ -23,18 +23,30 @@ BLOCK_MARKERS = [
     "OPNsenseFirewall",
     "PfSenseFirewall",
     "ESXiInstance",
+    "HyperVInstance",              # Hyper-V（直連主機或 SCVMM）
+    "OpenStackInstance",           # Bigstack CubeCOS／OpenStack
     "WazuhInstance",
     "LibreNMSInstance",
     "AdGuardInstance",
     "FortiGateFirewall",
+    "CheckPointServer",            # Check Point 管理伺服器
+    "CheckPointGaiaTarget",        # Check Point 閘道的 Gaia API（第二階段）
     "WindowsDhcpServer",
+    "KeaDhcpServer",               # 獨立 Kea DHCP（issue #45）
+    "TechnitiumDhcpServer",        # Technitium DHCP
+    "isoinsight_job.run_due",      # ISOinsight 整合
+    "mark_stale_isc",              # 獨立 ISC DHCP：代理多久沒回報
+    "mark_stale_rustdesk",         # RustDesk Server（開源版）：代理多久沒回報
+    "rustdesk_svc.prune_audit",    # RustDesk 客戶端稽核保留天數
     "ProxmoxInstance",
     "DNSServer",
-    "get_ai_audit_last_run",     # AI 巡檢
+    # AI 巡檢 2026-10-12 搬到 --ai-audit 模式（jt-ipam-ai-audit.timer）：守門在 test_ai_audit_attempt.py
     "get_anomaly_last_run",      # 異常偵測排程
     "prune_stale_fdb",           # FDB 過期清除
     "check_integration_health",  # 健康告警（整合／代理／系統）
     "check_jump_host_keys",      # 容量與資安告警（DHCP／跳板金鑰／憑證來源）
+    "recompute_effective_status",  # 上線判定：每輪一次、不依附 LibreNMS（2026-09-26 稽核）
+    "sync_auto_dhcp_ranges",       # 偵測到的 DHCP 發放範圍 → 位址範圍（集區）（2026-09-27）
 ]
 
 
@@ -63,3 +75,21 @@ def test_the_engine_is_disposed_before_exit() -> None:
     """短命腳本一定要 dispose：否則連線留到 GC 才回收，會在行程收尾噴 greenlet 錯誤。"""
     src = SCRIPT.read_text(encoding="utf-8")
     assert "engine.dispose()" in src, "缺少 await engine.dispose()"
+
+
+def test_module_level_helpers_are_not_shadowed_in_run() -> None:
+    """_run 裡 `from x import y as name` 或指派同名的區域變數，會讓整個函式裡的這個名字都變成區域變數，
+    在指派之前用到就是 UnboundLocalError（10-23：`from app.services.schedule import due as _due` 蓋掉同名
+    的模組函式，排程同步每輪一開始就掛掉）。"""
+    import ast
+    tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+    module_funcs = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for fn in [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        local: set[str] = set()
+        for node in ast.walk(fn):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                local |= {a.asname or a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                local.add(node.id)
+        clash = (local & module_funcs) - {fn.name}
+        assert not clash, f"{fn.name} 裡的區域名稱蓋掉了模組函式：{clash}"

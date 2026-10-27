@@ -5,35 +5,34 @@
  * 不引入 JSZip 等相依。PDF 走瀏覽器列印（開新視窗 → 列印 → 另存 PDF），同樣零相依。
  */
 
+import { logExport, saveBlob, type SaveMeta } from "@/utils/saveFile";
+
 export type ExportFormat = "csv" | "txt" | "md" | "pdf" | "ods" | "odt" | "xlsx";
 
 export interface ExportColumn {
   key: string;
   label: string;
+  /** 自帶匯出值：欄位 key 不等於資料欄位名、或畫面用 render 顯示時用（DataTable 欄位寫 exportValue） */
+  value?: (row: Record<string, any>) => unknown;
 }
 
 // ── 下載 ──
-function download(filename: string, data: Blob | Uint8Array, mime: string) {
-  const blob = data instanceof Blob ? data : new Blob([data as BlobPart], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+// 實際存檔與匯出稽核在 utils/saveFile；`exportTable` 進來時已經回報過一次（含列數），
+// 這裡不再回報。其他直接呼叫 download 的地方要帶 meta（來源），才會留下稽核。
+export function download(filename: string, data: Blob | Uint8Array, mime: string,
+                         meta: SaveMeta = { source: "table", audited: true }) {
+  saveBlob(filename, data, mime, meta);
 }
 
-function cell(row: Record<string, any>, key: string): string {
-  const v = row[key];
+export function cellText(row: Record<string, any>, col: ExportColumn): string {
+  const v = col.value ? col.value(row) : row[col.key];
   if (v == null) return "";
   if (Array.isArray(v)) return v.join(", ");
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
 }
 
-function xmlEscape(s: string): string {
+export function xmlEscape(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
@@ -42,16 +41,17 @@ function xmlEscape(s: string): string {
 function toCSV(cols: ExportColumn[], rows: Record<string, any>[]): string {
   const esc = (s: string) => `"${s.replace(/"/g, '""')}"`;
   const head = cols.map((c) => esc(c.label)).join(",");
-  const body = rows.map((r) => cols.map((c) => esc(cell(r, c.key))).join(",")).join("\r\n");
+  const body = rows.map((r) => cols.map((c) => esc(cellText(r, c))).join(",")).join("\r\n");
   return "﻿" + head + "\r\n" + body;   // BOM → Excel 正確辨識 UTF-8
 }
 
 // ── Markdown ──
 function toMarkdown(cols: ExportColumn[], rows: Record<string, any>[]): string {
-  const esc = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
+  // 先跳脫反斜線再跳脫 |：不然值結尾的「\」會把後面補上的跳脫吃掉，| 又變回欄位分隔（CodeQL 標出）
+  const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\n/g, " ");
   const head = "| " + cols.map((c) => esc(c.label)).join(" | ") + " |";
   const sep = "| " + cols.map(() => "---").join(" | ") + " |";
-  const body = rows.map((r) => "| " + cols.map((c) => esc(cell(r, c.key))).join(" | ") + " |").join("\n");
+  const body = rows.map((r) => "| " + cols.map((c) => esc(cellText(r, c))).join(" | ") + " |").join("\n");
   return [head, sep, body].join("\n") + "\n";
 }
 
@@ -59,7 +59,7 @@ function toMarkdown(cols: ExportColumn[], rows: Record<string, any>[]): string {
 function toTXT(cols: ExportColumn[], rows: Record<string, any>[]): string {
   const clean = (s: string) => s.replace(/[\t\n\r]/g, " ");
   const head = cols.map((c) => clean(c.label)).join("\t");
-  const body = rows.map((r) => cols.map((c) => clean(cell(r, c.key))).join("\t")).join("\n");
+  const body = rows.map((r) => cols.map((c) => clean(cellText(r, c))).join("\t")).join("\n");
   return head + "\n" + body + "\n";
 }
 
@@ -70,7 +70,7 @@ function exportXLSX(filename: string, cols: ExportColumn[], rows: Record<string,
   const rowXml = (vals: string[]) => `<row>${vals.map(cellXml).join("")}</row>`;
   const sheetRows = [
     rowXml(cols.map((c) => c.label)),
-    ...rows.map((r) => rowXml(cols.map((c) => cell(r, c.key)))),
+    ...rows.map((r) => rowXml(cols.map((c) => cellText(r, c)))),
   ].join("");
   const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
     + `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
@@ -108,7 +108,7 @@ function exportXLSX(filename: string, cols: ExportColumn[], rows: Record<string,
 function exportPDF(title: string, cols: ExportColumn[], rows: Record<string, any>[]) {
   const head = cols.map((c) => `<th>${xmlEscape(c.label)}</th>`).join("");
   const body = rows.map((r) =>
-    "<tr>" + cols.map((c) => `<td>${xmlEscape(cell(r, c.key))}</td>`).join("") + "</tr>",
+    "<tr>" + cols.map((c) => `<td>${xmlEscape(cellText(r, c))}</td>`).join("") + "</tr>",
   ).join("");
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${xmlEscape(title)}</title>
     <style>
@@ -153,7 +153,7 @@ function crc32(buf: Uint8Array): number {
   for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
-function zipStore(files: { name: string; data: Uint8Array }[]): Uint8Array {
+export function zipStore(files: { name: string; data: Uint8Array }[]): Uint8Array {
   const enc = new TextEncoder();
   const parts: Uint8Array[] = [];
   const central: Uint8Array[] = [];
@@ -215,7 +215,7 @@ function odfRows(cols: ExportColumn[], rows: Record<string, any>[]): string {
     `<table:table-cell office:value-type="string"><text:p>${xmlEscape(s)}</text:p></table:table-cell>`;
   const headRow = `<table:table-row>${cols.map((c) => tcell(c.label)).join("")}</table:table-row>`;
   const bodyRows = rows.map((r) =>
-    `<table:table-row>${cols.map((c) => tcell(cell(r, c.key))).join("")}</table:table-row>`,
+    `<table:table-row>${cols.map((c) => tcell(cellText(r, c))).join("")}</table:table-row>`,
   ).join("");
   return headRow + bodyRows;
 }
@@ -267,6 +267,8 @@ export function exportTable(
   title?: string,
 ) {
   const ttl = title || filenameBase;
+  // 一次匯出回報一筆稽核（PDF 走列印不經過下載，也要在這裡記）
+  logExport(filenameBase, `${filenameBase}.${format}`, rows.length);
   switch (format) {
     case "csv":
       download(`${filenameBase}.csv`, toCSVBlob(cols, rows), "text/csv;charset=utf-8");
@@ -297,6 +299,39 @@ function toCSVBlob(cols: ExportColumn[], rows: Record<string, any>[]): Blob {
 }
 
 /** 從 naive DataTable columns 萃取可匯出的 {key,label}（略過 selection / 操作欄）。 */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** render 的結果（字串、數字、VNode、元件的預設插槽）→ 純文字 */
+function renderedText(v: any, depth = 0): string {
+  if (v == null || typeof v === "boolean" || depth > 8) return "";
+  if (typeof v === "string" || typeof v === "number") return String(v);
+  if (Array.isArray(v)) return v.map((x) => renderedText(x, depth + 1)).filter(Boolean).join(" ");
+  if (typeof v === "object") {
+    const ch = v.children;
+    if (typeof ch === "string") return ch;
+    if (Array.isArray(ch)) return renderedText(ch, depth + 1);
+    if (ch && typeof ch === "object" && typeof ch.default === "function") {
+      try { return renderedText(ch.default(), depth + 1); } catch { return ""; }
+    }
+  }
+  return "";
+}
+
+/**
+ * 關聯欄位（`provider_id`、`customer_id`…）資料裡是 UUID，畫面靠 render 換成名稱；匯出只拿 key 的話
+ * 就會輸出 UUID（issue #50：電路的供應商、類型匯出成一串編碼）。原始值是 UUID 而且欄位有 render 時，
+ * 改用畫面上的文字；找不到名稱（畫面顯示「—」）就留空。其他原始值照舊（例如 MAC 欄畫面上多一行廠商）。
+ */
+function uuidAsRendered(key: string, render: (row: any, index: number) => unknown) {
+  return (row: Record<string, any>): unknown => {
+    const raw = row[key];
+    if (typeof raw !== "string" || !UUID_RE.test(raw)) return raw;
+    let text = "";
+    try { text = renderedText(render(row, 0)).trim(); } catch { text = ""; }
+    return text === "—" ? "" : text;
+  };
+}
+
 export function columnsForExport(tableColumns: any[]): ExportColumn[] {
   const out: ExportColumn[] = [];
   for (const c of tableColumns) {
@@ -308,7 +343,14 @@ export function columnsForExport(tableColumns: any[]): ExportColumn[] {
       try { label = c.title(); } catch { label = c.key; }
     }
     if (label == null || typeof label === "object") label = c.key;
-    out.push({ key: String(c.key), label: String(label) });
+    const value = typeof c.exportValue === "function" ? c.exportValue
+      : typeof c.render === "function" ? uuidAsRendered(String(c.key), c.render) : undefined;
+    out.push({ key: String(c.key), label: String(label), ...(value ? { value } : {}) });
   }
   return out;
+}
+
+/** 替 DataTable 欄位加上匯出值（DataTableColumns 的型別不認得 exportValue，直接寫會型別錯誤）。 */
+export function withExportValue<C>(col: C, fn: (row: any) => unknown): C {
+  return Object.assign(col as object, { exportValue: fn }) as C;
 }

@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { wsErrorText } from "@/utils/wsError";
+import { credSuffix, defaultCredId } from "@/utils/savedCreds";
+import { wsErrorText, revokedCloseText } from "@/utils/wsError";
+import ConnElapsed from "@/components/ConnElapsed.vue";
+import ConsoleRouteNote from "@/components/ConsoleRouteNote.vue";
 /**
  * SFTP 檔案瀏覽器：先換 ticket → 開 WebSocket → 後端橋接 asyncssh 的 SFTP。
  *
@@ -9,11 +12,13 @@ import { wsErrorText } from "@/utils/wsError";
  * 版面刻意與 SshTerminal 一致（卡片式連線表單 → 狀態列 + 內容區）：同一套操作在不同
  * 協定間長得不一樣，使用者得重新學一次。
  *
- * 下載採「收完再存檔」：這個功能是給設定檔、憑證、log 片段用的，後端已把單檔上限訂在
- * 100 MB，收在記憶體再落地最單純。真要搬大檔請用 scp/rsync —— 把工具用在它擅長的地方，
- * 比在瀏覽器裡硬做串流落地實在。
+ * 下載：小檔「收完再存檔」最單純。單檔上限在系統設定可以放大（2026-09-26 起，預設 100 MB），
+ * 放到 GB 級之後整個檔案收進記憶體會把分頁撐爆 —— 所以超過 STREAM_OVER 的檔案改成
+ * 「邊收邊寫進磁碟」（File System Access API，Chrome／Edge；會先問存到哪裡）。
+ * 不支援的瀏覽器仍收進記憶體，但超過 MEMORY_MAX 就明講要換瀏覽器或用 scp。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { RateMeter } from "@/utils/transferRate";
 import { sortEntries, type SortKey, type SortOrder } from "@/utils/sftpSort";
 import { collectDroppedFiles, dirsToCreate, type PickedFile } from "@/utils/dropWalk";
 import { getPreferences, updatePreferences } from "@/api/preferences";
@@ -22,19 +27,19 @@ import {
   NAlert, NButton, NCard, NDataTable, NForm, NFormItem, NIcon, NInput,
   NInputNumber, NPopconfirm, NRadio, NRadioGroup, NSelect, NSpace, NSpin, NSwitch,
   NTooltip,
-  NTag, NModal, NInputGroup, useMessage,
+  NTag, NModal, NInputGroup, NCheckbox, useMessage,
 } from "naive-ui";
 import type { DataTableColumns } from "naive-ui";
 import { h } from "vue";
 import {
   buildSshWsUrl, createSshCredential, deleteSshCredential, listSshCredentials,
-  requestSftpTicket, type SftpEntry, type SshCredential,
+  requestSftpTicket, resetSshHostKey, type SftpEntry, type SshCredential,
 } from "@/api/ssh";
 import { fmtDateTime } from "@/utils/datetime";
-import { useTablePagination } from "@/composables/useTablePagination";
+import { useFileListPagination } from "@/composables/useFileListPagination";
 import {
   RefreshIcon, FilesIcon, CancelIcon, DeleteIcon, EditIcon,
-  DownloadIcon, UploadIcon, NewFolderIcon, FilterIcon, SortAscIcon, MoveIcon, UpLevelIcon,
+  DownloadIcon, UploadIcon, NewFolderIcon, FilterIcon, SortAscIcon, MoveIcon, UpLevelIcon, ChevronRightIcon,
 } from "@/icons";
 
 const props = defineProps<{
@@ -54,9 +59,16 @@ const connecting = computed(() => phase.value === "connecting");
 /** 是否已經在看檔案清單（連上了、或連上後才斷線）—— 其餘階段都停留在連線卡片上。 */
 const onFileList = computed(() => phase.value === "connected" || phase.value === "closed");
 const errorMsg = ref("");
+// 錯誤代碼：主機金鑰不符時要多給一個「清除記住的金鑰」
+const errorCode = ref("");
+// 主機金鑰 TOFU：跟 SSH 主控台共用同一把釘選（同一台主機）；沒釘選時先給人看指紋
+const hostKeyAsk = ref(false);
+const hostKeyFp = ref("");
+const resettingKey = ref(false);
 const cwd = ref("/");
 // 這條連線是否經由跳板（issue #24）：畫面上的位址是目標，實際路徑多了一跳
 const viaJump = ref("");
+const viaKind = ref("jump");   // "jump"／"agent"（經由掃描代理中繼，issue #24 階段二）
 const entries = ref<SftpEntry[]>([]);
 const truncated = ref(false);
 const busy = ref(false);
@@ -75,7 +87,7 @@ const credOptions = computed(() => [
   { label: t("ssh.cred_manual"), value: null as unknown as string },
   ...creds.value.map((c) => ({
     // 標籤格式與 SSH 主控台一致
-    label: `${c.label}（${c.username}・${c.auth_type === "key" ? t("ssh.auth_key") : t("ssh.auth_password")}）`,
+    label: `${c.label}（${c.username}・${c.auth_type === "key" ? t("ssh.auth_key") : t("ssh.auth_password")}）${credSuffix(t, c)}`,
     value: c.id,
   })),
 ]);
@@ -98,8 +110,23 @@ let ws: WebSocket | null = null;
  * 於是跳回連線表單並顯示「連線在建立完成前就被關閉（代碼 1005）」—— 明明是使用者
  * 自己按的，卻看起來像連線失敗。 */
 let everConnected = false;
-/** 下載中的檔案：收到 file_begin 後開始累積二進位框，file_end 才落地。 */
-let incoming: { name: string; size: number; chunks: Uint8Array[]; got: number } | null = null;
+/** 下載中的檔案：收到 file_begin 後開始收二進位框，file_end 才落地。
+ *  有 `writer` 時邊收邊寫進磁碟（寫入要照順序，所以串成一條 promise 鏈）；沒有就收進記憶體。 */
+let incoming: {
+  name: string; size: number; got: number; chunks: Uint8Array[];
+  writer: any | null; chain: Promise<void>;
+} | null = null;
+/** download() 先選好存檔位置（要在按鈕的點擊裡問），file_begin 來時接上 */
+let pendingWriter: any | null = null;
+/** 單檔上限（伺服器在 ready 時告訴我們；舊版伺服器沒帶就用原本的 100 MB） */
+const maxFileBytes = ref(100 * 1024 * 1024);
+/** 超過這個大小、而且瀏覽器支援時，下載直接寫進磁碟 */
+const STREAM_OVER = 64 * 1024 * 1024;
+/** 瀏覽器不支援直接寫入磁碟時，收進記憶體的上限（再大就要換瀏覽器或用 scp） */
+const MEMORY_MAX = 2 * 1024 * 1024 * 1024;
+/** 下載進度（大檔要看得出在動） */
+const downloadBytes = ref<{ got: number; total: number; name: string } | null>(null);
+let lastDlPaint = 0;
 /** 等待中的請求，**以請求編號為鍵**。
  *
  *  先前這裡只有一個沒有標記的欄位：伺服器回任何一個 `ok`，都會解掉「當時正在等的那件事」。
@@ -148,6 +175,7 @@ function request(obj: Record<string, unknown>): Promise<any> {
 
 async function connect() {
   errorMsg.value = "";
+  errorCode.value = "";
   if (!form.value.credential_id && !form.value.username.trim()) {
     errorMsg.value = t("ssh.err_username"); return;
   }
@@ -200,17 +228,31 @@ async function connect() {
       if (typeof ev.data !== "string") {
         if (incoming) {
           const u8 = new Uint8Array(ev.data as ArrayBuffer);
-          incoming.chunks.push(u8);
-          incoming.got += u8.byteLength;
+          const cur = incoming;
+          if (cur.writer) cur.chain = cur.chain.then(() => cur.writer.write(u8));
+          else cur.chunks.push(u8);
+          cur.got += u8.byteLength;
+          // 進度不必每一塊都重畫（6 GB 是兩萬多塊），隔一小段時間更新一次就好
+          const now = performance.now();
+          if (now - lastDlPaint > 200 || cur.got >= cur.size) {
+            lastDlPaint = now;
+            downloadBytes.value = { got: cur.got, total: cur.size, name: cur.name };
+          }
         }
         return;
       }
       const m = JSON.parse(ev.data);
       switch (m.type) {
+        case "hostkey":
+          hostKeyFp.value = m.fingerprint || "";
+          hostKeyAsk.value = true;
+          break;
         case "ready":
           everConnected = true;
           phase.value = "connected";
           viaJump.value = m.via_jump_host || "";
+          viaKind.value = m.via_kind || "jump";
+          if (typeof m.max_file_bytes === "number") maxFileBytes.value = m.max_file_bytes;
           cwd.value = m.cwd || "/";
           void refresh();
           break;
@@ -221,22 +263,34 @@ async function connect() {
             cwd.value = m.path;
             entries.value = m.entries ?? [];
             truncated.value = !!m.truncated;
+            clearCommandError();
           }
           settle(m, "resolve", m);
           break;
         case "file_begin":
-          incoming = { name: m.name, size: m.size, chunks: [], got: 0 };
+          incoming = { name: m.name, size: m.size, chunks: [], got: 0,
+                       writer: pendingWriter, chain: Promise.resolve() };
+          pendingWriter = null;
           break;
         case "file_end": {
-          if (incoming) {
-            const blob = new Blob(incoming.chunks as BlobPart[]);
+          const cur = incoming;
+          incoming = null;
+          if (cur?.writer) {
+            // 等所有寫入完成再關檔 —— 關檔之前檔案只在暫存檔裡，不會出現半截的成品
+            cur.chain.then(() => cur.writer.close())
+              .then(() => { clearCommandError(); settle(m, "resolve", m); })
+              .catch((e: unknown) => settle(m, "reject", e instanceof Error ? e : new Error(String(e))));
+            break;
+          }
+          if (cur) {
+            const blob = new Blob(cur.chunks as BlobPart[]);
             const a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
-            a.download = incoming.name;
+            a.download = cur.name;
             a.click();
             setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-            incoming = null;
           }
+          clearCommandError();
           settle(m, "resolve", m);
           break;
         }
@@ -253,13 +307,15 @@ async function connect() {
           settle(m, "resolve", m);
           break;
         case "ok":
+          clearCommandError();
           settle(m, "resolve", m);
           break;
         case "error": {
           uploadAborted = true;          // 正在上傳的話，讓送出迴圈停下來
-          errorMsg.value = wsErrorText(m, m.message ?? "");
+          // 同名檔案不是錯誤，是要問使用者的事（會跳出選擇視窗），不顯示錯誤列
+          if (m.code !== "sftp_exists") errorMsg.value = wsErrorText(m, m.message ?? "");
           // 連線階段失敗要退回表單，否則使用者卡在一片空白、無從重試
-          if (phase.value !== "connected") phase.value = "error";
+          if (phase.value !== "connected") { phase.value = "error"; errorCode.value = m.code || ""; }
           // 帶上整個錯誤框：code／params 是給 wsErrorText 翻譯用的，was_empty 這種
           // 旗標則讓呼叫端分辨可補救的失敗（資料夾不是空的 → 問要不要連內容一起刪）。
           // 只丟字串的話兩件事都做不到。
@@ -273,9 +329,13 @@ async function connect() {
     };
 
     ws.onclose = (ev) => {
+      // 下載到一半斷線：丟掉暫存檔，不要留下看起來完整、其實只有一半的檔案
+      abortDownloadWriter();
       const wasConnected = everConnected;
       closeCode.value = ev.code || 0;
-      phase.value = wasConnected ? "closed" : "error";
+      const revoked = revokedCloseText(ev);
+      if (revoked) errorMsg.value = revoked;
+      phase.value = wasConnected && !revoked ? "closed" : "error";
       // 還沒連上就被關掉，而且後端也沒送 error —— 這時什麼都不說，畫面看起來像
       // 「按了沒反應」。實際遇過的原因是反向代理沒轉發 WebSocket 升級標頭
       // （nginx 的 location 少列 sftp），瀏覽器只看得到連線被關閉。
@@ -293,6 +353,30 @@ async function connect() {
 function disconnect() {
   try { ws?.close(); } catch { /* noop */ }
   phase.value = "closed";
+}
+
+function acceptHostKey() {
+  hostKeyAsk.value = false;
+  send({ type: "hostkey_accept" });
+}
+function rejectHostKey() {
+  hostKeyAsk.value = false;
+  try { send({ type: "hostkey_reject" }); } catch { /* noop */ }
+}
+
+// 金鑰不符：位址換給別台設備、對方重灌都會這樣。清掉後重連會再跳出新指紋讓人核對，不是直接信任
+async function resetHostKey() {
+  resettingKey.value = true;
+  try {
+    await resetSshHostKey(props.addressId);
+    msg.success(t("ssh.hostkey_reset_done"));
+    errorCode.value = "";
+    reconnect();
+  } catch (e: any) {
+    msg.error(e?.response?.data?.detail || t("ssh.hostkey_reset_failed"));
+  } finally {
+    resettingKey.value = false;
+  }
 }
 
 /** 回到連線表單重連（沿用已選的憑證，不必重打帳密）。 */
@@ -319,11 +403,54 @@ function goUp() {
   void refresh(p.slice(0, p.lastIndexOf("/")) || "/");
 }
 
+/** 指令成功了就清掉上一個指令留下的錯誤。只在已連上時清 —— 連線階段的錯誤要留著給人看。
+ *  少了這個，打錯路徑（找不到 /rmnt）之後改回正確路徑、清單都列出來了，紅框還一直掛著（使用者回報）。 */
+function clearCommandError() {
+  if (phase.value === "connected") errorMsg.value = "";
+}
+
+function abortDownloadWriter() {
+  const w = incoming?.writer ?? pendingWriter;
+  incoming = null;          // 之後還到的殘餘資料塊不可以接到下一次下載上
+  pendingWriter = null;
+  if (w) void Promise.resolve(w.abort?.()).catch(() => {});
+}
+
 async function download(row: SftpEntry) {
+  const size = Number(row.size) || 0;
+  // 超過系統設定的上限：當場就講，不必先等伺服器拒絕
+  if (size > maxFileBytes.value) {
+    msg.error(t("errors.sftp_download_too_large", { max: Math.floor(maxFileBytes.value / 1024 / 1024) }));
+    return;
+  }
+  // 大檔：先問存到哪裡，邊收邊寫。**這一段要在點擊的當下執行**（瀏覽器要求使用者手勢），
+  // 所以放在任何 await 伺服器之前。
+  let writer: any = null;
+  if (size > STREAM_OVER) {
+    const pick = (window as any).showSaveFilePicker;
+    if (typeof pick === "function") {
+      try {
+        const handle = await pick.call(window, { suggestedName: row.name });
+        writer = await handle.createWritable();
+      } catch (e: any) {
+        if (e?.name === "AbortError") return;          // 使用者取消了存檔對話框
+        msg.error(t("sftp.err_save_file", { reason: String(e?.message ?? e) }));
+        return;
+      }
+    } else if (size > MEMORY_MAX) {
+      msg.error(t("sftp.err_big_needs_fs_api", { max: fmtBytes(MEMORY_MAX) }));
+      return;
+    }
+  }
+  pendingWriter = writer;
   busy.value = true;
+  downloadBytes.value = { got: 0, total: size, name: row.name };
   try { await request({ type: "get", path: row.path }); }
-  catch (e: any) { msg.error(wsErrorText(e, String(e))); }
-  finally { busy.value = false; }
+  catch (e: any) {
+    abortDownloadWriter();
+    msg.error(wsErrorText(e, String(e)));
+  }
+  finally { busy.value = false; downloadBytes.value = null; pendingWriter = null; }
 }
 
 const uploadInput = ref<HTMLInputElement | null>(null);
@@ -339,14 +466,58 @@ const uploadProgress = ref<{ done: number; total: number; name: string } | null>
  *  （問題在連線途中）長得一模一樣，而這兩件事要查的方向完全相反。 */
 const uploadBytes = ref<{ sent: number; total: number; name: string } | null>(null);
 
+// 傳輸速率與剩餘時間（使用者要求：上傳中順便顯示速率）。最近 5 秒的平均，每秒用「現在」重算一次：
+// 資料停了速率就往 0 掉並標「停住了」，不會一直掛著最後一次的數字
+const upMeter = new RateMeter();
+const downMeter = new RateMeter();
+const rateTick = ref(0);
+let rateTimer: ReturnType<typeof setInterval> | null = null;
+function ensureRateTicker() {
+  if (rateTimer) return;
+  rateTimer = setInterval(() => {
+    rateTick.value++;
+    if (!uploadBytes.value && !downloadBytes.value && rateTimer) { clearInterval(rateTimer); rateTimer = null; }
+  }, 1000);
+}
+watch(uploadBytes, (v, old) => {
+  if (!v) { upMeter.reset(); return; }
+  if (!old || old.name !== v.name) upMeter.reset();
+  upMeter.add(v.sent);
+  ensureRateTicker();
+});
+watch(downloadBytes, (v, old) => {
+  if (!v) { downMeter.reset(); return; }
+  if (!old || old.name !== v.name) downMeter.reset();
+  downMeter.add(v.got);
+  ensureRateTicker();
+});
+onBeforeUnmount(() => { if (rateTimer) clearInterval(rateTimer); });
+function fmtEta(sec: number): string {
+  const s = Math.ceil(sec);
+  if (s < 60) return t("sftp.eta_s", { s });
+  if (s < 3600) return t("sftp.eta_m", { m: Math.ceil(s / 60) });
+  return t("sftp.eta_h", { h: Math.floor(s / 3600), m: Math.floor((s % 3600) / 60) });
+}
+function rateText(m: RateMeter, total: number): string {
+  void rateTick.value;                 // 每秒重算（資料停了也要更新）
+  const r = m.rate();
+  if (r === null) return "";
+  const eta = m.eta(total);
+  return ` · ${t("sftp.rate", { rate: fmtBytes(Math.round(r)) })}`
+    + (eta !== null ? ` · ${fmtEta(eta)}` : r === 0 ? ` · ${t("sftp.stalled")}` : "");
+}
+
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 /** 送一個檔案到目前目錄。失敗直接往外拋，由呼叫端決定要不要繼續其他檔案。 */
-async function putOneFile(file: File, rel?: string) {
+/** 回傳遠端最後的完整路徑（選「兩份都留」時會是另一個檔名）。
+ *  `onConflict`：遠端已有同名檔案時怎麼辦；沒給＝伺服器回 `sftp_exists`，由呼叫端問使用者 */
+async function putOneFile(file: File, rel?: string, onConflict?: "overwrite" | "rename"): Promise<string> {
   if (!ws) throw new Error(t("sftp.disconnected"));
   const path = `${cwd.value.replace(/\/+$/, "")}/${rel || file.name}`;
   // 送出任何東西**之前**先確認這個項目真的讀得到。資料夾（或已被移走的檔案）在這裡
@@ -358,7 +529,7 @@ async function putOneFile(file: File, rel?: string) {
     throw new Error(t("sftp.unreadable_item"));
   }
   const putId = nextReqId;          // request() 會用掉這個編號
-  await request({ type: "put", path, size: file.size });
+  const ready = await request({ type: "put", path, size: file.size, ...(onConflict ? { on_conflict: onConflict } : {}) });
   // put_ready 之後才開始送二進位框，一次 256 KiB
   // 每個資料框 16 KiB，真正受控的是**同時在路上的資料量**（下面的窗）。
   //
@@ -472,9 +643,28 @@ async function putOneFile(file: File, rel?: string) {
     if (readError !== null) throw new Error(t("sftp.unreadable_item"));
     throw new Error(t("sftp.disconnected"));
   }
-  await done;
+  const okMsg: any = await done;
   onPutAck = null;
   uploadBytes.value = null;
+  return String(okMsg?.path || ready?.path || path);
+}
+
+// ── 遠端已有同名檔案時問一次（2026-10-04 起；以前直接覆蓋、事前不問）
+type ConflictAction = "overwrite" | "rename" | "skip";
+const conflictPrompt = ref<{ name: string; size: number; mtime: number | null; remaining: number;
+  resolve: (v: { action: ConflictAction; all: boolean }) => void } | null>(null);
+const conflictAll = ref(false);
+function askConflict(params: any, remaining: number): Promise<{ action: ConflictAction; all: boolean }> {
+  conflictAll.value = false;
+  return new Promise((resolve) => {
+    conflictPrompt.value = { name: String(params?.name ?? ""), size: Number(params?.size ?? 0),
+      mtime: params?.mtime ?? null, remaining, resolve };
+  });
+}
+function answerConflict(action: ConflictAction) {
+  const p = conflictPrompt.value;
+  conflictPrompt.value = null;
+  p?.resolve({ action, all: conflictAll.value });
 }
 
 /** 上傳一批檔案：逐個送（同一條連線，並行只會互相排隊）。
@@ -485,6 +675,10 @@ async function uploadFiles(picked: PickedFile[]) {
   if (!picked.length || !ws) return;
   busy.value = true;
   const failed: string[] = [];
+  const skipped: string[] = [];
+  let lastName = picked[0]?.path ?? "";
+  // 「其餘同名的檔案也這樣處理」：問過一次就不再問
+  let conflictForAll: ConflictAction | null = null;
   try {
     const base = cwd.value.replace(/\/+$/, "");
     for (const d of dirsToCreate(picked)) {
@@ -499,8 +693,22 @@ async function uploadFiles(picked: PickedFile[]) {
       // 一個檔案失敗不該讓其餘的都不傳；最後一次講清楚是哪幾個
       // 窗被調小時同一個檔案要再試一次 —— 那不是失敗，是還沒找到這條路徑的容量
       let attempt = 0;
+      let onConflict: "overwrite" | "rename" | undefined;
       for (;;) {
-        try { await putOneFile(file, item.path); break; } catch (e: any) {
+        try {
+          const finalPath = await putOneFile(file, item.path, onConflict);
+          lastName = finalPath.split("/").pop() || item.path;
+          break;
+        } catch (e: any) {
+          if (e?.code === "sftp_exists" && !onConflict) {
+            const remaining = picked.length - i - 1;
+            const answer: { action: ConflictAction; all: boolean } = conflictForAll
+              ? { action: conflictForAll, all: true } : await askConflict(e.params, remaining);
+            if (answer.all) conflictForAll = answer.action;
+            if (answer.action === "skip") { skipped.push(item.path); break; }
+            onConflict = answer.action;
+            continue;
+          }
           if (e?.retry && attempt < 4 && ws && ws.readyState === WebSocket.OPEN) {
             attempt += 1;
             continue;
@@ -510,10 +718,11 @@ async function uploadFiles(picked: PickedFile[]) {
         }
       }
     }
-    const ok = picked.length - failed.length;
+    const ok = picked.length - failed.length - skipped.length;
     if (failed.length) msg.error(t("sftp.upload_partial_fail", { ok, names: failed.join("、") }));
-    else if (picked.length === 1) msg.success(t("sftp.uploaded", { name: picked[0].path }));
-    else msg.success(t("sftp.uploaded_many", { n: picked.length }));
+    else if (ok === 1 && picked.length === 1) msg.success(t("sftp.uploaded", { name: lastName }));
+    else if (ok > 0) msg.success(t("sftp.uploaded_many", { n: ok }));
+    if (skipped.length) msg.info(t("sftp.upload_skipped", { n: skipped.length, names: skipped.join("、") }));
     await refresh();
   } finally {
     uploadProgress.value = null;
@@ -754,8 +963,11 @@ const shownEntries = computed(() => {
   });
 });
 
-// 目錄很大時分頁顯示 —— 原本只能截斷後說「只顯示一部分」，現在整份都拿得到、翻頁看
-const pagination = useTablePagination();
+// 目錄很大時分頁顯示 —— 原本只能截斷後說「只顯示一部分」，現在整份都拿得到、翻頁看。
+// 每頁 1000 筆，超過時左下角有「還有 N 筆在下一頁」（見 useFileListPagination）
+const { pagination, remaining: moreEntries, nextCount, next: nextPage, reset: resetPage } =
+  useFileListPagination(computed(() => shownEntries.value.length));
+watch(cwd, () => resetPage());
 
 // ── 批次作業
 const checkedKeys = ref<string[]>([]);
@@ -881,9 +1093,8 @@ async function loadCreds() {
     creds.value = await listSshCredentials(props.addressId);
     // 有已存帳密就預設選最近一筆（與 SSH 主控台一致）：不必再輸入，直接按連線；
     // 要改用其他帳密把下拉清空即可，手動欄位就會回來。
-    if (!form.value.credential_id && creds.value.length) {
-      form.value.credential_id = creds.value[0].id;
-    }
+    // 位址換手前存的不自動帶入（utils/savedCreds）
+    if (!form.value.credential_id) form.value.credential_id = defaultCredId(creds.value);
   } catch { /* 沒有就手動輸入 */ }
 }
 void loadCreds();
@@ -897,7 +1108,7 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
     <!-- 連線設定表單（版面與 SSH 終端機一致：卡片 + 左標籤表單 + 說明 + 右下連線鈕）
          連線中也留在這裡：按下連線後把卡片挪走會讓畫面整個跳一下，而失敗時又跳回來 -->
     <div v-if="!onFileList" class="sftp-form">
-      <n-card size="small" :bordered="true">
+      <n-card size="small" :bordered="true" class="console-connect-card">
         <template #header>
           <span style="display:flex;align-items:center;gap:8px">
             <n-icon :component="FilesIcon" :size="18" />
@@ -907,10 +1118,21 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
 
         <n-alert v-if="errorMsg" type="error" :bordered="false" style="margin-bottom:12px">
           {{ errorMsg }}
+          <div v-if="errorCode === 'console_host_key_mismatch'" class="hostkey-reset" data-testid="sftp-hostkey-reset">
+            <div class="hostkey-reset-hint">{{ t("ssh.hostkey_reset_hint") }}</div>
+            <n-popconfirm @positive-click="resetHostKey">
+              <template #trigger>
+                <n-button size="small" type="error" ghost :loading="resettingKey" :disabled="resettingKey">
+                  <template #icon><n-icon :component="DeleteIcon" /></template>{{ t("ssh.hostkey_reset") }}
+                </n-button>
+              </template>
+              {{ t("ssh.hostkey_reset_confirm") }}
+            </n-popconfirm>
+          </div>
         </n-alert>
 
         <!-- 已存帳密（個人保管）：選一筆即以 reference 連線 -->
-        <div v-if="credOptions.length" class="sftp-saved-row">
+        <div v-if="creds.length" class="sftp-saved-row">
           <span class="sftp-saved-label">{{ t("ssh.saved_cred") }}</span>
           <n-select v-model:value="form.credential_id" :options="credOptions" clearable size="small"
                     :placeholder="t('ssh.saved_cred_ph')" style="flex:1" />
@@ -966,6 +1188,10 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
             </n-space>
           </n-form-item>
 
+          <!-- 按連線之前就看得到會走哪條路（直連／跳板／掃描代理）、走不通的話原因 -->
+
+          <ConsoleRouteNote :address-id="props.addressId" />
+
           <n-alert :show-icon="false" type="info" style="margin-bottom:10px">
             {{ form.credential_id ? t("ssh.use_saved_hint") : (remember ? t("ssh.store_hint") : t("ssh.no_store_hint")) }}
           </n-alert>
@@ -990,9 +1216,10 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
           <n-tag v-if="hostname" size="small" :bordered="false" round>{{ hostname }}</n-tag>
           <span class="conn-proto conn-proto--sftp">SFTP</span>
           <n-tag v-if="viaJump" size="small" type="warning" :bordered="false" round>
-            {{ t("jump_hosts.via") }}：{{ viaJump }}
+            {{ viaKind === "agent" ? t("relay.via_agent") : t("jump_hosts.via") }}：{{ viaJump }}
           </n-tag>
           <n-tag v-if="deviceName" size="small" type="info" :bordered="false" round>{{ deviceName }}</n-tag>
+          <ConnElapsed :active="phase === 'connected'" />
         </span>
         <n-space :size="8" align="center">
           <n-button v-if="phase === 'connected'" size="tiny" type="error" ghost @click="disconnect">
@@ -1106,12 +1333,21 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
         </n-button>
       </n-space>
 
+      <!-- 下載進度：幾 GB 的檔案要看得出在動 -->
+      <div v-if="downloadBytes && phase === 'connected'" class="sftp-upload-note sftp-download-note">
+        {{ t("sftp.download_bytes", {
+          name: downloadBytes.name,
+          got: fmtBytes(downloadBytes.got), total: fmtBytes(downloadBytes.total),
+          pct: Math.floor((downloadBytes.got / Math.max(1, downloadBytes.total)) * 100) }) }}<span
+          class="sftp-rate" data-testid="sftp-download-rate">{{ rateText(downMeter, downloadBytes.total) }}</span>
+      </div>
       <!-- 多檔上傳時講出進度：不然畫面只是卡著，不知道還有幾個 -->
       <div v-if="uploadBytes && phase === 'connected'" class="sftp-upload-note">
         {{ t("sftp.upload_bytes", {
           name: uploadBytes.name,
           sent: fmtBytes(uploadBytes.sent), total: fmtBytes(uploadBytes.total),
-          pct: Math.floor((uploadBytes.sent / Math.max(1, uploadBytes.total)) * 100) }) }}
+          pct: Math.floor((uploadBytes.sent / Math.max(1, uploadBytes.total)) * 100) }) }}<span
+          class="sftp-rate" data-testid="sftp-upload-rate">{{ rateText(upMeter, uploadBytes.total) }}</span>
       </div>
       <div v-if="uploadProgress && uploadProgress.total > 1" class="sftp-filter-note">
         {{ t("sftp.uploading_progress", {
@@ -1143,6 +1379,28 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
       </n-modal>
 
       <!-- 資料夾有內容：刪掉整棵樹是破壞性的，要明確問過，並且把數量講出來 -->
+      <!-- 遠端已有同名檔案：覆蓋／兩份都留／略過（多檔時可套用到其餘） -->
+      <n-modal :show="!!conflictPrompt" preset="card" style="width: 480px; max-width: 92vw"
+               :title="t('sftp.conflict_title')" :mask-closable="false" data-testid="sftp-conflict"
+               @update:show="(v: boolean) => { if (!v) answerConflict('skip'); }">
+        <div style="line-height: 1.7">
+          {{ t("sftp.conflict_body", { name: conflictPrompt?.name ?? "", size: fmtBytes(conflictPrompt?.size ?? 0),
+                                     mtime: conflictPrompt?.mtime ? fmtDateTime(conflictPrompt.mtime * 1000) : "—" }) }}
+        </div>
+        <div class="sftp-conflict-note">{{ t("sftp.conflict_safe") }}</div>
+        <n-checkbox v-if="(conflictPrompt?.remaining ?? 0) > 0" v-model:checked="conflictAll" style="margin-top: 10px">
+          {{ t("sftp.conflict_apply_all") }}
+        </n-checkbox>
+        <template #footer>
+          <n-space justify="end">
+            <n-button data-testid="sftp-conflict-skip" @click="answerConflict('skip')">{{ t("sftp.conflict_skip") }}</n-button>
+            <n-button data-testid="sftp-conflict-rename" @click="answerConflict('rename')">{{ t("sftp.conflict_keep_both") }}</n-button>
+            <n-button type="warning" data-testid="sftp-conflict-overwrite" @click="answerConflict('overwrite')">
+              {{ t("sftp.conflict_overwrite") }}
+            </n-button>
+          </n-space>
+        </template>
+      </n-modal>
       <n-modal :show="!!confirmRecursive" preset="card" style="width: 460px; max-width: 92vw"
                :title="t('sftp.delete_dir_title')" @update:show="(v: boolean) => {
                  if (!v) confirmRecursive = null;
@@ -1206,12 +1464,35 @@ onBeforeUnmount(() => { try { ws?.close(); } catch { /* 已關閉 */ } });
                       @update:checked-row-keys="(k: any) => (checkedKeys = k as string[])"
                       @update:sorter="onSorterChange" />
       </div>
+      <div v-if="moreEntries > 0" class="file-more" data-testid="sftp-more">
+        <n-button size="small" @click="nextPage">
+          {{ t("sftp.more_on_next_page", { n: nextCount, total: moreEntries }) }}
+          <template #icon><n-icon><ChevronRightIcon /></n-icon></template>
+        </n-button>
+      </div>
       </div>
     </div>
+
+    <!-- 主機金鑰 TOFU 確認（與 SSH 主控台相同） -->
+    <n-modal v-model:show="hostKeyAsk" preset="dialog" :title="t('ssh.hostkey_title')"
+             :positive-text="t('ssh.hostkey_trust')" :negative-text="t('common.cancel')"
+             @positive-click="acceptHostKey" @negative-click="rejectHostKey"
+             :mask-closable="false">
+      <div style="line-height:1.6">
+        <div>{{ t("ssh.hostkey_body", { ip: host }) }}</div>
+        <code class="ssh-fp">{{ hostKeyFp }}</code>
+        <div style="opacity:.7;font-size:12px">{{ t("ssh.hostkey_hint") }}</div>
+      </div>
+    </n-modal>
   </div>
 </template>
 
 <style scoped>
+.hostkey-reset { margin-top: 8px; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.hostkey-reset-hint { font-size: 12px; opacity: .85; }
+.ssh-fp { display: block; margin: 8px 0; padding: 6px 8px; background: rgba(128,128,128,.12);
+  border-radius: 4px; word-break: break-all; font-size: 13px; }
+.sftp-conflict-note { margin-top: 8px; font-size: 12px; opacity: .7; line-height: 1.6; }
 /* 版面與 SshTerminal 對齊：全頁模式時表單置中、內容區填滿剩餘高度 */
 .sftp-wrap { width: 100%; }
 .sftp-wrap.sftp-full { height: 100%; display: flex; flex-direction: column; }
@@ -1239,11 +1520,15 @@ html[data-theme="dark"] .sftp-panel { background: #10161f; border-color: rgba(20
 .sftp-pathbar { margin-bottom: 10px; }
 
 /* 狀態列 —— 與 SSH 主控台同一套（同樣的圓角膠囊、同樣的狀態配色） */
-.sftp-toolbar { display: flex; justify-content: space-between; align-items: center;
+.sftp-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
   padding: 4px 2px; gap: 8px; margin-bottom: 8px; }
 .sftp-status { font-size: 13px; display: inline-flex; align-items: center; gap: 7px;
   padding: 3px 11px; border-radius: 999px; font-weight: 500;
   background: rgba(128, 128, 128, .12); color: #888; }
+/* 手機：內容放不下時整顆標籤換到下一行，不要把「連線錯誤」擠成直排、也不要超出畫面 */
+.sftp-status { flex-wrap: wrap; row-gap: 4px; max-width: 100%; min-width: 0; }
+.sftp-status > * { flex: none; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 640px) { .sftp-status { border-radius: 14px; } }
 .sftp-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
 .sftp-ip { opacity: .7; font-variant-numeric: tabular-nums; }
 .sftp-status[data-state="connected"] { color: #18a058; background: rgba(24, 160, 88, .14); }
@@ -1308,4 +1593,5 @@ html[data-theme="dark"] .sftp-panel { background: #10161f; border-color: rgba(20
 /* 上傳進度自己一個 class：跟篩選提示共用時，「畫面上有幾個提示」這種
    斷言會同時命中兩個，測試會以 strict mode 失敗（實際踩過）。 */
 .sftp-upload-note { font-size: 12px; opacity: .7; margin-bottom: 6px; }
+.file-more { display: flex; justify-content: flex-start; padding: 6px 2px 0; }
 </style>

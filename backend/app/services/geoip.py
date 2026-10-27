@@ -24,6 +24,8 @@ from app.core.security import decrypt_secret, encrypt_secret
 from app.models.system_setting import SystemSetting
 
 GEOIP_KEY = "geoip"
+#: 授權金鑰密文綁定用途（AAD）：密文被搬到別的欄位就解不開（0198 起；之前的由 migration 重加密）
+KEY_AAD = b"setting:geoip:license_key"
 _WS_HOST = "geolite.info"                          # web service fallback
 _DL_BASE = "https://download.maxmind.com/geoip/databases"   # 本地 DB 下載
 DB_DIR = Path("/var/lib/jt-ipam/geoip")
@@ -54,7 +56,8 @@ async def get_geoip_creds(session: AsyncSession) -> tuple[str | None, str | None
     key: str | None = None
     if v.get("key_ct") and v.get("key_nonce"):
         try:
-            key = decrypt_secret(base64.b64decode(v["key_ct"]), base64.b64decode(v["key_nonce"])).decode()
+            key = decrypt_secret(base64.b64decode(v["key_ct"]), base64.b64decode(v["key_nonce"]),
+                                 aad=KEY_AAD).decode()
         except Exception:
             key = None
     return acct, key
@@ -101,7 +104,7 @@ async def set_geoip_config(
     if account_id is not None:
         cur["account_id"] = account_id.strip()
     if license_key:
-        ct, nonce = encrypt_secret(license_key.strip())
+        ct, nonce = encrypt_secret(license_key.strip(), aad=KEY_AAD)
         cur["key_ct"] = base64.b64encode(ct).decode()
         cur["key_nonce"] = base64.b64encode(nonce).decode()
     if editions is not None:
@@ -181,6 +184,25 @@ def _extract_mmdb(tar_gz: bytes) -> bytes | None:
                 if f is not None:
                     return f.read()
     return None
+
+
+def update_outcome(result: dict[str, Any]) -> tuple[bool, str | None]:
+    """update_databases 的結果 → (成功與否, 錯誤摘要)。任何一個版次失敗就算失敗（排程與手動共用）。"""
+    if result.get("error"):
+        return False, str(result["error"])
+    bad = [f"{ed}: {r.get('error') or 'failed'}" for ed, r in (result.get("results") or {}).items()
+           if isinstance(r, dict) and not r.get("ok")]
+    return (not bad), ("; ".join(bad) or None)
+
+
+def local_databases() -> list[tuple[str, datetime]]:
+    """本機已有的 mmdb（版次、檔案時間），給版本頁列「選用相依」用。"""
+    out: list[tuple[str, datetime]] = []
+    for ed in ALL_EDITIONS:
+        p = _db_path(ed)
+        if p.exists():
+            out.append((ed, datetime.fromtimestamp(p.stat().st_mtime, UTC)))
+    return out
 
 
 # ── 查詢 ──────────────────────────────────────────────────────

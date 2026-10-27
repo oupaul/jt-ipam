@@ -163,10 +163,11 @@ async def append_audit(
     entry._chain_seq = seq        # 只在同一交易內用的暫時屬性
     session.add(entry)
 
-    # best-effort 轉送到 Graylog（syslog / CEF / GELF）；任何錯誤都不影響主交易
+    # best-effort 轉送到 Graylog（syslog / CEF / GELF）；任何錯誤都不影響主交易。
+    # 連同雜湊一起送：外部的記錄就是一份獨立的鏈，可以拿來比對資料庫裡的（2026-10-09 起）
     try:
         from app.services.audit_forward import maybe_forward
-        await maybe_forward(session, record)
+        await maybe_forward(session, {**record, "this_hash": this_hash.hex(), "prev_hash": prev.hex()})
     except Exception:
         pass
 
@@ -185,15 +186,39 @@ async def verify_chain(
     """
     from app.models.audit import AuditLog
 
-    stmt = select(AuditLog).order_by(AuditLog.id.asc())
-    if after_id is not None:
-        stmt = stmt.where(AuditLog.id > after_id)
-    if limit is not None:
-        stmt = stmt.limit(limit)
-    result = await session.execute(stmt)
-
     expected_prev = expected_prev or _genesis_hash()
-    for row in result.scalars():
+    # 一批一批往後驗（2026-09-30 大量資料測試）：以前一次把整條鏈載進記憶體 —— 第一次驗證或錨定檔
+    # 遺失時，跑了幾年、上百萬筆帶 JSONB 的稽核記錄會一口氣吃掉好幾 GB
+    last = after_id if after_id is not None else None
+    remaining = limit
+    while True:
+        size = _VERIFY_BATCH if remaining is None else min(_VERIFY_BATCH, remaining)
+        if size <= 0:
+            return True, None
+        stmt = select(AuditLog).order_by(AuditLog.id.asc()).limit(size)
+        if last is not None:
+            stmt = stmt.where(AuditLog.id > last)
+        rows = list((await session.execute(stmt)).scalars())
+        if not rows:
+            return True, None
+        ok, bad, expected_prev = _verify_rows(rows, expected_prev)
+        if not ok:
+            return False, bad
+        last = rows[-1].id
+        for r in rows:
+            session.expunge(r)
+        if remaining is not None:
+            remaining -= len(rows)
+        if len(rows) < size:
+            return True, None
+
+
+#: verify_chain 每批驗幾筆
+_VERIFY_BATCH = 5000
+
+
+def _verify_rows(rows: list[Any], expected_prev: Any) -> tuple[bool, int | None, Any]:
+    for row in rows:
         record = {
             "ts": row.ts.isoformat(),
             "actor_user_id": str(row.actor_user_id) if row.actor_user_id else None,
@@ -207,8 +232,8 @@ async def verify_chain(
         }
         canonical = _canonical_json(record)
         if row.prev_hash != expected_prev:
-            return False, row.id
+            return False, row.id, expected_prev
         if _hash(expected_prev, canonical) != row.this_hash:
-            return False, row.id
+            return False, row.id, expected_prev
         expected_prev = row.this_hash
-    return True, None
+    return True, None, expected_prev

@@ -11,10 +11,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_ops_admin, require_global_read
+from app.api.v1.dependencies import CurrentUser, require_global_read, require_ops_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
-from app.core.ui_error import detail_of
+from app.core.ui_error import detail_of, ui_detail
 from app.models.librenms import (
     ARPEntry,
     FDBEntry,
@@ -42,8 +42,15 @@ class LibreNMSInstanceCreate(StrictModel):
     use_for_status: bool = True
     auto_add_devices: bool = False
     auto_create_ips: bool = True
+    # 依 ARP 表自動建立 IP（#48）：預設關；把關見 services/arp_autocreate.py
+    auto_create_from_arp: bool = False
+    arp_create_require_fdb: bool = True
+    arp_create_skip_dhcp: bool = True
     sync_interval_seconds: Annotated[int, Field(ge=60, le=86400)] = 300
     scope_subnet_ids: list[str] | None = None
+    # VLAN 同步寫進哪個 domain（issue #53）：不填＝專用的 LibreNMS domain
+    vlan_domain_id: uuid.UUID | None = None
+    vlan_create_missing: bool = True
 
 
 class LibreNMSInstanceUpdate(StrictModel):
@@ -59,8 +66,14 @@ class LibreNMSInstanceUpdate(StrictModel):
     use_for_status: bool | None = None
     auto_add_devices: bool | None = None
     auto_create_ips: bool | None = None
+    auto_create_from_arp: bool | None = None
+    arp_create_require_fdb: bool | None = None
+    arp_create_skip_dhcp: bool | None = None
     sync_interval_seconds: Annotated[int | None, Field(ge=60, le=86400)] = None
     scope_subnet_ids: list[str] | None = None
+    # 送 null＝改回專用的 LibreNMS domain；沒送＝不動（用 model_fields_set 分辨）
+    vlan_domain_id: uuid.UUID | None = None
+    vlan_create_missing: bool | None = None
 
 
 class LibreNMSInstanceRead(StrictModel):
@@ -77,8 +90,13 @@ class LibreNMSInstanceRead(StrictModel):
     use_for_status: bool
     auto_add_devices: bool
     auto_create_ips: bool
+    auto_create_from_arp: bool = False
+    arp_create_require_fdb: bool = True
+    arp_create_skip_dhcp: bool = True
     sync_interval_seconds: int
     scope_subnet_ids: list[str] | None = None
+    vlan_domain_id: uuid.UUID | None = None
+    vlan_create_missing: bool = True
     last_sync_at: Any
     last_error: str | None
     created_at: Any
@@ -99,6 +117,12 @@ class LibreNMSDeviceRead(StrictModel):
     uptime: int | None
     jt_ipam_device_id: uuid.UUID | None
     last_seen_at: Any
+
+    @field_validator("primary_ip", mode="before")
+    @classmethod
+    def _coerce_inet(cls, v: object) -> object:
+        # INET 讀回來是 IPv4Address／IPv6Address：沒轉成字串的話，只要有一台帶主要 IP 整支就 500
+        return v if v is None else str(v).split("/", 1)[0]
 
 
 class ARPEntryRead(StrictModel):
@@ -124,6 +148,9 @@ class FDBEntryRead(StrictModel):
     vlan_id_num: int | None
     port_name: str | None
     device_id: uuid.UUID | None
+    #: librenms／mikrotik／snmp；後兩種的列 device_id 是空的，看 switch_device_id（jt-ipam 裝置）
+    source: str = "librenms"
+    switch_device_id: uuid.UUID | None = None
     first_seen_at: Any
     last_seen_at: Any
 
@@ -179,7 +206,12 @@ async def create_instance(
         use_for_status=payload.use_for_status,
         auto_add_devices=payload.auto_add_devices,
         auto_create_ips=payload.auto_create_ips,
+        auto_create_from_arp=payload.auto_create_from_arp,
+        arp_create_require_fdb=payload.arp_create_require_fdb,
+        arp_create_skip_dhcp=payload.arp_create_skip_dhcp,
         sync_interval_seconds=payload.sync_interval_seconds,
+        vlan_domain_id=await _checked_vlan_domain(session, payload.vlan_domain_id),
+        vlan_create_missing=payload.vlan_create_missing,
     )
     session.add(obj)
     try:
@@ -207,6 +239,16 @@ async def create_instance(
     return LibreNMSInstanceRead.model_validate(obj)
 
 
+async def _checked_vlan_domain(session: AsyncSession, domain_id: uuid.UUID | None) -> uuid.UUID | None:
+    """指定的 VLAN domain 要存在（issue #53）；None＝專用的 LibreNMS domain。"""
+    if domain_id is None:
+        return None
+    from app.models.vlan import VLANDomain
+    if await session.get(VLANDomain, domain_id) is None:
+        raise HTTPException(422, detail=ui_detail("librenms_vlan_domain_not_found", "VLAN domain not found"))
+    return domain_id
+
+
 @router.patch("/instances/{instance_id}",
               response_model=LibreNMSInstanceRead,
               dependencies=[Depends(require_ops_admin)])
@@ -223,12 +265,21 @@ async def update_instance(
     rotated = False
     if payload.api_url is not None:
         obj.api_url = str(payload.api_url).rstrip("/")
+    changed: dict[str, Any] = {}
     for field_name in ("enabled", "verify_tls", "sync_devices", "sync_arp", "sync_fdb", "sync_vlans", "sync_links",
                        "use_for_status", "auto_add_devices", "auto_create_ips",
-                       "sync_interval_seconds", "scope_subnet_ids"):
+                       "auto_create_from_arp", "arp_create_require_fdb", "arp_create_skip_dhcp",
+                       "sync_interval_seconds", "scope_subnet_ids", "vlan_create_missing"):
         v = getattr(payload, field_name)
         if v is not None:
+            if getattr(obj, field_name) != v:
+                changed[field_name] = v
             setattr(obj, field_name, v)
+    if "vlan_domain_id" in payload.model_fields_set:
+        dom_id = await _checked_vlan_domain(session, payload.vlan_domain_id)
+        if obj.vlan_domain_id != dom_id:
+            changed["vlan_domain_id"] = str(dom_id) if dom_id else None
+        obj.vlan_domain_id = dom_id
     if payload.api_token is not None:
         enc, nonce = svc.encrypt_instance_token(obj.id, payload.api_token)
         obj.api_token_enc = enc
@@ -243,7 +294,8 @@ async def update_instance(
         object_type="librenms_instance",
         object_id=str(obj.id),
         action="update",
-        diff={"rotated_token": rotated},
+        # 改了哪些設定要看得到（例如打開「依 ARP 自動建立 IP」會改變之後每一輪的行為）
+        diff={"rotated_token": rotated, "changed": changed},
         request_id=getattr(request.state, "request_id", None),
     )
     await session.commit()
@@ -273,6 +325,9 @@ async def delete_instance(
         diff={"name": obj.name},
         request_id=getattr(request.state, "request_id", None),
     )
+    # 它寫進共用表的主機名稱／租約／固定分配／NAT／VPN 通道一併收回（沒有外鍵會跟著刪）
+    from app.services.integration_cleanup import forget_instance
+    await forget_instance(session, source="librenms", source_id=obj.id)
     await session.delete(obj)
     await session.commit()
 
@@ -505,6 +560,8 @@ async def trace_ip(
         "switch_port": (
             {
                 "device_id": str(fdb.device_id) if fdb.device_id else None,
+                "source": fdb.source,
+                "switch_device_id": str(fdb.switch_device_id) if fdb.switch_device_id else None,
                 "port_name": fdb.port_name,
                 "vlan": fdb.vlan_id_num,
                 "last_seen_at": fdb.last_seen_at.isoformat(),

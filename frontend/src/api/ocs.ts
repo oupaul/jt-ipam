@@ -1,5 +1,6 @@
 import { apiClient } from "@/api/client";
 import type { Paginated } from "@/types";
+import type { MissingPage, MissingQuery } from "@/composables/useRemoteMissing";
 
 // OCS Inventory NG 整合。路徑帶 /api/v1 前綴（baseURL 為 /）。
 // 與其他整合最大不同：帳密選用（OCS REST 預設無驗證）。
@@ -20,6 +21,9 @@ export interface OcsServer {
   sync_bios: boolean;
   /** 預設關：軟體讓每台 ~2 KB → ~80 KB */
   sync_software: boolean;
+  scope_subnet_ids?: string[] | null;
+  /** OCS 伺服器的時區（LASTDATE 是 OCS 主機的本地時間；issue #51） */
+  timezone?: string;
   detected_version: string | null;
   last_sync_at: string | null;
   last_success_at: string | null;
@@ -36,11 +40,14 @@ export interface OcsWrite {
   api_password?: string;
   /** 明確清掉已存帳密（改回無驗證） */
   clear_credentials?: boolean;
+  /** 不給＝jt-ipam 主機的時區 */
+  timezone?: string | null;
   sync_interval_seconds?: number;
   stale_after_days?: number;
   sync_networks?: boolean;
   sync_bios?: boolean;
   sync_software?: boolean;
+  scope_subnet_ids?: string[];
 }
 
 export interface OcsDiagnosis {
@@ -82,5 +89,45 @@ export async function testOcs(id: string): Promise<OcsDiagnosis> {
 
 export async function syncOcs(id: string): Promise<{ task_id: string }> {
   const { data } = await apiClient.post(`/api/v1/ocs/${id}/sync`);
+  return data;
+}
+
+/** OCS 盤點到的電腦，一台一筆（一台電腦的多個 IP 彙整在 ips）。 */
+export interface OcsAgent {
+  ocs_id: number | null;
+  name: string | null;
+  ips: string[];
+  ip_address_ids: string[];
+  os: string | null;
+  agent_version: string | null;
+  tag: string | null;
+  last_inventory: string | null;
+}
+
+/** 有主機名稱、卻從來沒被 OCS 盤點過的 IP（同 Wazuh 的 MissingAgent）。 */
+export interface OcsMissingAgent {
+  ip_address_id: string;
+  ip: string | null;
+  hostname: string | null;
+  // 所屬範圍（依區段／子網路／單位篩選用）
+  subnet_id?: string | null;
+  subnet_cidr?: string | null;
+  section_id?: string | null;
+  section_name?: string | null;
+  customer_id?: string | null;
+  customer_name?: string | null;
+  // 設備類型欄（掃描代理判讀出的類型與型號）
+  device_kind?: string | null;
+  device_model?: string | null;
+}
+
+export async function listOcsAgents(): Promise<{ items: OcsAgent[]; total: number }> {
+  const { data } = await apiClient.get("/api/v1/ocs/agents");
+  return data;
+}
+
+/** 帶 page ＝ 伺服器端分頁：篩選、排序、篩選選項都由後端算（見 useRemoteMissing）。 */
+export async function listOcsMissingAgentsPage(params: MissingQuery): Promise<MissingPage<OcsMissingAgent>> {
+  const { data } = await apiClient.get<MissingPage<OcsMissingAgent>>("/api/v1/ocs/missing-agents", { params });
   return data;
 }

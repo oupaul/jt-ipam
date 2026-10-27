@@ -45,6 +45,15 @@ def hash_password(password: str) -> str:
     return _password_hasher.hash(password)
 
 
+def hash_one_time_code(code: str) -> str:
+    """一次性代碼（MFA 復原碼，約 50 位元隨機）的 argon2id 雜湊。
+
+    跟密碼用同一組參數，但不套「至少 12 字元」的密碼政策：代碼是系統隨機產生的，不是人選的。"""
+    if not code:
+        raise ValueError("empty code")
+    return _password_hasher.hash(code)
+
+
 def verify_password(password: str, stored_hash: str) -> bool:
     """常數時間比較。"""
     try:
@@ -72,7 +81,14 @@ def _derive_key() -> bytes:
         key = base64.b64decode(raw, validate=True)
     except Exception:
         # 退回：當作 hex
-        key = bytes.fromhex(raw)
+        try:
+            key = bytes.fromhex(raw)
+        except ValueError:
+            # 兩種都不是：講清楚要什麼、怎麼產生。以前只丟出 fromhex 的「non-hexadecimal number」，
+            # CI 的測試用金鑰就是這樣讓所有測試在收集階段失敗了三週，而沒人看得出原因
+            raise ValueError(
+                "ENCRYPTION_KEY must be base64 (or hex) of 32 random bytes; "
+                "generate one with: openssl rand -base64 32") from None
     if len(key) != 32:
         # 最後保險：用 SHA-256 派生 32 bytes（仍需 raw 為 ≥32 bytes 高熵）
         if len(raw) < 32:

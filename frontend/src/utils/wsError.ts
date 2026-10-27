@@ -31,3 +31,29 @@ export function srvText(payload: ServerMessage | null | undefined, fallback = ""
 
 /** 主控台 WebSocket 的 error frame 用；與 srvText 同一套規則。 */
 export const wsErrorText = srvText;
+
+/**
+ * AI 對話／IP 調查串流的 error 事件：`{code, params, detail}`。
+ * 一般帳號只有代碼；管理員多一個 `params.reason`（底層原因），接在句子後面。
+ */
+export function aiErrText(ev: { code?: string | null; params?: Record<string, unknown> | null;
+                                detail?: string | null }, fallback = ""): string {
+  const base = srvText({ code: ev.code, params: ev.params, message: ev.detail }, fallback);
+  const reason = typeof ev.params?.reason === "string" ? ev.params.reason : "";
+  return reason && !base.includes(reason) ? `${base}（${reason}）` : base;
+}
+
+/**
+ * 開著的主控台被收回權限時，後端以 4403 關閉 WebSocket（backend/app/core/console_guard.py），
+ * reason 是 `access revoked: <原因>`。不是 4403 回 null，呼叫端照原本的「已中斷」處理。
+ */
+export const CONSOLE_REVOKED = 4403;
+
+export function revokedCloseText(ev: { code?: number; reason?: string } | null | undefined): string | null {
+  if (!ev || ev.code !== CONSOLE_REVOKED) return null;
+  const t = (i18n.global as any).t;
+  const why = String(ev.reason ?? "").replace(/^access revoked:\s*/, "").trim();
+  const key = `errors.console_revoked_${why}`;
+  const out = why ? t(key) : key;
+  return out !== key ? out : t("errors.console_revoked");
+}

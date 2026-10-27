@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
@@ -17,8 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
 from app.core.audit import append_audit
+from app.core.config import get_settings
 from app.core.db import get_session
 from app.core.ui_error import detail_of
+from app.models.address import IPAddress
 from app.models.ocs import OcsServer
 from app.schemas.base import Paginated
 from app.schemas.ocs import OcsCreate, OcsRead, OcsUpdate
@@ -60,6 +62,8 @@ async def create_server(
 ) -> OcsRead:
     data = payload.model_dump(exclude={"api_password"})
     data["base_url"] = str(data["base_url"]).rstrip("/")
+    # LASTDATE 是 OCS 主機的本地時間（issue #51）：沒指定就假設跟 jt-ipam 主機同一個時區
+    data["timezone"] = data.get("timezone") or get_settings().app_timezone
     obj = OcsServer(source_type="rest", **data)
     session.add(obj)
     try:
@@ -93,6 +97,8 @@ async def update_server(
     for k, v in data.items():
         if k == "base_url" and v is not None:
             v = str(v).rstrip("/")
+        if k == "timezone" and not v:
+            continue           # 不可以清成空的：沒有時區就無法換算 LASTDATE
         setattr(obj, k, v)
     if clear:
         obj.api_username = None
@@ -118,6 +124,9 @@ async def delete_server(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> None:
     obj = await _get_or_404(session, server_id)
+    # 它寫進共用表的主機名稱／租約／固定分配／NAT／VPN 通道一併收回（沒有外鍵會跟著刪）
+    from app.services.integration_cleanup import forget_instance
+    await forget_instance(session, source="ocs", source_id=obj.id)
     await session.delete(obj)
     await append_audit(
         session, actor_user_id=str(user.id),
@@ -173,3 +182,47 @@ async def trigger_sync(
     )
     return {"task_id": str(task.id), "status": task.status,
             "queued_at": task.queued_at.isoformat()}
+
+
+# ─────────────────── 代理數／未裝 Agent 的 IP（比照 Wazuh 整合頁，管理員限定） ───────────────────
+
+
+@router.get("/agents")
+async def list_ocs_agents(session: Annotated[AsyncSession, Depends(get_session)]) -> dict[str, Any]:
+    """OCS 盤點到的電腦，一台一筆（一台電腦的多個 IP 彙整在一起）。"""
+    items = await svc.list_agents(session)
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/missing-agents")
+async def list_ocs_missing_agents(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    hostnamed_only: bool = True,
+    page: Annotated[int | None, Query(ge=1)] = None,
+    page_size: Annotated[int, Query(ge=1, le=100_000)] = 100,
+    section_id: uuid.UUID | None = None,
+    subnet_id: uuid.UUID | None = None,
+    customer_id: uuid.UUID | None = None,
+    status_filter: Annotated[str | None, Query(alias="status", max_length=16)] = None,
+    q: Annotated[str | None, Query(max_length=128)] = None,
+    sort: Annotated[Literal["ip", "hostname", "subnet", "section", "customer", "status", "device_kind"],
+                    Query()] = "ip",
+    order: Annotated[Literal["asc", "desc"], Query()] = "asc",
+) -> Any:
+    """有主機名稱、卻從來沒被 OCS 盤點過的 IP（帶所屬子網路／區段／單位，畫面據此篩選）。
+
+    OCS 設了「限定子網路範圍」就只列範圍內的（見 agent_scope.expected_subnets）。
+    """
+    from app.services.agent_scope import annotate_scope, expected_subnets
+    servers = list((await session.execute(
+        select(OcsServer).where(OcsServer.enabled.is_(True)))).scalars().all())
+    if page is not None:
+        # 伺服器端分頁與篩選（與 Wazuh 頁同一套：agent_scope.missing_page）
+        from app.services.agent_scope import missing_page
+        return await missing_page(
+            session, missing=IPAddress.ocs_id.is_(None) & IPAddress.last_seen_ocs.is_(None),
+            subnet_ids=expected_subnets(servers), hostnamed_only=hostnamed_only, page=page,
+            page_size=page_size, section_id=section_id, subnet_id=subnet_id, customer_id=customer_id,
+            status=status_filter, q=q, sort=sort, order=order, cache_key=("ocs",))
+    return await annotate_scope(session, await svc.find_missing_agents(
+        session, hostnamed_only=hostnamed_only, subnet_ids=expected_subnets(servers)))

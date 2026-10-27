@@ -81,15 +81,20 @@ _LABEL_REGISTRY: dict[str, tuple[str, str, str]] = {
     "location": ("app.models.location", "Location", "name"),
     "rack": ("app.models.location", "Rack", "name"),
     "customer": ("app.models.customer", "Customer", "name"),
+    "change_plan": ("app.models.change_impact", "ChangePlan", "title"),
+    "impact_service": ("app.models.change_impact", "ImpactService", "name"),
     "ssh_credential": ("app.models.ssh_credential", "SSHCredential", "label"),
     "rdp_credential": ("app.models.ssh_credential", "SSHCredential", "label"),
     "vnc_credential": ("app.models.ssh_credential", "SSHCredential", "label"),
     "pve_credential": ("app.models.ssh_credential", "SSHCredential", "label"),
+    "rustdesk_credential": ("app.models.ssh_credential", "SSHCredential", "label"),
     # ── 整合實例 ──
     # 沒有這些的話，稽核的「目標」欄只會顯示截斷 UUID，多台同型整合時完全分不出
     # 是哪一台在同步（客戶實測 FortiGate 時發現）。
     "fortigate_firewall": ("app.models.fortigate", "FortiGateFirewall", "name"),
     "paloalto_firewall": ("app.models.paloalto", "PaloAltoFirewall", "name"),
+    "checkpoint_server": ("app.models.checkpoint", "CheckPointServer", "name"),
+    "checkpoint_gaia_target": ("app.models.checkpoint_gaia", "CheckPointGaiaTarget", "name"),
     "mikrotik_router": ("app.models.mikrotik", "MikroTikRouter", "name"),
     "pfsense_firewall": ("app.models.pfsense", "PfSenseFirewall", "name"),
     "opnsense_firewall": ("app.models.firewall", "OPNsenseFirewall", "name"),
@@ -97,9 +102,19 @@ _LABEL_REGISTRY: dict[str, tuple[str, str, str]] = {
     "wazuh_instance": ("app.models.wazuh", "WazuhInstance", "name"),
     "adguard_instance": ("app.models.adguard", "AdGuardInstance", "name"),
     "windows_dhcp_server": ("app.models.windows_dhcp", "WindowsDhcpServer", "name"),
+    "kea_dhcp_server": ("app.models.dhcp_standalone", "KeaDhcpServer", "name"),
+    "technitium_dhcp_server": ("app.models.technitium", "TechnitiumDhcpServer", "name"),
+    "isc_dhcp_server": ("app.models.dhcp_standalone", "IscDhcpServer", "name"),
+    "isoinsight_source": ("app.models.isoinsight", "IsoInsightSource", "name"),
+    "rustdesk_server": ("app.models.rustdesk", "RustDeskServer", "name"),
     "proxmox_instance": ("app.models.virt", "ProxmoxInstance", "api_url"),
+    "esxi_instance": ("app.models.esxi", "ESXiInstance", "name"),
+    "hyperv_instance": ("app.models.hyperv", "HyperVInstance", "name"),
+    "openstack_instance": ("app.models.openstack", "OpenStackInstance", "name"),
+    "openstack_subnet": ("app.models.openstack", "OpenStackSubnet", "cidr"),
     "virt_cluster": ("app.models.virt", "VirtCluster", "name"),
     "dns_server": ("app.models.dns", "DNSServer", "name"),
+    "dns_compare_group": ("app.models.dns_compare_group", "DNSCompareGroup", "name"),
     # ── 代理 / 憑證 / 權杖 ──
     "scan_agent": ("app.models.scan_agent", "ScanAgent", "name"),
     "cert_agent": ("app.models.certificate", "CertAgent", "name"),
@@ -140,7 +155,7 @@ async def _resolve_labels(
     if user_ids:
         urows = (
             await session.execute(
-                select(User.id, User.username, User.display_name).where(User.id.in_(user_ids))
+                select(User.id, User.username, User.display_name).where(User.id.in_(user_ids))  # bounded: users on one page
             )
         ).all()
         for uid, uname, dname in urows:
@@ -165,7 +180,7 @@ async def _resolve_labels(
             model = getattr(importlib.import_module(module_path), cls_name)
             col = getattr(model, attr)
             qrows = (
-                await session.execute(select(model.id, col).where(model.id.in_(ids)))
+                await session.execute(select(model.id, col).where(model.id.in_(ids)))  # bounded: objects on one page
             ).all()
             for oid, val in qrows:
                 if val is not None:
@@ -223,7 +238,7 @@ async def list_audit(
     if action:
         picked = [a for a in action if a]
         if picked:
-            base = base.where(AuditLog.action.in_(picked))
+            base = base.where(AuditLog.action.in_(picked))  # bounded: picked actions
     if since is not None:
         base = base.where(AuditLog.ts >= since)
     if until is not None:

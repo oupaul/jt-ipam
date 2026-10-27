@@ -1,5 +1,11 @@
 import { apiClient } from "@/api/client";
 
+/** 機架型態。以 U 計：rack / industrial / lackrack；其餘以「層」計。 */
+export type RackKind = "rack" | "industrial" | "shelf" | "wire_shelf" | "wood_shelf"
+  | "angle_shelf" | "kallax" | "lackrack";
+/** 表面顏色（各型態可用的見 utils/rackFinish.ts） */
+export type RackFinish = "black" | "white" | "galvanized" | "black_brown" | "oak" | "brown";
+
 export interface RackDeviceSlot {
   rack_slot?: number;
   rack_slot_span?: number;
@@ -25,12 +31,22 @@ export interface RackDiagram {
   /** 對外公開這個機櫃的示意圖（給別的系統用 <img> 嵌入）。預設關 */
   expose_svg?: boolean;
   /** issue #30：rack＝標準機櫃（列＝U）、shelf＝層架（列＝層） */
-  kind?: "rack" | "industrial" | "shelf" | "wire_shelf" | "wood_shelf";
+  kind?: RackKind;
+  /** 表面顏色（沒有顏色選項的型態是 null） */
+  finish?: RackFinish | null;
   /** 後端依機櫃實體尺寸算好的繪製大小（層架非標準寬/層高才畫得對） */
   render_width_px?: number;
   render_row_px?: number;
   /** 每一層的高度 px，由第 1 層起算 */
   render_row_px_list?: number[];
+  /** 每一列**底下**那片板的厚度 px，由上往下（畫面順序，含開放頂端那一列）。
+   *  KALLAX 的外框比內隔板厚、LackRack 疊幾張就有幾片桌面；其他型態是均一值。 */
+  render_board_px_list?: number[];
+  /** 最上面那一列之上的厚度 px（LackRack 的桌面） */
+  render_top_px?: number;
+  /** KALLAX 有幾欄、直的內隔板多寬 px */
+  render_cols?: number;
+  render_divider_px?: number;
   devices: RackDeviceSlot[];
   conflicts: Record<string, unknown>[];
 }
@@ -45,7 +61,8 @@ export interface Rack {
   id: string;
   name: string;
   u_height: number;
-  kind?: "rack" | "industrial" | "shelf" | "wire_shelf" | "wood_shelf";
+  kind?: RackKind;
+  finish?: RackFinish | null;
   width_mm: number | null;
   row_height_mm?: number | null;
   /** 逐層高度（mm），由第 1 層起算；null＝整台用 row_height_mm */
@@ -108,7 +125,9 @@ export async function setRackPositions(
 // ─────────────────── 對外嵌入設定（admin）───────────────────
 export interface RackEmbedConfig {
   enabled: boolean;
-  token: string;
+  /** 權杖不再隨設定回傳：按「顯示」才另外取（後端留稽核） */
+  token_set: boolean;
+  token_expires_at: string | null;
 }
 
 export async function getRackEmbedConfig(): Promise<RackEmbedConfig> {
@@ -116,11 +135,17 @@ export async function getRackEmbedConfig(): Promise<RackEmbedConfig> {
   return data;
 }
 
+/** 取嵌入權杖明文（組 <img> 網址用）；每次呼叫後端都留稽核。 */
+export async function revealRackEmbedToken(): Promise<string> {
+  const { data } = await apiClient.get<{ token: string }>("/api/v1/system/rack-embed/token");
+  return data.token;
+}
+
 export async function setRackEmbedConfig(
-  enabled: boolean, regenerate_token = false,
+  enabled: boolean, regenerate_token = false, token_days = 365,
 ): Promise<RackEmbedConfig> {
   const { data } = await apiClient.put<RackEmbedConfig>(
-    "/api/v1/system/rack-embed", { enabled, regenerate_token },
+    "/api/v1/system/rack-embed", { enabled, regenerate_token, token_days },
   );
   return data;
 }

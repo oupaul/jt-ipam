@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import re
 import uuid
 from datetime import UTC, datetime
@@ -25,7 +27,7 @@ from app.core.db import get_session
 from app.core.ui_error import detail_of, ui_detail
 from app.models.background_task import BackgroundTask
 from app.schemas.system_transfer import ExportRequest, ImportApplyRequest
-from app.services.system_transfer import crypto, exporter, importer, registry
+from app.services.system_transfer import crypto, exporter, importer, registry, streaming
 from app.version import __version__
 
 router = APIRouter(prefix="/system/transfer", tags=["system-transfer"],
@@ -41,12 +43,21 @@ def _spool_dir() -> Path:
     return d
 
 
+def _contained(base: Path, name: str) -> Path:
+    """組出來的路徑解析後必須還在 base 底下（第二道防線；第一道是檔名只接受 UUID）。"""
+    root = os.path.realpath(base)
+    full = os.path.realpath(os.path.join(root, name))
+    if not full.startswith(root + os.sep):
+        raise HTTPException(status_code=400, detail="invalid token")
+    return Path(full)
+
+
 def _safe_path(name: str) -> Path:
     """只接受 <uuid>.json；擋路徑穿越。"""
     stem = name[:-5] if name.endswith(".json") else name
     if not _UUID_RE.match(stem):
         raise HTTPException(status_code=400, detail="invalid token")
-    return _spool_dir() / f"{stem}.json"
+    return _contained(_spool_dir(), f"{stem}.json")
 
 
 def _cleanup_old(keep_hours: int = 48) -> None:
@@ -59,6 +70,26 @@ def _cleanup_old(keep_hours: int = 48) -> None:
                 f.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+class _TooLarge(Exception):
+    pass
+
+
+def _save_upload(src: Any, dest: Path) -> None:
+    """把上傳檔（starlette 超過 1 MB 就放在暫存檔）逐段複製到暫存目錄，超過上限就停。"""
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    size = 0
+    with os.fdopen(fd, "wb") as out:
+        while chunk := src.read(1 << 20):
+            size += len(chunk)
+            if size > _MAX_UPLOAD:
+                raise _TooLarge
+            out.write(chunk)
+
+
+def _load_inner(path: Path, passphrase: str) -> dict[str, Any]:
+    return crypto.open_envelope(json.loads(path.read_bytes().decode("utf-8")), passphrase)
 
 
 async def _schema_version(session: AsyncSession) -> str | None:
@@ -116,26 +147,28 @@ async def start_export(
 
     async def _runner(sess: AsyncSession, task: BackgroundTask) -> dict[str, Any]:
         import secrets as _rng
-        inner = await exporter.build_export(sess, scope)
+        # 串流：邊讀邊壓縮、封套分段寫檔（整份組在記憶體裡的話，大型站台會吃掉好幾 GB）
+        raw, counts = await exporter.export_compressed(sess, scope)
         metadata = {
             "app_version": __version__,
             "schema_version": schema_version,
             "scope": scope,
             "exported_at": datetime.now(UTC).isoformat(),
         }
-        env = crypto.seal(inner, passphrase, metadata=metadata, rng=_rng)
         path = _spool_dir() / f"{task.id}.json"
-        data = json.dumps(env, ensure_ascii=False).encode("utf-8")
-        path.write_bytes(data)
-        path.chmod(0o600)
+        # 一建立就是 0600（先寫再 chmod 的話，中間有一段時間是依 umask 的權限）
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            size = crypto.write_sealed(f, raw, passphrase, metadata=metadata, rng=_rng)
+        del raw
         await append_audit(
             sess, actor_user_id=str(actor_id), actor_ip=actor_ip, actor_user_agent=actor_ua,
             object_type="system", object_id=None, action="export",
-            diff={"scope": scope, "counts": inner["counts"], "bytes": len(data)},
+            diff={"scope": scope, "counts": counts, "bytes": size},
             request_id=request_id,
         )
-        return {"filename": f"jt-ipam-export-{task.id}.json", "bytes": len(data),
-                "counts": inner["counts"], "scope": scope}
+        return {"filename": f"jt-ipam-export-{task.id}.json", "bytes": size,
+                "counts": counts, "scope": scope}
 
     from app.services.background_tasks import spawn_task
     task = await spawn_task(
@@ -148,7 +181,8 @@ async def start_export(
 @router.get("/export/{task_id}/download")
 async def download_export(
     task_id: uuid.UUID,
-    _user: CurrentUser,
+    user: CurrentUser,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> FileResponse:
     task = await session.get(BackgroundTask, task_id)
@@ -156,10 +190,20 @@ async def download_export(
         raise HTTPException(status_code=404, detail="export task not found")
     if task.status != "succeeded":
         raise HTTPException(status_code=409, detail=f"export not ready (status={task.status})")
-    path = _spool_dir() / f"{task_id}.json"
+    path = _contained(_spool_dir(), f"{task_id}.json")
     if not path.exists():
         raise HTTPException(status_code=410, detail="export file expired")
     fname = (task.summary or {}).get("filename") or f"jt-ipam-export-{task_id}.json"
+    # 整台的資料與設定（機密以匯出密碼加密）被下載走 —— 每次下載都留稽核，不只是產生的那一次
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="system_export_download",
+        diff={"task_id": str(task_id), "filename": fname},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
     return FileResponse(path, media_type="application/json", filename=fname)
 
 
@@ -171,18 +215,30 @@ async def analyze_import(
     file: UploadFile = File(...),
     passphrase: str = Form(...),
 ) -> dict[str, Any]:
-    """驗證上傳的匯出檔＋密碼，回來源版本／各表列數／相容性警告（不寫任何資料）。"""
-    raw = await file.read()
-    if len(raw) > _MAX_UPLOAD:
-        raise HTTPException(status_code=413, detail=ui_detail("xfer_file_too_large", "檔案過大"))
+    """驗證上傳的匯出檔＋密碼，回來源版本／各表列數／相容性警告（不寫任何資料）。
+
+    上傳直接寫進暫存目錄、再逐段解密驗證（streaming.scan），不把整份檔案讀進記憶體 ——
+    以前 27 MB 的匯出檔光分析就要好幾百 MB（2026-10-01）。
+    """
+    _cleanup_old()
+    token = uuid.uuid4()
+    path = _spool_dir() / f"{token}.json"
     try:
-        env = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise HTTPException(status_code=400, detail=ui_detail("xfer_not_json", "不是有效的 JSON 匯出檔")) from exc
+        await asyncio.to_thread(_save_upload, file.file, path)
+    except _TooLarge as exc:
+        path.unlink(missing_ok=True)
+        raise HTTPException(status_code=413, detail=ui_detail("xfer_file_too_large", "檔案過大")) from exc
     try:
-        meta = crypto.read_metadata(env)
-        inner = crypto.open_envelope(env, passphrase)
+        scanned = await asyncio.to_thread(streaming.scan, path, passphrase)
+        meta = scanned.metadata
+        if scanned.counts is not None:
+            counts_all = scanned.counts
+        else:                                   # 沒有 counts 的檔案（目前沒有任何一版這樣寫）：整份載入算
+            inner = await asyncio.to_thread(_load_inner, path, passphrase)
+            counts_all = {t: len(rows) for t, rows in (inner.get("tables") or {}).items()}
+            counts_all[registry.ENCRYPTED_SECRETS_TABLE] = len(inner.get("central_secrets") or [])
     except crypto.TransferCryptoError as exc:
+        path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=detail_of(exc, "xfer_bad_file")) from exc
 
     target_schema = await _schema_version(session)
@@ -197,7 +253,7 @@ async def analyze_import(
             source=meta["schema_version"], target=target_schema,
         ))
     known = set(registry.all_tablenames())
-    unknown = [t for t in (inner.get("tables") or {}) if t not in known]
+    unknown = [t for t in counts_all if t not in known]
     if unknown:
         warnings.append(ui_detail(
             "xfer_warn_unknown_tables",
@@ -205,13 +261,8 @@ async def analyze_import(
             tables=", ".join(sorted(unknown)),
         ))
 
-    counts = {t: len(rows) for t, rows in (inner.get("tables") or {}).items()}
-    counts_central = len(inner.get("central_secrets") or [])
-
-    _cleanup_old()
-    token = uuid.uuid4()
-    (_spool_dir() / f"{token}.json").write_bytes(raw)
-    (_spool_dir() / f"{token}.json").chmod(0o600)
+    counts = {t: n for t, n in counts_all.items() if t != registry.ENCRYPTED_SECRETS_TABLE}
+    counts_central = counts_all.get(registry.ENCRYPTED_SECRETS_TABLE, 0)
 
     return {
         "token": str(token),
@@ -235,10 +286,10 @@ async def apply_import_ep(
     if not path.exists():
         raise HTTPException(status_code=410, detail=ui_detail("xfer_staging_expired", "匯入暫存檔已過期，請重新上傳分析"))
     try:
-        env = json.loads(path.read_bytes().decode("utf-8"))
-        inner = crypto.open_envelope(env, payload.passphrase)
-    except (ValueError, UnicodeDecodeError, crypto.TransferCryptoError) as exc:
+        scanned = await asyncio.to_thread(streaming.scan, path, payload.passphrase)
+    except crypto.TransferCryptoError as exc:
         raise HTTPException(status_code=400, detail=ui_detail("xfer_bad_passphrase", "密碼錯誤或檔案損毀")) from exc
+    passphrase = payload.passphrase
 
     mode = payload.mode
     actor_id = user.id
@@ -247,14 +298,14 @@ async def apply_import_ep(
     request_id = getattr(request.state, "request_id", None)
 
     if payload.dry_run:
-        report = await importer.apply_import(
-            session, inner, mode=mode, dry_run=True, actor_user_id=actor_id,
+        report = await importer.import_file(
+            session, path, passphrase, mode=mode, dry_run=True, actor_user_id=actor_id, scanned=scanned,
         )
         return {"dry_run": True, "report": report}
 
     async def _runner(sess: AsyncSession, _task: BackgroundTask) -> dict[str, Any]:
-        report = await importer.apply_import(
-            sess, inner, mode=mode, dry_run=False, actor_user_id=actor_id,
+        report = await importer.import_file(
+            sess, path, passphrase, mode=mode, dry_run=False, actor_user_id=actor_id, scanned=scanned,
         )
         await append_audit(
             sess, actor_user_id=str(actor_id), actor_ip=actor_ip, actor_user_agent=actor_ua,

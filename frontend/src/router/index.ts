@@ -45,6 +45,26 @@ const routes: RouteRecordRaw[] = [
     component: () => import("@/views/BmcConsole.vue"),
   },
   {
+    // 另開分頁的全頁「相容 RustDesk 的網頁連線」（透過 RustDesk 伺服器連線；不套 MainLayout 側欄；仍需登入）
+    path: "/rustdesk/:id",
+    name: "rustdesk-console",
+    component: () => import("@/views/RustDeskConsole.vue"),
+  },
+  {
+    // 另開分頁的全頁「相容 RustDesk 的網頁連線」檔案傳輸（另一條連線，附錄 J；同一道權限＋伺服器的檔案傳輸開關）
+    path: "/rustdesk/:id/files",
+    name: "rustdesk-files",
+    component: () => import("@/views/RustDeskFilesConsole.vue"),
+  },
+  {
+    // 戰情室（大螢幕看板，2026-10-21）：不套 MainLayout、不走登入守衛 —— 電視可以只帶顯示權杖，
+    // 頁面自己判斷（有權杖用權杖；沒有就照一般登入流程）
+    path: "/warroom",
+    name: "warroom",
+    meta: { public: true },
+    component: () => import("@/views/warroom/WarRoom.vue"),
+  },
+  {
     path: "/",
     component: () => import("@/components/layout/MainLayout.vue"),
     children: [
@@ -53,15 +73,26 @@ const routes: RouteRecordRaw[] = [
       { path: "sections/:id", name: "section-detail", component: () => import("@/views/SectionDetail.vue") },
       { path: "subnets", name: "subnets", component: () => import("@/views/Subnets.vue") },
       { path: "subnets/:id", name: "subnet-detail", component: () => import("@/views/SubnetDetail.vue") },
+      { path: "subnets/:id/unmanaged/:ip", name: "address-unmanaged", component: () => import("@/views/UnmanagedAddress.vue") },
       { path: "addresses", name: "addresses", component: () => import("@/views/Addresses.vue") },
       { path: "addresses/:id", name: "address-detail", component: () => import("@/views/IPDetail.vue") },
+      // IP 的「探測」（只有管理員）：獨立頁面，歷次結果都留著、可以點回來看
+      { path: "addresses/:id/identify", name: "address-identify", component: () => import("@/views/IpIdentify.vue") },
+      // IPAM 還沒有記錄的位址（異常偵測的「未授權 IP」）：以位址探測，同一個畫面
+      { path: "identify/ip/:ip", name: "ip-identify", component: () => import("@/views/IpIdentify.vue") },
       { path: "ai-audit", name: "ai_audit", component: () => import("@/views/AIAudit.vue"), meta: { admin: true } },
       { path: "ip-changes", name: "ip_changes", component: () => import("@/views/IPChanges.vue") },
+      { path: "change-impact", name: "change_impact", component: () => import("@/views/ChangeImpactList.vue") },
+      // 要排在 change-impact/:id 前面，否則 services 會被當成計畫 id
+      { path: "change-impact/services", name: "change_impact_services", component: () => import("@/views/ChangeImpactServices.vue") },
+      { path: "change-impact/:id", name: "change_impact_plan", component: () => import("@/views/ChangeImpactPlan.vue") },
       { path: "hostname-precedence", name: "hostname_precedence", component: () => import("@/views/HostnamePrecedence.vue"), meta: { admin: true } },
       { path: "racks", name: "racks", component: () => import("@/views/Racks.vue") },
       { path: "requests", name: "requests", component: () => import("@/views/IPRequests.vue") },
       { path: "requests/:id", name: "request-detail", component: () => import("@/views/IPRequestDetail.vue") },
       { path: "tools", name: "tools", component: () => import("@/views/Tools.vue") },
+      // MAC 歷程：以一個 MAC 為中心（用過的 IP、交換器埠、DHCP、裝置、時間軸）
+      { path: "mac/:mac?", name: "mac-history", component: () => import("@/views/MacHistory.vue") },
       { path: "tasks", name: "tasks", component: () => import("@/views/Tasks.vue") },
       { path: "topology", name: "topology", component: () => import("@/views/Topology.vue") },
       { path: "settings", name: "settings", component: () => import("@/views/Settings.vue") },
@@ -86,12 +117,21 @@ const routes: RouteRecordRaw[] = [
       { path: "firewall-admin", name: "firewall_admin", component: () => import("@/views/FirewallAdmin.vue"), meta: { admin: true } },
       { path: "pfsense", name: "pfsense", component: () => import("@/views/PfSenseAdmin.vue"), meta: { admin: true } },
       { path: "windows-dhcp", name: "windows_dhcp", component: () => import("@/views/WindowsDhcpAdmin.vue"), meta: { admin: true } },
+      { path: "kea-dhcp", name: "kea_dhcp", component: () => import("@/views/KeaDhcpAdmin.vue"), meta: { admin: true } },
+      { path: "technitium-dhcp", name: "technitium_dhcp", component: () => import("@/views/TechnitiumDhcpAdmin.vue"), meta: { admin: true } },
+      { path: "isc-dhcp", name: "isc_dhcp", component: () => import("@/views/IscDhcpAdmin.vue"), meta: { admin: true } },
+      { path: "isoinsight", name: "isoinsight", component: () => import("@/views/IsoInsightAdmin.vue"), meta: { admin: true } },
+      { path: "rustdesk", name: "rustdesk", component: () => import("@/views/RustDeskAdmin.vue"), meta: { admin: true } },
       { path: "fortigate", name: "fortigate", component: () => import("@/views/FortiGateAdmin.vue"), meta: { admin: true } },
       { path: "zyxel", name: "zyxel", component: () => import("@/views/ZyxelAdmin.vue"), meta: { admin: true } },
       { path: "paloalto", name: "paloalto", component: () => import("@/views/PaloAltoAdmin.vue"), meta: { admin: true } },
+      { path: "checkpoint", name: "checkpoint", component: () => import("@/views/CheckPointAdmin.vue"), meta: { admin: true } },
       { path: "doctor", name: "doctor", component: () => import("@/views/SystemDoctor.vue"), meta: { admin: true } },
-      { path: "jump-hosts", name: "jump_hosts", component: () => import("@/views/JumpHosts.vue"), meta: { admin: true } },
+      // 跳板移到掃描代理頁的頁籤（2026-10-04）；舊網址與書籤照樣到得了
+      { path: "jump-hosts", name: "jump_hosts", redirect: { name: "scan_agents", query: { tab: "jump" } } },
       { path: "mikrotik", name: "mikrotik", component: () => import("@/views/MikroTikAdmin.vue"), meta: { admin: true } },
+      // SNMP 收集（0217）：掃描代理以唯讀 SNMP 讀網路設備的 ARP／MAC 表／鄰居／介面
+      { path: "snmp", name: "snmp", component: () => import("@/views/SnmpAdmin.vue"), meta: { admin: true } },
       { path: "ocs", name: "ocs", component: () => import("@/views/OcsAdmin.vue"), meta: { admin: true } },
       { path: "pfsense-fw", name: "pfsense_fw", component: () => import("@/views/PfSenseFirewallView.vue") },
       { path: "fortigate-fw", name: "fortigate_fw", component: () => import("@/views/FortiGateFirewallView.vue") },
@@ -104,13 +144,16 @@ const routes: RouteRecordRaw[] = [
       { path: "plugins", name: "plugins", component: () => import("@/views/PluginsAdmin.vue"), meta: { admin: true } },
       // Phase 3
       { path: "oui", name: "oui_admin", component: () => import("@/views/OUIAdmin.vue"), meta: { admin: true } },
+      { path: "recog", name: "recog_admin", component: () => import("@/views/RecogAdmin.vue"), meta: { admin: true } },
       { path: "custom-fields", name: "custom_fields", component: () => import("@/views/CustomFields.vue"), meta: { admin: true } },
       { path: "customers", name: "customers", component: () => import("@/views/Customers.vue"), meta: { admin: true } },
       { path: "customers/:id", name: "customer-detail", component: () => import("@/views/CustomerDetail.vue"), meta: { admin: true } },
       { path: "llm", name: "llm_settings", component: () => import("@/views/LLMSettings.vue"), meta: { admin: true } },
       { path: "system-settings", name: "system_settings", component: () => import("@/views/SystemSettings.vue"), meta: { admin: true, superAdmin: true } },
       { path: "notification-channels", name: "notification_channels", component: () => import("@/views/NotificationChannels.vue"), meta: { admin: true, superAdmin: true } },
-      { path: "ip-request-policy", name: "ip_request_policy", component: () => import("@/views/IPRequestPolicy.vue"), meta: { admin: true } },
+      // 申請審核設定（原「IP 申請審核設定」，2026-10-08 改名並分成 IP 申請審核／IP 變更評估審核兩個頁籤）；舊網址轉過來
+      { path: "approval-settings", name: "approval_settings", component: () => import("@/views/ApprovalSettings.vue"), meta: { admin: true } },
+      { path: "ip-request-policy", name: "ip_request_policy", redirect: { name: "approval_settings" } },
       { path: "version", name: "version", component: () => import("@/views/VersionInfo.vue"), meta: { admin: true, superAdmin: true } },
       { path: "system-logs", name: "system_logs", component: () => import("@/views/SystemLogs.vue"), meta: { admin: true, superAdmin: true } },
       { path: "graylog-dsv", name: "graylog_dsv", component: () => import("@/views/GraylogDsvSettings.vue"), meta: { admin: true } },
@@ -138,8 +181,15 @@ const routes: RouteRecordRaw[] = [
         props: { platform: "proxmox" } },
       { path: "virt-vmware", name: "virt_vmware",
         component: () => import("@/views/Virtualization.vue"), props: { platform: "vmware" } },
+      { path: "virt-hyperv", name: "virt_hyperv",
+        component: () => import("@/views/Virtualization.vue"), props: { platform: "hyperv" } },
+      { path: "virt-openstack", name: "virt_openstack",
+        component: () => import("@/views/Virtualization.vue"), props: { platform: "openstack" } },
       { path: "virt-admin", name: "virt_admin", component: () => import("@/views/Virtualization.vue"), meta: { admin: true } },
       { path: "esxi", name: "esxi_admin", component: () => import("@/views/ESXiAdmin.vue"), meta: { admin: true } },
+      { path: "hyperv", name: "hyperv_admin", component: () => import("@/views/HyperVAdmin.vue"), meta: { admin: true } },
+      { path: "openstack", name: "openstack_admin", component: () => import("@/views/OpenStackAdmin.vue"), meta: { admin: true } },
+      { path: "warroom-settings", name: "warroom-settings", component: () => import("@/views/WarroomSettings.vue"), meta: { admin: true } },
       { path: "cabling", name: "cabling", component: () => import("@/views/Physical.vue"), props: { mode: "cabling" } },
       { path: "power", name: "power", component: () => import("@/views/Physical.vue"), props: { mode: "power" } },
       { path: "vpn", name: "vpn-tunnels", component: () => import("@/views/Physical.vue"), props: { mode: "vpn" } },
@@ -147,6 +197,8 @@ const routes: RouteRecordRaw[] = [
       { path: "migration", name: "migration", component: () => import("@/views/Migration.vue"), meta: { admin: true } },
       { path: "system-transfer", name: "system_transfer", component: () => import("@/views/SystemTransfer.vue"), meta: { admin: true } },
       { path: "import", name: "import", component: () => import("@/views/ImportExternal.vue"), meta: { admin: true } },
+      // 不存在的網址：顯示「找不到頁面」，不要整頁空白（要放最後，前面的路由先比對）
+      { path: ":pathMatch(.*)*", name: "not_found", component: () => import("@/views/NotFound.vue") },
     ],
   },
 ];
@@ -163,31 +215,34 @@ function isChunkLoadError(e: unknown): boolean {
   const m = (e as Error)?.message || String(e ?? "");
   return /dynamically imported module|Failed to fetch dynamically|Importing a module script failed|Loading chunk|error loading dynamically imported|'?text\/html'? is not a valid JavaScript MIME type/i.test(m);
 }
-function reloadOnce(target?: string): void {
+function reloadOnce(target?: string, reason = ""): void {
   const KEY = "jt-chunk-reload-at";
   const last = Number(sessionStorage.getItem(KEY) || 0);
   // 30 秒內已自動重載過就不再重載(避免伺服器真的故障時無限刷新)
   if (Date.now() - last < 30000) return;
   sessionStorage.setItem(KEY, String(Date.now()));
+  // 留下原因給下一頁回報（utils/pageDiag）：分辨「我們自己重載」與「瀏覽器重載」
+  try { sessionStorage.setItem("jt-diag-reload-reason", `${new Date().toISOString().slice(11, 19)} ${reason}`.slice(0, 300)); } catch { /* noop */ }
   if (target && target !== window.location.pathname) window.location.assign(target);
   else window.location.reload();
 }
 
 router.onError((err, to) => {
-  if (isChunkLoadError(err)) reloadOnce(to?.fullPath);
+  if (isChunkLoadError(err)) reloadOnce(to?.fullPath, `router: ${(err as Error)?.message || err}`);
 });
 
 // Vite 預載動態 chunk 失敗時會丟此事件(比 router.onError 更早攔到)
 window.addEventListener("vite:preloadError", ((e: Event) => {
   e.preventDefault();
-  reloadOnce();
+  reloadOnce(undefined, `preload: ${String((e as any).payload?.message || (e as any).payload || "")}`);
 }) as EventListener);
 
 router.beforeEach(async (to, _from) => {
   const auth = useAuthStore();
   if (to.meta.public) return true;
 
-  if (!auth.isAuthenticated) {
+  // 這個分頁還沒有存取權杖（新分頁、重新整理）：先用 HttpOnly Cookie 換一把，換不到才去登入頁
+  if (!auth.isAuthenticated && !(await auth.ensureSession())) {
     return {
       name: "login",
       query: { next: to.fullPath },

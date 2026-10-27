@@ -31,6 +31,9 @@ export async function getAddress(id: string): Promise<IPAddress> {
 }
 
 export interface IPAddressUpdate {
+  /** 主控台的連線出口（issue #24）：空＝沿用所屬子網路；跳板與掃描代理擇一 */
+  jump_host_id?: string | null;
+  console_agent_id?: string | null;
   hostname?: string | null;
   description?: string | null;
   state?: string | null;
@@ -50,7 +53,9 @@ export interface IPAddressUpdate {
   vnc_enabled?: boolean | null;
   novnc_enabled?: boolean | null;
   bmc_enabled?: boolean | null;
+  rustdesk_enabled?: boolean | null;
   is_dhcp_server?: boolean | null;
+  liveness_from_device?: boolean | null;
 }
 
 export async function updateAddress(id: string, payload: IPAddressUpdate): Promise<IPAddress> {
@@ -76,6 +81,7 @@ export interface IPAddressCreate {
   device_id?: string | null;
   /** 主控台的連線出口（issue #24）：空＝沿用所屬子網路 */
   jump_host_id?: string | null;
+  console_agent_id?: string | null;
 }
 
 export async function createAddress(payload: IPAddressCreate): Promise<IPAddress> {
@@ -97,6 +103,20 @@ export async function bulkDeleteAddresses(ids: string[]): Promise<BulkDeleteResu
 export interface BulkStateResult { updated: number; failed: number; errors: { id: string; error: string }[]; }
 export async function bulkSetAddressState(ids: string[], state: string): Promise<BulkStateResult> {
   const { data } = await apiClient.post<BulkStateResult>("/api/v1/addresses/bulk-state", { ids, state });
+  return data;
+}
+
+export interface BulkCreateDevicesResult {
+  created: number;
+  linked_existing: number;
+  skipped: number;
+  failed: number;
+  errors: { id: string; error: string }[];
+  devices: { id: string; name: string; how: "created" | "existing"; ips: string[] }[];
+}
+/** 勾選的 IP 中還沒歸屬裝置的：比對得到既有裝置就連過去，否則以主機名稱建一台新裝置（僅管理員）。 */
+export async function bulkCreateDevices(ids: string[]): Promise<BulkCreateDevicesResult> {
+  const { data } = await apiClient.post<BulkCreateDevicesResult>("/api/v1/addresses/bulk-create-devices", { ids });
   return data;
 }
 
@@ -127,6 +147,16 @@ export interface DeviceSuggestion {
 }
 
 /** 這個 IP 看起來屬於哪一台裝置 —— 或該建立哪一台。**只查詢，不會動到任何資料。** */
+/** 同一個 MAC 的其他位址（看得到的才列）：「上線狀態跟著設備」的提示用 */
+export type SameMacAddress = IPAddress & {
+  /** 這個 MAC 最早什麼時候出現在那個位址（ARP 記錄）—— 分辨「搬走了」與「同一台的另一個介面」 */
+  mac_since?: string | null;
+};
+export async function getSameMacAddresses(id: string): Promise<SameMacAddress[]> {
+  const { data } = await apiClient.get(`/api/v1/addresses/${id}/same-mac`);
+  return data;
+}
+
 export async function getDeviceSuggestion(id: string): Promise<DeviceSuggestion> {
   const { data } = await apiClient.get(`/api/v1/addresses/${id}/device-suggestion`);
   return data;
@@ -139,5 +169,23 @@ export async function applyDeviceSuggestion(
 ): Promise<IPAddress> {
   const { data } = await apiClient.post(
     `/api/v1/addresses/${id}/device-suggestion/apply`, body);
+  return data;
+}
+
+
+/** 沒有 IP 記錄、但最近看得到在用的位址（掃描代理目擊＋LibreNMS ARP）：指示計的「未納管」格子 */
+export interface UnmanagedAddress {
+  ip: string;
+  last_seen_at: string | null;
+  /** scanner／arp:librenms … */
+  sources: string[];
+  mac: string | null;
+  vendor: string | null;
+  hostname: string | null;
+}
+
+export async function listUnmanaged(subnetId: string): Promise<UnmanagedAddress[]> {
+  const { data } = await apiClient.get<UnmanagedAddress[]>("/api/v1/addresses/unmanaged",
+                                                           { params: { subnet_id: subnetId } });
   return data;
 }

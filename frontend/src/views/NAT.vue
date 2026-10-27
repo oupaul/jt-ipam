@@ -18,27 +18,33 @@ import { useCustomers } from "@/composables/useCustomers";
 import type { IPAddress } from "@/types";
 import { listDevices } from "@/api/basic";
 import { listFirewalls, type OPNsenseFirewall } from "@/api/integrations";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
+import { useFocusRow } from "@/composables/useFocusRow";
+import FocusRowBanner from "@/components/FocusRowBanner.vue";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
+import { withExportValue } from "@/utils/tableExport";
 const { t } = useI18n();
 
 const router = useRouter();
-const { visibleKeys, setVisible, reset } = useColumnPrefs(
+const route = useRoute();
+const { visibleKeys, setVisible, reset, order, setOrder, orderColumns } = useColumnPrefs(
   "nat",
-  ["name", "type", "protocol", "src_ip_id", "src_interface", "src_port", "dst_ip_id", "dst_port", "device_id", "description", "source_label", "actions"],
-  ["name", "type", "protocol", "src_ip_id", "src_interface", "src_port", "dst_ip_id", "dst_port", "device_id", "description", "source_label", "actions"],
+  ["name", "status", "type", "protocol", "src_ip_id", "src_interface", "src_port", "dst_ip_id", "dst_port", "device_id", "description", "source_label", "actions"],
+  ["name", "status", "type", "protocol", "src_ip_id", "src_interface", "src_port", "dst_ip_id", "dst_port", "device_id", "description", "source_label", "actions"],
 );
+// 選單順序與表格欄位一致：拖拉排序以選單上看到的順序為準
 const columnPickerItems = computed(() => [
   { key: "name", label: t("cols.name") },
+  { key: "status", label: t("nat.status") },
   { key: "type", label: t("cols.type") },
   { key: "protocol", label: t("cols.protocol") },
   { key: "src_ip_id", label: t("cols.src_ip") },
-  { key: "dst_ip_id", label: t("cols.dst_ip") },
-  { key: "src_port", label: t("cols.src_port") },
-  { key: "dst_port", label: t("cols.dst_port") },
   { key: "src_interface", label: t("cols.src_iface") },
+  { key: "src_port", label: t("cols.src_port") },
+  { key: "dst_ip_id", label: t("cols.dst_ip") },
+  { key: "dst_port", label: t("cols.dst_port") },
   { key: "device_id", label: t("cols.device") },
   { key: "description", label: t("cols.description") },
   { key: "source_label", label: t("cols.source") },
@@ -53,6 +59,17 @@ const msg = useMessage();
 const rows = ref<NAT[]>([]);
 import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
 const { query: filterQ, filtered: filteredRows } = useTableQuickFilter(rows);
+// IP 詳細頁點進來：?ip=<IP id>&focus=<NAT id>。清單一次只載 200 筆，所以帶著 ip 篩選去載，
+// 那一筆一定在；按「顯示全部」再回到一般清單。
+const natFocus = useFocusRow(rows, (r, k) => r.id === k);
+// 依啟用／停用篩選（使用者 2026-10-11：停用的規則要看得出來，也要能只看啟用或停用的）
+const statusFilter = ref<"enabled" | "disabled" | null>(null);
+const statusOpts = computed(() => [
+  { label: t("nat.status_enabled"), value: "enabled" },
+  { label: t("nat.status_disabled"), value: "disabled" },
+]);
+const shownRows = computed(() => natFocus.apply(filteredRows.value.filter((r) =>
+  statusFilter.value === null || (statusFilter.value === "disabled") === !!r.disabled)));
 import { useTablePagination } from "@/composables/useTablePagination";
 const pg = useTablePagination();
 const checkedKeys = ref<DataTableRowKey[]>([]);
@@ -116,6 +133,7 @@ const sourceKindOpts = computed(() => [
   { label: "pfSense",  value: "pfsense" },
   { label: "FortiGate", value: "fortigate" },
   { label: "Palo Alto", value: "paloalto" },
+  { label: "Check Point", value: "checkpoint" },
   { label: "MikroTik", value: "mikrotik" },
   { label: "phpIPAM",  value: "phpipam" },
   { label: t("cols.manual"),     value: "manual" },
@@ -254,7 +272,10 @@ async function loadOpts() {
 async function refresh() {
   loading.value = true;
   try {
+    const focusIp = natFocus.focus.value != null && typeof route.query.ip === "string"
+      ? route.query.ip : undefined;
     rows.value = (await listNATs({
+      ipId: focusIp,
       deviceId: filterDeviceId.value || undefined,
       sourceKind: sourceKindFilter.value.length ? sourceKindFilter.value : undefined,
       sourceFirewallId: (sourceKindFilter.value.length === 1 && sourceKindFilter.value[0] === "opnsense")
@@ -268,7 +289,12 @@ async function refresh() {
 
 import { watch } from "vue";
 import { apiErrMsg } from "@/api/client";
-watch([filterDeviceId, sourceKindFilter, sourceFwFilter], () => { void refresh(); });
+watch([filterDeviceId, sourceKindFilter, sourceFwFilter], () => {
+  if (natFocus.focus.value != null) natFocus.clear();   // 下面那個 watch 會重新載入
+  else void refresh();
+});
+// 「顯示全部」：清掉 focus 之後重新載入一般清單（focus 時是依 IP 篩選載入的）
+watch(() => natFocus.focus.value, (v, old) => { if (v == null && old != null) void refresh(); });
 function openCreate() {
   viewOnly.value = false;
   editing.value = null;
@@ -341,6 +367,12 @@ function iconAction(icon: any, label: string, onClick: () => void, type?: any) {
 const allCols = computed<DataTableColumns<NAT>>(() => autoSort([
   { type: "selection" },
   { title: t("common.name"), key: "name", minWidth: 140, ellipsis: { tooltip: true } },
+  withExportValue({
+    title: t("nat.status"), key: "status", width: 96,
+    sorter: (a: NAT, b: NAT) => Number(!!a.disabled) - Number(!!b.disabled),
+    render: (r: NAT) => h(NTag, { size: "small", bordered: false, type: r.disabled ? "default" : "success" },
+      () => r.disabled ? t("nat.status_disabled") : t("nat.status_enabled")),
+  }, (r: NAT) => r.disabled ? t("nat.status_disabled") : t("nat.status_enabled")),
   {
     title: t("nat.type"), key: "type", width: 100,
     render: (r) => h(NTag, { size: "small", type: "info" }, () => r.type),
@@ -372,6 +404,7 @@ const allCols = computed<DataTableColumns<NAT>>(() => autoSort([
                  : r.source_kind === "pfsense"  ? "success"
                  : r.source_kind === "fortigate" ? "error"
                  : r.source_kind === "paloalto" ? "primary"
+                 : r.source_kind === "checkpoint" ? "error"
                  : r.source_kind === "mikrotik" ? "info"
                  : r.source_kind === "phpipam"  ? "warning"
                  : "default";
@@ -391,7 +424,7 @@ const allCols = computed<DataTableColumns<NAT>>(() => autoSort([
 ]));
 
 const cols = computed<DataTableColumns<NAT>>(() =>
-  allCols.value.filter((c: any) => c.type === "selection" || visibleKeys.value.includes(c.key)),
+  orderColumns(allCols.value.filter((c: any) => c.type === "selection" || visibleKeys.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); void loadOpts(); });
@@ -417,7 +450,8 @@ onMounted(() => { void refresh(); void loadOpts(); });
         {{ t("common.create") }}
       </n-button>
       <ColumnPicker :all="columnPickerItems" :visible="visibleKeys"
-                    @update:visible="setVisible" @reset="reset" />
+                    @update:visible="setVisible" @reset="reset"
+                    :order="order" @update:order="setOrder" />
       <ExportButton :columns="cols" :rows="rows" filename="nat" :title="t('nav.nat')" />
       <n-select
         v-model:value="filterDeviceId"
@@ -425,6 +459,14 @@ onMounted(() => { void refresh(); void loadOpts(); });
         :placeholder="t('nat.filter_device')"
         clearable filterable
         style="width: 220px"
+      />
+      <n-select
+        v-model:value="statusFilter"
+        :options="statusOpts"
+        :placeholder="t('nat.filter_status')"
+        clearable
+        style="width: 140px"
+        data-testid="nat-status-filter"
       />
       <n-select
         v-model:value="sourceKindFilter"
@@ -456,14 +498,16 @@ onMounted(() => { void refresh(); void loadOpts(); });
       <n-button size="small" @click="checkedKeys = []">{{ t("common.clear_selection") }}</n-button>
     </n-space>
 
+    <FocusRowBanner :ctl="natFocus" :loading="loading" />
     <n-data-table
       :columns="cols"
-      :data="filteredRows"
+      :data="shownRows"
       :loading="loading"
       :bordered="false"
       :scroll-x="1656"
       :pagination="pg"
       :row-key="(r: NAT) => r.id"
+      :row-class-name="(r: NAT) => r.disabled ? 'jt-nat-row-disabled' : ''"
       :checked-row-keys="checkedKeys"
       @update:checked-row-keys="(keys: DataTableRowKey[]) => checkedKeys = keys"
       :row-props="(row: NAT) => ({
@@ -496,9 +540,10 @@ onMounted(() => { void refresh(); void loadOpts(); });
         <n-form-item :label="t('nat.ip_version')">
           <n-select :disabled="viewOnly" v-model:value="form.ip_version" :options="ipVersionOpts" />
         </n-form-item>
-        <n-space :size="20" style="margin-bottom: 6px">
-          <n-form-item :label="t('nat.disabled')" :show-feedback="false">
-            <n-switch :disabled="viewOnly" v-model:value="form.disabled" />
+        <n-space :size="20" class="jt-nat-row">
+          <n-form-item :label="t('nat.enabled')" :show-feedback="false">
+            <n-switch :disabled="viewOnly" :value="!form.disabled" data-testid="nat-enabled"
+                      @update:value="(v: boolean) => form.disabled = !v" />
           </n-form-item>
           <n-form-item :label="t('nat.no_rdr')" :show-feedback="false">
             <n-switch :disabled="viewOnly" v-model:value="form.no_rdr" />
@@ -507,6 +552,7 @@ onMounted(() => { void refresh(); void loadOpts(); });
             <n-switch :disabled="viewOnly" v-model:value="form.log" />
           </n-form-item>
         </n-space>
+        <div class="jt-nat-hint">{{ t("nat.enabled_hint") }}</div>
         <n-form-item :label="t('nat.device')">
           <n-select :disabled="viewOnly" v-model:value="form.device_id" :options="deviceOpts" filterable clearable
                     :placeholder="t('nat.device_placeholder')" />
@@ -519,7 +565,7 @@ onMounted(() => { void refresh(); void loadOpts(); });
         <n-form-item :label="t('nat.src_interface')">
           <n-input :disabled="viewOnly" v-model:value="form.src_interface" placeholder="wan / lan / opt2 …" />
         </n-form-item>
-        <n-space :size="12" align="end">
+        <n-space :size="12" align="end" class="jt-nat-row">
           <n-form-item :label="t('nat.src_port')" :show-feedback="false">
             <n-input-number :disabled="viewOnly" v-model:value="form.src_port" :min="1" :max="65535" clearable style="width: 120px" />
           </n-form-item>
@@ -535,7 +581,7 @@ onMounted(() => { void refresh(); void loadOpts(); });
           <n-select :disabled="viewOnly" v-model:value="form.dst_ip_id" :options="addrOpts" filterable clearable
                     :placeholder="t('nat.dst_ip_placeholder')" />
         </n-form-item>
-        <n-space :size="12" align="end">
+        <n-space :size="12" align="end" class="jt-nat-row">
           <n-form-item :label="t('nat.dst_port')" :show-feedback="false">
             <n-input-number :disabled="viewOnly" v-model:value="form.dst_port" :min="1" :max="65535" clearable style="width: 120px" />
           </n-form-item>
@@ -547,7 +593,7 @@ onMounted(() => { void refresh(); void loadOpts(); });
           </n-form-item>
         </n-space>
         <n-divider style="margin: 8px 0" />
-        <n-space :size="12">
+        <n-space :size="12" class="jt-nat-row">
           <n-form-item :label="t('nat.nat_reflection')" :show-feedback="false">
             <n-select :disabled="viewOnly" v-model:value="form.nat_reflection" :options="natReflectionOpts" style="width: 140px" />
           </n-form-item>
@@ -582,3 +628,15 @@ onMounted(() => { void refresh(); void loadOpts(); });
     </n-modal>
   </n-card>
 </template>
+
+<style>
+/* 停用的 NAT 規則整列變淡（操作欄維持原樣才按得清楚）；render 的儲存格吃不到 scoped 樣式，所以用全域樣式加前綴 */
+.jt-nat-row-disabled td:not(.col-actions):not(.n-data-table-td--selection) { opacity: .5; }
+.jt-nat-row-disabled td[data-col-key="name"] { text-decoration: line-through; }
+</style>
+
+<style scoped>
+/* 並排欄位那幾排關掉了表單項目的提示空間：補上與一般欄位相同的下方間距，下一個欄位標題才不會貼上來 */
+.jt-nat-row { margin-bottom: 18px; }
+.jt-nat-hint { margin: -10px 0 14px; font-size: 12px; opacity: .7; }
+</style>

@@ -7,6 +7,7 @@
 import { computed, h, onMounted, ref } from "vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
+import { trackTask } from "@/composables/useTaskTracker";
 import ScopeOverlapWarning from "@/components/ScopeOverlapWarning.vue";
 import {
   NCard, NDataTable, NSpace, NButton, NTag, NIcon, NTooltip, NAlert, NModal, NForm,
@@ -33,7 +34,8 @@ const { t } = useI18n();
 const msg = useMessage();
 
 const COLS = ["name", "api_url", "enabled", "auth", "last_sync_at", "last_error", "actions"];
-const { visibleKeys: vis, setVisible: setVis, reset: resetVis } = useColumnPrefs("zabbix", COLS, COLS);
+const { visibleKeys: vis, setVisible: setVis, reset: resetVis, order, setOrder, orderColumns } =
+  useColumnPrefs("zabbix", COLS, COLS);
 const picker = computed(() => [
   { key: "name", label: t("cols.name") },
   { key: "api_url", label: "API URL" },
@@ -120,7 +122,7 @@ async function submit() {
     name: f.name, api_url: f.api_url,
     enabled: f.enabled, verify_tls: f.verify_tls,
     sync_interval_seconds: f.sync_interval_seconds,
-    description: f.description || undefined,
+    description: f.description ?? "",
     scope_subnet_ids: f.scope_subnet_ids,
   };
   if (f.authMode === "token") {
@@ -148,8 +150,8 @@ async function test(r: ZabbixInstance) {
 
 async function sync(r: ZabbixInstance) {
   try {
-    await syncZabbix(r.id);
-    msg.success(t("tasks.queued_toast", { kind: "Zabbix sync", target: r.name }));
+    const job = await syncZabbix(r.id);
+    trackTask(job.task_id, { onDone: () => void refresh() });
   } catch (e) { msg.error(apiErrMsg(e)); }
 }
 
@@ -228,7 +230,7 @@ const allCols = computed<DataTableColumns<ZabbixInstance>>(() => autoSort([
   },
 ]));
 const cols = computed<DataTableColumns<ZabbixInstance>>(() =>
-  allCols.value.filter((c) => vis.value.includes(String((c as { key?: string }).key))),
+  orderColumns(allCols.value.filter((c) => vis.value.includes(String((c as { key?: string }).key)))),
 );
 
 const hostCols = computed<DataTableColumns<ZabbixHost>>(() => autoSort([
@@ -291,7 +293,8 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         <template #icon><n-icon><PlusIcon /></n-icon></template>
         {{ t("common.create") }}
       </n-button>
-      <ColumnPicker :all="picker" :visible="vis" @update:visible="setVis" @reset="resetVis" />
+      <ColumnPicker :all="picker" :visible="vis" @update:visible="setVis" @reset="resetVis"
+                    :order="order" @update:order="setOrder" />
     </n-space>
 
     <n-data-table :columns="cols" :data="rows" :loading="loading" :bordered="false"

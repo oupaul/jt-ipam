@@ -13,6 +13,11 @@
 #
 # Usage:  scripts/test-upgrade.sh [v0.6.15] [debian:12]
 #         (first argument is the tag to install first; defaults to the previous tag)
+# Mirror: APT_MIRROR=ftp.tw.debian.org 讓容器裡的 apt 改走指定的 Debian 鏡像站。deb.debian.org
+#         慢的時候（2026-09-24 實測 59 KB/s），PID 1 裝 systemd 就會超過等待時間而回報
+#         「systemd never came up」—— 看起來像 systemd 壞了，其實是 apt 還在下載。
+#         PIP_MIRROR=https://<index>/simple 同理換 PyPI（files.pythonhosted.org 同一天也只有 50 KB/s）。
+#         兩者只影響這個拋棄式容器，不影響發佈內容與客戶安裝。
 # Needs:  docker, and network access to the public repository.
 #
 # The container runs systemd (privileged + host cgroups) because the upgrade restarts real
@@ -63,8 +68,17 @@ docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" --privileged --cgroupns=host \
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock \
     "${MOUNT_ARGS[@]}" \
-    -e DEBIAN_FRONTEND=noninteractive "$IMAGE" \
-    sh -c 'apt-get update -qq && apt-get install -y -qq systemd systemd-sysv \
+    -e DEBIAN_FRONTEND=noninteractive -e APT_MIRROR="${APT_MIRROR:-}" \
+    -e PIP_MIRROR="${PIP_MIRROR:-}" "$IMAGE" \
+    sh -c 'if [ -n "$PIP_MIRROR" ]; then
+             # 寫全域設定：安裝腳本用 sudo -u jtipam 跑 pip，環境變數會被 sudo 清掉
+             printf "[global]\nindex-url = %s\n" "$PIP_MIRROR" > /etc/pip.conf; fi
+           if [ -n "$APT_MIRROR" ]; then
+             # 只換主套件庫；debian-security 多數鏡像站沒有，維持官方來源
+             sed -i -e "s#//deb.debian.org/debian\$#//$APT_MIRROR/debian#" \
+               -e "s#//deb.debian.org/debian #//$APT_MIRROR/debian #" \
+               /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null; fi
+           apt-get update -qq && apt-get install -y -qq systemd systemd-sysv \
            ca-certificates curl git >/dev/null && exec /sbin/init' >/dev/null
 state=""
 # PID 1 先裝 systemd 再變成 systemd，所以這裡等的其實是**容器裡的 apt**。
@@ -103,7 +117,8 @@ else
 fi
 
 before_ver="$(dex sh -c "grep -m1 '\"version\"' /opt/jt-ipam/frontend/package.json" | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
-pass "site is running $before_ver"
+before_node="$(dex node -v 2>/dev/null || echo none)"
+pass "site is running $before_ver (Node.js $before_node)"
 
 say "Leaving a row behind, so the migration has real data to move"
 dex bash -c 'set -a; . /etc/jt-ipam/backend.env; set +a;
@@ -141,9 +156,31 @@ else
     dex journalctl -u jt-ipam-backend -n 30 --no-pager || true
 fi
 
+# 建置前端用的 Node.js：升級要自己把舊版（v0.6.61 以前裝的是 NodeSource 20）換成 "engines" 要求的版本
+want_node="$(grep -oP '"node":\s*">=\K[0-9]+' "$ROOT/frontend/package.json" || echo 22)"
+after_node="$(dex node -v 2>/dev/null || echo none)"
+nmaj="${after_node#v}"; nmaj="${nmaj%%.*}"
+if [[ "$nmaj" =~ ^[0-9]+$ ]] && (( nmaj >= want_node )); then
+    pass "Node.js $before_node -> $after_node (the frontend build needs >= $want_node)"
+else
+    fail "Node.js is $after_node after the upgrade (was $before_node); the frontend build needs >= $want_node"
+fi
+
 code="$(dex curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/api/v1/system/version || true)"
 [[ "$code" == 401 || "$code" == 200 ]] && pass "answers over HTTPS (HTTP $code)" \
                                        || fail "no answer over HTTPS (HTTP ${code:-none})"
+
+UI_URL="https://127.0.0.1"
+# 畫面本身也要送得出來：API 有回應只證明後端活著；nginx 送的 dist 可能根本沒建、或 index.html 指到不存在的檔案
+page="$(dex curl -sk --max-time 15 "${UI_URL}/" 2>/dev/null || true)"
+asset="$(grep -oP 'src="\K/assets/[^"]+\.js' <<<"$page" | head -1 || true)"
+acode="000"
+[[ -n "$asset" ]] && acode="$(dex curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "${UI_URL}${asset}" 2>/dev/null || echo 000)"
+if [[ "${page,,}" == *"<!doctype html"* && "$acode" == 200 ]]; then
+    pass "UI page and its script bundle are served (${UI_URL}${asset})"
+else
+    fail "UI is not served end to end (page: ${#page} bytes, bundle '${asset:-none}' HTTP $acode)"
+fi
 
 # 資料要還在 —— 升級把資料弄丟是最糟的失敗，而它不會讓任何指令回非零。
 probe="$(dex bash -c 'set -a; . /etc/jt-ipam/backend.env; set +a;
@@ -152,6 +189,40 @@ probe="$(dex bash -c 'set -a; . /etc/jt-ipam/backend.env; set +a;
   2>/dev/null || echo 0)"
 [[ "$probe" == 1 ]] && pass "the row written before the upgrade is still there" \
                     || fail "the pre-upgrade row is gone (found $probe)"
+
+# 參考資料排程（GeoIP／OUI／Recog）：舊版站台從來沒有這三個 timer —— upgrade 要補上，而且每支都要真的跑成功
+for unit in jt-ipam-geoip-refresh jt-ipam-oui-refresh jt-ipam-recog-refresh; do
+    if ! dex systemctl is-enabled --quiet "$unit.timer" 2>/dev/null; then
+        fail "$unit.timer is not enabled"
+        continue
+    fi
+    dex systemctl start "$unit.service" >/dev/null 2>&1 || true
+    for _ in $(seq 150); do
+        dex systemctl is-active --quiet "$unit.service" || break
+        sleep 2
+    done
+    result=$(dex systemctl show -p Result --value "$unit.service" 2>/dev/null || echo unknown)
+    if [[ "$result" == success ]]; then
+        pass "$unit ran successfully"
+    else
+        fail "$unit Result=$result"
+        dex journalctl -u "$unit" -n 25 --no-pager || true
+    fi
+done
+# Recog is optional, but a host that can reach GitHub must end up with it installed
+if dex bash -c 'u=$(stat -c %U /opt/jt-ipam); sudo -u "$u" bash -c "cd /opt/jt-ipam/backend; set -a; . /etc/jt-ipam/backend.env; set +a; .venv/bin/python -m app.cli.recog status"' \
+        >"/tmp/$NAME.recog.log" 2>&1; then
+    pass "Recog fingerprint database: $(tr '\t' ' ' <"/tmp/$NAME.recog.log" | head -1)"
+else
+    fail "Recog fingerprint database is not installed: $(head -3 "/tmp/$NAME.recog.log")"
+fi
+# ...and it must be the upgrade itself that installed it: a later timer run covering for a failed
+# download hid a real race here once (2026-09-29, duplicate key on recog_databases)
+if grep -q 'Recog fingerprint database was not installed' "/tmp/$NAME.upgrade.log" 2>/dev/null; then
+    fail "upgrade failed to install Recog by itself:"; grep -A1 'Recog fingerprint database was not installed' "/tmp/$NAME.upgrade.log" | head -4
+else
+    pass "upgrade installed Recog without warnings"
+fi
 
 if dex bash /opt/jt-ipam/scripts/jt-ipam.sh doctor >/tmp/$NAME.doctor.log 2>&1; then
     pass "doctor reports a healthy install"

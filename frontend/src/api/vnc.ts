@@ -13,6 +13,7 @@ export interface VncCredential {
   has_private_key: boolean;
   last_used_at: string | null;
   created_at: string;
+  device_changed?: boolean;   // 存下之後位址換了設備：不自動帶入（utils/savedCreds）
 }
 export async function listVncCredentials(targetIpId?: string): Promise<VncCredential[]> {
   const { data } = await apiClient.get<VncCredential[]>("/api/v1/ssh-credentials", {
@@ -22,10 +23,11 @@ export async function listVncCredentials(targetIpId?: string): Promise<VncCreden
 }
 export async function createVncCredential(p: {
   label: string; target_ip_id?: string | null; password: string;
+  /** 傳統 VNC 沒有帳號，留空；macOS 螢幕共享、UltraVNC MS 登入等才要（只有 guacd 引擎會用） */
+  username?: string;
 }): Promise<VncCredential> {
-  // 傳統 VNC 無帳號；金庫 username 欄必填 → 帶固定值 "vnc"（不用於認證）
   const { data } = await apiClient.post<VncCredential>("/api/v1/ssh-credentials", {
-    ...p, username: "vnc", auth_type: "password", protocol: "vnc",
+    ...p, username: (p.username || "").trim(), auth_type: "password", protocol: "vnc",
   });
   return data;
 }
@@ -39,6 +41,8 @@ export interface VncTicket {
   default_port: number;
   has_saved_creds: boolean;
   ttl: number;
+  /** 這次用哪個引擎（系統設定）；`guacd` 時畫面交給 GuacView */
+  engine?: string;
 }
 
 // 換發短期一次性 ticket（之後用它開 WebSocket）。注意帶 /api/v1 首碼。

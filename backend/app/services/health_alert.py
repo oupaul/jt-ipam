@@ -28,11 +28,16 @@ EVENT_INTEGRATION = "integration.sync_failed"
 # 通知點了打不開，比沒有連結更糟（使用者會以為功能壞了）。
 _INTEGRATION_ROUTE = {
     "librenms": "/librenms", "wazuh": "/wazuh", "zabbix": "/zabbix",
-    "adguard": "/adguard", "proxmox": "/virt-admin", "esxi": "/esxi",
+    "adguard": "/adguard", "proxmox": "/virt-admin", "esxi": "/esxi", "hyperv": "/hyperv", "openstack": "/openstack",
     "opnsense": "/firewall", "pfsense": "/pfsense", "fortigate": "/fortigate",
     "zyxel": "/zyxel",
-    "paloalto": "/paloalto", "mikrotik": "/mikrotik",
-    "windows_dhcp": "/windows-dhcp", "dns": "/dns", "ocs": "/ocs",
+    "paloalto": "/paloalto", "checkpoint": "/checkpoint", "checkpoint_gaia": "/checkpoint",
+    "mikrotik": "/mikrotik",
+    "windows_dhcp": "/windows-dhcp", "kea_dhcp": "/kea-dhcp", "isc_dhcp": "/isc-dhcp",
+    "technitium": "/technitium-dhcp",
+    "isoinsight": "/isoinsight",
+    "rustdesk": "/rustdesk",
+    "dns": "/dns", "ocs": "/ocs",
 }
 EVENT_AGENT = "agent.offline"
 EVENT_SYSTEM = "system.health"
@@ -57,7 +62,8 @@ async def _notify(
     （實際被回報過）。郵件與外部管道沒有「當前語言」可言，仍用寫好的字串。"""
     ch = (await get_notification_matrix(session)).get(
         event, {"in_app": True, "email": False})
-    if not (ch.get("in_app") or ch.get("email")):
+    from app.services.system_config import notify_wanted
+    if not notify_wanted(ch):
         return
     admins = await _admins(session)
     if ch.get("in_app"):
@@ -68,9 +74,9 @@ async def _notify(
                                     title_key=title_key, body_key=body_key, params=params)
     if ch.get("email"):
         from app.services.notification import email_users
-        await email_users(session, [a.email for a in admins], f"[jt-ipam] {title}", body)
+        await email_users(session, [a.email for a in admins], f"[jt-ipam] {title}", body, link=link)
     from app.services.notify_channels import broadcast_channels
-    await broadcast_channels(session, subject=title, text=body)
+    await broadcast_channels(session, subject=title, text=body, link=link, severity=severity, event=event)
 
 
 async def check_integration_health(
@@ -106,7 +112,7 @@ async def check_integration_health(
                 title=f"整合同步已恢復：{inst.name}（{kind}）",
                 title_key="notif.sync_ok", body_key="notif.sync_ok_body",
                 params={"name": inst.name, "kind": kind},
-                body="這個整合又同步成功了。",
+                body="先前的同步錯誤已排除，最近一次同步成功。",
                 link=_INTEGRATION_ROUTE.get(kind, "/dashboard"), severity="info")
     await prune_missing(session, prefix="integration:", alive=alive)
     return sent
@@ -171,7 +177,7 @@ async def check_agent_health(
                 title=f"代理已恢復回報：{ag.name}（{kind}）",
                 title_key="notif.agent_back", body_key="notif.agent_back_body",
                 params={"name": ag.name, "kind": kind},
-                body="這個代理又開始回報了。",
+                body="代理已恢復回報。",
                 link="/scan-agents" if kind == "scan" else "/certificates",
                 severity="info")
     await prune_missing(session, prefix="agent:", alive=alive)
@@ -215,6 +221,6 @@ async def check_system_health(
                 title=f"系統檢查已恢復：{getattr(c, 'title', c.key)}",
                 title_key="notif.selfcheck_ok", body_key="notif.selfcheck_ok_body",
                 params={"check": str(getattr(c, "title", c.key))},
-                body="這一項又通過了。", link="/doctor", severity="info")
+                body="此檢查項目已恢復通過。", link="/doctor", severity="info")
     await prune_missing(session, prefix="system:", alive=alive)
     return sent

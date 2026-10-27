@@ -1,4 +1,5 @@
 import { apiClient } from "./client";
+import { getAccessToken } from "@/api/token";
 
 /**
  * 調查模式：一個位址的完整線索。
@@ -13,6 +14,9 @@ export async function investigate(ip: string, narrative = false, lang = "zh-TW")
     dossier: any;
     narrative: string | null;
     narrative_error: string | null;
+    narrative_error_code?: string | null;
+    narrative_error_params?: Record<string, unknown> | null;
+    model: string | null;
   };
 }
 
@@ -21,6 +25,9 @@ export interface NarrativeEvent {
   text?: string;
   elapsed?: number;
   detail?: string;
+  code?: string;         // error 事件：錯誤代碼（照語系翻）；管理員另有 params.reason
+  params?: Record<string, unknown>;
+  model?: string;        // done 事件：實際寫這段判讀的模型
 }
 
 /**
@@ -36,7 +43,7 @@ export async function narrativeStream(
   signal?: AbortSignal,
 ): Promise<void> {
   const base = import.meta.env.VITE_API_BASE_URL || "";
-  const token = localStorage.getItem("access_token");
+  const token = getAccessToken();
   const url = `${base}/api/v1/investigate/narrative/stream`
     + `?ip=${encodeURIComponent(ip)}&lang=${encodeURIComponent(lang)}`;
   const resp = await fetch(url, {

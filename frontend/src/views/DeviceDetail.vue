@@ -1,15 +1,20 @@
 <script setup lang="ts">
+import { virtTagText } from "@/utils/virt";
 import { computed, h, nextTick, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { usesLevels } from "@/utils/rackSlots";
 import {
   NCard, NSpace, NIcon, NButton, NDescriptions, NDescriptionsItem,
-  NTag, NDataTable, NSpin, NTooltip, NModal, NSelect, NPopconfirm,
+  NTag, NDataTable, NSpin, NTooltip, NModal, NSelect, NPopconfirm, NAlert, NDropdown,
   useMessage, type DataTableColumns,
 } from "naive-ui";
 import { ArrowLeft as ArrowLeftIcon } from "@iconoir/vue";
-import { DevicesIcon, RefreshIcon, EditIcon, DeleteIcon, TopologyIcon, AddressesIcon, LibreNMSIcon, WazuhIcon, VirtualizationIcon, SubnetsIcon, LinkIcon , DhcpServerIcon, OpenNewWindowIcon } from "@/icons";
+import { DevicesIcon, RefreshIcon, EditIcon, DeleteIcon, TopologyIcon, AddressesIcon, LibreNMSIcon, WazuhIcon, VirtualizationIcon, SubnetsIcon, LinkIcon , DhcpServerIcon, OpenNewWindowIcon, RustDeskIcon, ChangeImpactIcon } from "@/icons";
+import ChangeImpactWizard from "@/components/ChangeImpactWizard.vue";
+import type { ScenarioType } from "@/api/changeImpact";
+import { useChangeImpact } from "@/composables/useChangeImpact";
+import CopyButton from "@/components/CopyButton.vue";
 import { apiClient, apiErrMsg } from "@/api/client";
 import { listAddresses, updateAddress } from "@/api/addresses";
 import { listLocations, listRacks, getDeviceVlans, getDeviceLibrenms, deleteDevice, type Device, type Location, type Rack, type DeviceVLAN, type DeviceLibreNMS } from "@/api/basic";
@@ -19,6 +24,8 @@ import UptimeBar from "@/components/UptimeBar.vue";
 import RackDiagram from "@/components/RackDiagram.vue";
 import DevicePortsPanel from "@/components/DevicePortsPanel.vue";
 import DevicePowerPortsPanel from "@/components/DevicePowerPortsPanel.vue";
+import SnmpDeviceCard from "@/components/SnmpDeviceCard.vue";
+import { getSnmpTargetForDevice } from "@/api/snmp";
 import SwitchPortLabel from "@/components/SwitchPortLabel.vue";
 import { getRackDiagram } from "@/api/racks";
 type RackDiagramData = Awaited<ReturnType<typeof getRackDiagram>>;
@@ -28,16 +35,39 @@ import LiveStatusDot from "@/components/LiveStatusDot.vue";
 import type { IPAddress } from "@/types";
 import { autoSort } from "@/composables/useTableSort";
 import { fmtDateTime } from "@/utils/datetime";
+import { rustdeskOs } from "@/utils/rustdeskOs";
+import { lnmsStatusLabel, wazuhStatusLabel } from "@/utils/integrationStatus";
 import { useCustomers } from "@/composables/useCustomers";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import { useAuthStore } from "@/stores/auth";
 import { storeToRefs } from "pinia";
 import { useTablePagination } from "@/composables/useTablePagination";
+import { shortOcsAgent } from "@/utils/ocsAgent";
 const pg = useTablePagination();
 const { t, te } = useI18n();
 
 const { me } = storeToRefs(useAuthStore());
+const impact = useChangeImpact();
+void impact.load();
+const impactWizard = ref(false);
+const impactScenario = ref<ScenarioType>("device_decommission");
+// 網路設備可以評估維護、伺服器可以評估停機（虛擬化節點）；除役每種都有
+const impactMenu = computed(() => {
+  const type = device.value?.type ?? "";
+  const out = [{ key: "device_decommission", label: t("change_impact.entry_decommission") }];
+  if (["switch", "router", "firewall", "ap"].includes(type)) {
+    out.push({ key: "switch_maintenance", label: t("change_impact.entry_maintenance") });
+  }
+  if (["server", "storage", "other"].includes(type)) {
+    out.push({ key: "node_downtime", label: t("change_impact.entry_downtime") });
+  }
+  return out;
+});
+function openImpact(key: string) {
+  impactScenario.value = key as ScenarioType;
+  impactWizard.value = true;
+}
 const isAdmin = computed(() => !!me.value?.is_admin || !!me.value?.can_edit);
 // 卡片標題：icon + 文字（NCard title 支援 render function）
 /** 虛擬機狀態：平台回來的是 running / stopped 這種英文字，畫面上要說人話。
@@ -58,21 +88,33 @@ function openExternal(url: string | null | undefined) {
   if (url) window.open(url, "_blank", "noopener");
 }
 
-// 從別頁帶 ?card=<id> 進來時，捲到該卡片並短暫highlight，讓使用者知道落在哪
+// 從別頁帶 ?card=<id> 進來時，捲到該卡片並短暫highlight，讓使用者知道落在哪。
+// 卡片來自兩支各自載入的 API（LibreNMS 一支、Wazuh／OCS 一支），兩邊載完都呼叫一次；
+// 先到的那邊找不到卡片就略過，捲過一次就不再捲（不然後到的那支會把畫面又拉一次）。
 const focusedCard = ref<string>("");
+let cardFocusDone = false;
 function focusRequestedCard() {
   const card = String(route.query.card || "");
-  if (!card) return;
+  if (!card || cardFocusDone) return;
   void nextTick(() => {
     const el = document.getElementById(`card-${card}`);
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!el || cardFocusDone) return;
+    cardFocusDone = true;
+    const align = () => el.scrollIntoView({ behavior: "smooth", block: "start" });
+    align();
+    // 上方的卡片（機櫃圖、連接埠、IP 清單）可能比這張晚載入、把它往下推到畫面底部；
+    // 版面穩定後若已經不在上半部就再對齊一次
+    setTimeout(() => {
+      const top = el.getBoundingClientRect().top;
+      if (top < 0 || top > window.innerHeight * 0.4) align();
+    }, 900);
     focusedCard.value = card;
     setTimeout(() => { focusedCard.value = ""; }, 2400);
   });
 }
 const { labelFor: customerLabelFor, ensureLoaded: ensureCustomersLoaded } = useCustomers();
-const { visibleKeys: ipVisibleKeys, setVisible: setIpVisible, reset: resetIpVisible } = useColumnPrefs(
+const { visibleKeys: ipVisibleKeys, setVisible: setIpVisible, reset: resetIpVisible,
+  order: ipColOrder, setOrder: setIpColOrder, orderColumns: orderIpColumns } = useColumnPrefs(
   "device_detail_ips",
   ["live", "ip", "hostname", "state", "mac", "mac_vendor", "switch_port", "description", "last_seen"],
   ["live", "ip", "hostname", "state", "mac", "mac_vendor", "switch_port", "last_seen"],
@@ -172,7 +214,69 @@ async function doLinkIp() {
 }
 const vlans = ref<DeviceVLAN[]>([]);
 const lnms = ref<DeviceLibreNMS | null>(null);
-const integrations = ref<{ wazuh: any; vm: any; ocs: any } | null>(null);
+const hasSnmpTarget = ref(false);   // 這台有 SNMP 收集目標才顯示 SNMP 卡片
+const integrations = ref<{ wazuh: any; vm: any; ocs: any; rustdesk?: any } | null>(null);
+
+// OCS 硬體摘要（後端 services/ocs.hardware_summary）。記憶體與顯示記憶體是 MiB；
+// 磁碟照 OCS 回報的 MB（廠商標示的容量是十進位，所以用 1000 進位比較對得上）。
+const ocsHw = computed<any | null>(() => integrations.value?.ocs?.hw ?? null);
+const ocsBoard = computed(() => {
+  const b = ocsHw.value?.board;
+  return b ? [b.vendor, b.model].filter(Boolean).join(" ") : "";
+});
+const ocsBios = computed(() => {
+  const b = ocsHw.value?.bios;
+  if (!b) return "";
+  const main = [b.vendor, b.version].filter(Boolean).join(" ");
+  return b.date ? `${main} (${b.date})`.trim() : main;
+});
+function fmtMemMB(mb: number): string {
+  // 四捨五入到一位小數、去掉 .0：16380 MiB（顯示卡回報值）→ 16 GB，128564 → 125.6 GB
+  const gb = Math.round((mb / 1024) * 10) / 10;
+  return gb >= 1 ? `${gb} GB` : `${mb} MB`;
+}
+function fmtDiskMB(mb: number): string {
+  if (mb >= 1_000_000) return `${(mb / 1_000_000).toFixed(2)} TB`;
+  if (mb >= 1000) return `${Math.round(mb / 1000)} GB`;
+  return `${mb} MB`;
+}
+function cpuLine(c: { model: string; cores?: number | null; threads?: number | null; mhz?: number | null; count?: number }): string {
+  const parts = [(c.count ?? 1) > 1 ? `${c.count} × ${c.model}` : c.model];
+  if (c.cores) parts.push(t("device_detail.ocs_cpu_cores", { cores: c.cores, threads: c.threads ?? c.cores }));
+  if (c.mhz) parts.push(`${c.mhz} MHz`);
+  return parts.join(" · ");
+}
+// 模組寫法：「4 × DDR5-5600」「1 × 16 GB DDR4-2133」；型別不明時「1 × 16 GB · 2133 MT/s」
+function memLine(m: { size_mb?: number | null; type?: string | null; speed?: number | null; count?: number }): string {
+  const kind = m.type ? (m.speed ? `${m.type}-${m.speed}` : m.type) : (m.speed ? `${m.speed} MT/s` : "");
+  const size = m.size_mb ? fmtMemMB(m.size_mb) : "";
+  const desc = size && kind ? (m.type ? `${size} ${kind}` : `${size} · ${kind}`) : (size || kind);
+  return `${m.count ?? 1} × ${desc}`;
+}
+// 實裝容量：每條都有大小才加總（Linux 代理遇到新版 dmidecode 的「GiB」會回 0，那時不猜）
+const memInstalledMB = computed<number | null>(() => {
+  const mods = ocsHw.value?.memory?.modules ?? [];
+  if (!mods.length || mods.some((m: any) => !m.size_mb)) return null;
+  return mods.reduce((n: number, m: any) => n + m.size_mb * (m.count ?? 1), 0);
+});
+// 同型號同容量的磁碟合併成一行（實機一台 5 顆一樣的 SSD 列了 5 行），與處理器、記憶體一致
+const ocsDisks = computed<{ model: string; size_mb: number; count: number }[]>(() => {
+  const out: { model: string; size_mb: number; count: number }[] = [];
+  for (const d of ocsHw.value?.disks ?? []) {
+    const same = out.find((o) => o.model === d.model && o.size_mb === d.size_mb);
+    if (same) same.count += 1;
+    else out.push({ model: d.model, size_mb: d.size_mb, count: 1 });
+  }
+  return out;
+});
+const memSizeUnknown = computed(() => (ocsHw.value?.memory?.modules ?? []).some((m: any) => !m.size_mb));
+// 可用量（作業系統回報、扣掉保留區）：沒有實裝容量時一定講；有的話差超過 2% 才補充
+const memUsableShown = computed(() => {
+  const usable = ocsHw.value?.memory?.total_mb;
+  if (!usable) return false;
+  const inst = memInstalledMB.value;
+  return !inst || Math.abs(inst - usable) / inst > 0.02;
+});
 /** SCA 分數的顏色：低分＝很多項目不符基準。門檻取整數十位，避免給人「剛好及格」的錯覺。 */
 function scaType(score: number): "error" | "warning" | "success" {
   if (score < 50) return "error";
@@ -211,10 +315,15 @@ async function load(id: string) {
     addresses.value = addrs.items;
     getDeviceRelations(id).then((c) => { relations.value = c; }).catch(() => { relations.value = []; });
     getDeviceVlans(id).then((v) => { vlans.value = v; }).catch(() => { vlans.value = []; });
-    getDeviceLibrenms(id).then((l) => { lnms.value = l; }).catch(() => { lnms.value = null; });
+    hasSnmpTarget.value = false;
+    if (isAdmin.value) {
+      getSnmpTargetForDevice(id).then((tg) => { hasSnmpTarget.value = !!tg; }).catch(() => { hasSnmpTarget.value = false; });
+    }
+    cardFocusDone = false;
+    getDeviceLibrenms(id).then((l) => { lnms.value = l; focusRequestedCard(); }).catch(() => { lnms.value = null; });
     apiClient.get(`/api/v1/devices/${id}/integrations`).then((r) => {
       integrations.value = r.data;
-      focusRequestedCard();   // 從 IP 頁「最後出現（OCS 盤點）」點進來時捲到該卡片
+      focusRequestedCard();   // 從 IP 頁「各來源最後出現」點 LibreNMS／Wazuh／OCS 的時間進來時捲到該卡片
     }).catch(() => { integrations.value = null; });
 
     const tasks: Promise<unknown>[] = [];
@@ -257,6 +366,7 @@ function typeColor(type: string): "success" | "info" | "warning" | "error" | "de
     patch_panel: "default",
     pdu: "warning",
     ups: "warning",
+    workstation: "info",
     other: "default",
   } as Record<string, "success" | "info" | "warning" | "error" | "default">)[type] ?? "default";
 }
@@ -270,16 +380,9 @@ function stateTag(state: string) {
   return h(NTag, { type: map[state] ?? "default", size: "small" }, () => label);
 }
 
-// LibreNMS device status：1=up / 0=down（原始值對使用者沒意義，翻成上線/離線）
-function lnmsStatusLabel(s: unknown): string {
-  if (s == null || s === "") return "—";
-  const v = String(s);
-  if (v === "1" || v.toLowerCase() === "up") return t("topology.status_up");
-  if (v === "0" || v.toLowerCase() === "down") return t("topology.status_down");
-  return v;
-}
 function lastSeen(r: IPAddress): string {
-  const arr = [r.last_seen_scanner, r.last_seen_librenms, r.last_seen_dns,
+  // last_seen_dns 不算（AdGuard 設定裡有＝每輪都是現在，見 useLivenessSettings）
+  const arr = [r.last_seen_scanner, r.last_seen_librenms,
     (r as { last_seen_arp?: string | null }).last_seen_arp].filter(Boolean) as string[];
   if (!arr.length) return "—";
   return fmtDateTime(arr.sort().reverse()[0]);   // 轉本地時區（原本直接顯示 UTC）
@@ -315,7 +418,7 @@ const allIpColumns = computed<DataTableColumns<IPAddress>>(() => autoSort([
 ]));
 
 const ipColumns = computed<DataTableColumns<IPAddress>>(() =>
-  allIpColumns.value.filter((c: any) => ipVisibleKeys.value.includes(c.key)),
+  orderIpColumns(allIpColumns.value.filter((c: any) => ipVisibleKeys.value.includes(c.key))),
 );
 
 function openRow(row: IPAddress) {
@@ -355,7 +458,7 @@ onMounted(() => {
             <!-- 虛實：由虛擬化整合對應（名稱／IP／MAC 對到 VM）。對不到不標——不知道≠實體機 -->
             <n-tooltip v-if="(device as any).virt_vm" trigger="hover">
               <template #trigger>
-                <n-tag type="info" size="small">{{ t("devices.vm_tag") }}</n-tag>
+                <n-tag type="info" size="small">{{ virtTagText((device as any).virt_vm, t) }}</n-tag>
               </template>
               {{ (device as any).virt_vm.vm }} @ {{ (device as any).virt_vm.cluster || (device as any).virt_vm.platform }}
             </n-tooltip>
@@ -375,6 +478,15 @@ onMounted(() => {
         </template>
 <!-- 控制元件移到卡片內文最上方（標題列不放控制元件） -->
         <n-space align="center" justify="end" style="margin-bottom: 10px">
+          <!-- 變更評估：除役（拆之前看還有誰引用它）；網路設備多「維護」、伺服器多「停機」（M2：誰跟著停、服務還剩不剩依賴）。
+               功能開啟才顯示，後端會再檢查權限 -->
+          <n-dropdown v-if="impact.settings.value.enabled && me?.can_edit !== false" trigger="click"
+                      :options="impactMenu" @select="openImpact">
+            <n-button size="small" data-testid="device-change-impact-btn">
+              <template #icon><n-icon><ChangeImpactIcon /></n-icon></template>
+              {{ t("change_impact.entry_assess") }}
+            </n-button>
+          </n-dropdown>
           <n-button type="primary" size="small" @click="editShow = true">
             <template #icon><n-icon><EditIcon /></n-icon></template>
             {{ t("common.edit") }}
@@ -463,7 +575,8 @@ onMounted(() => {
             {{ t("devices.link_ip") }}
           </n-button>
           <ColumnPicker size="small" :all="ipColumnPickerItems" :visible="ipVisibleKeys"
-                        @update:visible="setIpVisible" @reset="resetIpVisible" />
+                        @update:visible="setIpVisible" @reset="resetIpVisible"
+                        :order="ipColOrder" @update:order="setIpColOrder" />
           <n-button size="small" @click="load(device.id)" :loading="loading">
             <template #icon><n-icon><RefreshIcon /></n-icon></template>
             {{ t("common.refresh") }}
@@ -487,22 +600,17 @@ onMounted(() => {
         </n-data-table>
       </n-card>
 
-      <n-modal v-model:show="showLinkIp" preset="card" :title="t('devices.link_ip')" style="width: 480px">
-        <n-space vertical :size="12">
-          <span style="font-size: 13px; opacity: .75">{{ t("devices.link_ip_hint") }}</span>
-          <n-select v-model:value="linkIpId" :options="linkOptions" filterable clearable
-                    remote :loading="linkLoading" @search="onLinkSearch"
-                    :placeholder="t('devices.link_ip_ph')" />
-          <n-space justify="end">
-            <n-button @click="showLinkIp = false">{{ t("common.cancel") }}</n-button>
-            <n-button type="success" :loading="linking" :disabled="!linkIpId" @click="doLinkIp">
-              {{ t("common.ok") }}
-            </n-button>
-          </n-space>
-        </n-space>
-      </n-modal>
 
-      <n-card v-if="device && lnms" :title="() => cardHead(LibreNMSIcon, 'LibreNMS')">
+      <!-- SNMP 收集（限管理員）：只有這台設了收集目標才顯示（狀態與編輯／測試／立即收集）；
+           新增收集目標到「管理 → 外部系統整合 → SNMP」（使用者 2026-10-16）。編輯表單與 SNMP 頁是同一個元件 -->
+      <SnmpDeviceCard v-if="device && isAdmin && hasSnmpTarget" id="card-snmp"
+                      :class="{ 'card-focus': focusedCard === 'snmp' }"
+                      :device-id="device.id" :device-name="device.name" :device-type="device.type"
+                      @loaded="focusRequestedCard" />
+
+      <n-card v-if="device && lnms" id="card-librenms"
+              :class="{ 'card-focus': focusedCard === 'librenms' }"
+              :title="() => cardHead(LibreNMSIcon, 'LibreNMS')">
         <template v-if="lnms.url" #header-extra>
           <n-button size="small" quaternary type="primary" @click="openExternal(lnms.url)">
             <template #icon><n-icon><OpenNewWindowIcon /></n-icon></template>
@@ -516,14 +624,16 @@ onMounted(() => {
           <n-descriptions-item :label="t('device_detail.hardware')">{{ lnms.hardware ?? "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('cols.version')">{{ lnms.version ?? "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('devices.serial')">{{ lnms.serial ?? "—" }}</n-descriptions-item>
-          <n-descriptions-item :label="t('common.status')">{{ lnmsStatusLabel(lnms.status) }}</n-descriptions-item>
+          <n-descriptions-item :label="t('common.status')">{{ lnmsStatusLabel(t, lnms.status) }}</n-descriptions-item>
           <n-descriptions-item :label="t('device_detail.primary_ip')">{{ lnms.primary_ip ?? "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('scanAgentHelp.col_last_seen')">{{ fmtDateTime(lnms.last_seen_at) }}</n-descriptions-item>
         </n-descriptions>
       </n-card>
 
       <!-- Wazuh agent（依裝置 IP 比對）-->
-      <n-card v-if="integrations && integrations.wazuh" :title="() => cardHead(WazuhIcon, 'Wazuh')" style="margin-top: 16px">
+      <n-card v-if="integrations && integrations.wazuh" id="card-wazuh"
+              :class="{ 'card-focus': focusedCard === 'wazuh' }"
+              :title="() => cardHead(WazuhIcon, 'Wazuh')" style="margin-top: 16px">
         <template v-if="integrations.wazuh.url" #header-extra>
           <n-button size="small" quaternary type="primary" @click="openExternal(integrations.wazuh.url)">
             <template #icon><n-icon><OpenNewWindowIcon /></n-icon></template>
@@ -533,8 +643,9 @@ onMounted(() => {
         <n-descriptions bordered :column="2" size="small" label-placement="left"
                         :label-style="{ whiteSpace: 'nowrap' }">
           <n-descriptions-item :label="t('device_detail.wz_agent')">{{ integrations.wazuh.name ?? "—" }} ({{ integrations.wazuh.agent_id }})</n-descriptions-item>
-          <n-descriptions-item :label="t('common.status')">{{ integrations.wazuh.status ?? "—" }}</n-descriptions-item>
-          <n-descriptions-item label="OS">{{ integrations.wazuh.os_platform ?? "—" }} {{ integrations.wazuh.os_version ?? "" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('common.status')">{{ wazuhStatusLabel(t, integrations.wazuh.status) }}</n-descriptions-item>
+          <!-- 產品名稱優先（Windows 11 的核心版本號仍是 10.0，只看平台＋版本會被當成 Windows 10） -->
+          <n-descriptions-item label="OS">{{ integrations.wazuh.os || [integrations.wazuh.os_platform, integrations.wazuh.os_version].filter(Boolean).join(" ") || "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('device_detail.wz_agent_version')">{{ integrations.wazuh.agent_version ?? "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('device_detail.wz_group')">{{ integrations.wazuh.group ?? "—" }}</n-descriptions-item>
           <!-- 資安體質用 SCA（資安組態評估）呈現。
@@ -618,11 +729,59 @@ onMounted(() => {
           <n-descriptions-item label="OS">{{ integrations.ocs.os ?? "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('device_detail.ocs_last_inventory')">{{ fmtDateTime(integrations.ocs.last_inventory) }}</n-descriptions-item>
           <n-descriptions-item :label="t('device_detail.ocs_tag')">{{ integrations.ocs.tag ?? "—" }}</n-descriptions-item>
-          <n-descriptions-item :label="t('device_detail.ocs_agent')">{{ integrations.ocs.agent ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('device_detail.ocs_agent')">
+            <span v-if="integrations.ocs.agent" :title="integrations.ocs.agent">{{ shortOcsAgent(integrations.ocs.agent) }}</span>
+            <template v-else>—</template>
+          </n-descriptions-item>
+          <!-- 製造商／型號／序號是 OCS 自己回報的，不是裝置欄位（那可能是別的來源寫的） -->
           <n-descriptions-item :label="t('device_detail.ocs_vendor')">{{ integrations.ocs.vendor ?? "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('device_detail.ocs_model')">{{ integrations.ocs.model ?? "—" }}</n-descriptions-item>
-          <n-descriptions-item :label="t('device_detail.ocs_serial')">{{ integrations.ocs.serial ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('device_detail.ocs_serial')">
+            <template v-if="integrations.ocs.serial">
+              {{ integrations.ocs.serial }}<span v-if="integrations.ocs.serial_from_board" class="ocs-sub"
+                :title="t('device_detail.ocs_serial_board_tip')">{{ t("device_detail.ocs_serial_board") }}</span>
+            </template>
+            <template v-else>—</template>
+          </n-descriptions-item>
+          <n-descriptions-item :label="t('device_detail.ocs_chassis')">{{ ocsHw?.system?.chassis ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('device_detail.ocs_board')">{{ ocsBoard || "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('device_detail.ocs_bios')">{{ ocsBios || "—" }}</n-descriptions-item>
         </n-descriptions>
+        <template v-if="ocsHw">
+          <div class="ocs-sec-h">{{ t("device_detail.ocs_components") }}</div>
+          <n-descriptions bordered :column="1" size="small" label-placement="left"
+                          :label-style="{ whiteSpace: 'nowrap', width: '1%' }" class="ocs-parts">
+            <n-descriptions-item :label="t('device_detail.ocs_cpu')">
+              <div v-for="(c, i) in ocsHw.cpus" :key="i">{{ cpuLine(c) }}</div>
+              <template v-if="!ocsHw.cpus?.length">—</template>
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('device_detail.ocs_memory')">
+              <template v-if="ocsHw.memory?.total_mb || ocsHw.memory?.modules?.length">
+                <!-- 實裝容量只在每條都知道大小時才算；否則只講作業系統回報的可用量，不冒充實裝 -->
+                <div>
+                  <span v-if="memInstalledMB">{{ fmtMemMB(memInstalledMB) }}</span>
+                  <span v-if="memUsableShown" :class="{ 'ocs-sub': memInstalledMB }">
+                    {{ t("device_detail.ocs_mem_usable", { v: fmtMemMB(ocsHw.memory.total_mb) }) }}</span>
+                </div>
+                <div v-if="ocsHw.memory.modules?.length" class="ocs-sub-line">
+                  {{ ocsHw.memory.modules.map(memLine).join("、") }}<span v-if="memSizeUnknown"
+                    :title="t('device_detail.ocs_mem_size_unknown_tip')">{{ t("device_detail.ocs_mem_size_unknown") }}</span>
+                </div>
+              </template>
+              <template v-else>—</template>
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('device_detail.ocs_disks')">
+              <div v-for="(d, i) in ocsDisks" :key="i">{{ d.count > 1 ? `${d.count} × ${d.model}` : d.model }}
+                <span class="ocs-sub">{{ fmtDiskMB(d.size_mb) }}</span></div>
+              <template v-if="!ocsDisks.length">—</template>
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('device_detail.ocs_gpus')">
+              <div v-for="(g, i) in ocsHw.gpus" :key="i">{{ g.name }}<span v-if="g.memory_mb" class="ocs-sub">{{ fmtMemMB(g.memory_mb) }}</span></div>
+              <template v-if="!ocsHw.gpus?.length">—</template>
+            </n-descriptions-item>
+          </n-descriptions>
+        </template>
+        <div v-else class="int-hint" style="margin-top: 8px">{{ t("device_detail.ocs_hw_pending") }}</div>
         <div v-if="integrations.ocs.notes && integrations.ocs.notes.length" class="ocs-notes">
           <div class="ocs-notes-h">{{ t("device_detail.ocs_notes") }}</div>
           <div v-for="(n, i) in integrations.ocs.notes" :key="i" class="ocs-note">
@@ -631,6 +790,49 @@ onMounted(() => {
             <span class="ocs-note-text">{{ n.comment }}</span>
           </div>
         </div>
+      </n-card>
+
+      <!-- RustDesk：客戶端裝在這台機器上（跟 Wazuh／OCS 代理同一類）。連線按鈕在 IP 頁（逐 IP 開關＋權限），這裡連回那個 IP -->
+      <n-card v-if="integrations && integrations.rustdesk" id="card-rustdesk"
+              :class="{ 'card-focus': focusedCard === 'rustdesk' }"
+              :title="() => cardHead(RustDeskIcon, 'RustDesk')" style="margin-top: 16px" data-testid="device-rustdesk-card">
+        <template #header-extra>
+          <n-button size="small" quaternary type="primary"
+                    @click="router.push({ name: 'address-detail', params: { id: integrations.rustdesk.address_id } })">
+            <template #icon><n-icon><AddressesIcon /></n-icon></template>
+            {{ integrations.rustdesk.ip }}
+          </n-button>
+        </template>
+        <n-alert v-if="integrations.rustdesk.key_problem" type="error" :show-icon="true" style="margin-bottom: 8px"
+                 data-testid="device-rustdesk-key-problem">
+          {{ t(integrations.rustdesk.key_problem.scope === "hbbs" ? "rustdesk.key_problem_hint_hbbs" : "rustdesk.key_problem_hint",
+               { at: fmtDateTime(integrations.rustdesk.key_problem.at), n: integrations.rustdesk.key_problem.count }) }}
+          {{ t("rustdesk.key_problem_fix") }}
+        </n-alert>
+        <n-descriptions bordered :column="2" size="small" label-placement="left"
+                        :label-style="{ whiteSpace: 'nowrap' }">
+          <n-descriptions-item :label="t('rustdesk.id')">
+            <span style="font-family: var(--jt-mono, monospace)">{{ integrations.rustdesk.id }}</span>
+            <CopyButton :text="integrations.rustdesk.id" />
+          </n-descriptions-item>
+          <n-descriptions-item :label="t('rustdesk.server_pick')">{{ integrations.rustdesk.server_name ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('rustdesk.col_username')">{{ integrations.rustdesk.username ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('rustdesk.col_os')">
+            {{ integrations.rustdesk.os ? rustdeskOs(integrations.rustdesk.os)[0] : "—" }}
+          </n-descriptions-item>
+          <n-descriptions-item :label="t('rustdesk.col_client_version')">{{ integrations.rustdesk.version ?? "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('rustdesk.col_last_heartbeat')">
+            {{ fmtDateTime(integrations.rustdesk.last_heartbeat_at || integrations.rustdesk.last_online_at) }}
+          </n-descriptions-item>
+          <n-descriptions-item :label="t('rustdesk.col_evidence')" :span="2">
+            <n-space v-if="integrations.rustdesk.evidence?.length" :size="4">
+              <n-tag v-for="e in integrations.rustdesk.evidence" :key="e" size="tiny" type="success" :bordered="false">
+                {{ t(`rustdesk.ev_${e}`) }}
+              </n-tag>
+            </n-space>
+            <template v-else>—</template>
+          </n-descriptions-item>
+        </n-descriptions>
       </n-card>
 
       <n-card v-if="device && vlans.length" :title="() => cardHead(SubnetsIcon, `VLAN (${vlans.length})`)">
@@ -644,6 +846,20 @@ onMounted(() => {
     </n-space>
   </n-spin>
 
+  <n-modal v-model:show="showLinkIp" preset="card" :title="t('devices.link_ip')" style="width: 480px">
+    <n-space vertical :size="12">
+      <span style="font-size: 13px; opacity: .75">{{ t("devices.link_ip_hint") }}</span>
+      <n-select v-model:value="linkIpId" :options="linkOptions" filterable clearable
+                remote :loading="linkLoading" @search="onLinkSearch"
+                :placeholder="t('devices.link_ip_ph')" />
+      <n-space justify="end">
+        <n-button @click="showLinkIp = false">{{ t("common.cancel") }}</n-button>
+        <n-button type="success" :loading="linking" :disabled="!linkIpId" @click="doLinkIp">
+          {{ t("common.ok") }}
+        </n-button>
+      </n-space>
+    </n-space>
+  </n-modal>
   <IPAddressEditModal
     v-model:show="modalShow"
     :address="selected"
@@ -652,10 +868,14 @@ onMounted(() => {
   />
   <DeviceEditModal v-model:show="editShow" :device="device"
                    @saved="() => load(String(route.params.id))" />
+  <ChangeImpactWizard v-if="device && impact.settings.value.enabled" v-model:show="impactWizard"
+                      :preset-scenario="impactScenario" :preset-target-id="device.id" :preset-label="device.name" />
 </template>
 
 <style scoped>
 /* 從別頁帶 ?card= 進來時短暫highlight，讓使用者知道落點在哪 */
+/* ?card= 捲到的卡片：頂端留出固定標題列的高度 */
+[id^="card-"] { scroll-margin-top: 72px; }
 .card-focus {
   box-shadow: 0 0 0 2px var(--n-primary-color, #18a058);
   transition: box-shadow .35s ease;
@@ -665,6 +885,9 @@ onMounted(() => {
   opacity: .7;
   margin-bottom: 10px;
 }
+.ocs-sub { opacity: .65; margin-left: 8px; }
+.ocs-sub-line { opacity: .65; font-size: 12px; }
+.ocs-sec-h { font-weight: 600; margin: 14px 0 6px; font-size: 13px; }
 .ocs-notes {
   margin-top: 12px;
 }

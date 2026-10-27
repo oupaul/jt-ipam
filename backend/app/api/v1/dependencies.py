@@ -65,6 +65,10 @@ async def get_current_user(
         now = datetime.now(UTC)
         if token.expires_at <= now:
             raise HTTPException(status_code=401, detail="Token expired")
+        # 每把權杖的限流（rate_limit_api_token）：定義了好幾版卻從沒套用（2026-10-09 合規核對）。
+        # 與 MCP 共用同一個 bucket（mcp/server._limit），同一把權杖兩邊加總
+        from app.core.rate_limit import limit_api_token
+        await limit_api_token(f"api_token:{token.id}")
         # 更新 last_used（不阻塞請求）
         token.last_used_at = now
         if request.client:
@@ -77,6 +81,7 @@ async def get_current_user(
         # scope 檢驗：唯讀 token 不得用會改資料的 HTTP 方法
         enforce_method_scope(token.scopes, request.method)
         request.state.api_token = token
+        request.state.user_id = user.id        # 稽核的操作者（見下方 JWT 分支的說明）
         return user
 
     # ── JWT ──
@@ -96,6 +101,19 @@ async def get_current_user(
     user = await session.get(User, user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Account inactive")
+    # 伺服器端撤銷（2026-10-09）：強制登出／停用／管理員重設密碼之前簽發的權杖一律無效；
+    # 帶 sid 的權杖要那個工作階段還在（登出、撤銷之後立即失效，不必等 15 分鐘到期）
+    from app.services.sessions import session_alive, token_issued_too_early
+    if token_issued_too_early(user, payload.get("iat")):
+        raise HTTPException(status_code=401, detail="Session revoked")
+    sid = payload.get("sid")
+    if sid is not None:
+        if not await session_alive(session, user, sid):
+            raise HTTPException(status_code=401, detail="Session revoked")
+        request.state.session_id = sid
+    # 稽核的操作者：使用者管理、OPNsense、Wazuh 等 20 處稽核從這裡讀 —— 以前沒有人設定它，
+    # 那些紀錄的操作者一律是空的（正式機 45 筆，含建立帳號、改權限；2026-09-30 發現）
+    request.state.user_id = user.id
     return user
 
 
