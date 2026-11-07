@@ -1,7 +1,9 @@
 """寫入時引用其他物件的權限守門（2026-10-07 全站 RBAC 稽核）。
 
 端點本身只檢查「對這個物件有沒有寫入權」，但請求內容可以指向別的物件：
-- 掃描代理、主控台出口、跳板：代理會照這個設定掃描、替人開主控台到別的網段 → 只有管理員能指派
+- 主控台出口、跳板：替人開主控台到別的網段 → 只有管理員能指派
+- 掃描代理：運維管理員（is_ops_admin）也可以指派（本 fork 的決定：工程師要能自己派代理，
+  不必每次找管理員）；一般帳號仍然不行
 - 子網路的區段／單位、區段的單位、IP 的單位是權限繼承的上層：搬過去可能換來更高的權限，
   或把資料推進／移出別的單位的可見範圍 → 對物件本身要 admin、對目的地要寫入權
 - 上層子網路、上層區段、IP 的裝置只影響顯示或關聯 → 至少要看得到（看不到跟不存在一樣回 404）
@@ -20,6 +22,7 @@ from app.core.ui_error import ui_detail
 from app.services.permission import get_object_permission, has_permission
 
 INFRA_FIELDS = ("scan_agent_id", "console_agent_id", "jump_host_id")
+OPS_ADMIN_FIELD = "scan_agent_id"      # INFRA_FIELDS 裡運維管理員也可以改的那一個
 MONITORING_FIELDS = ("anomaly_enabled", "ai_audit_enabled")
 
 
@@ -31,10 +34,18 @@ def _changed(changes: dict[str, Any], current: Any, field: str, default: Any) ->
 
 
 def require_admin_for_infra(user: Any, changes: dict[str, Any], current: Any = None) -> None:
-    """表單每次都會送全部欄位：只有值真的變了才擋（建立時跟預設值比）。"""
+    """表單每次都會送全部欄位：只有值真的變了才擋（建立時跟預設值比）。
+
+    運維管理員可以改掃描代理；主控台出口與跳板仍只有管理員。
+    """
     if getattr(user, "is_admin", False):
         return
-    if any(_changed(changes, current, f, None) for f in INFRA_FIELDS):
+    ops = bool(getattr(user, "is_ops_admin", False))
+    guarded = tuple(f for f in INFRA_FIELDS if not (ops and f == OPS_ADMIN_FIELD))
+    if any(_changed(changes, current, f, None) for f in guarded):
+        if ops:
+            raise HTTPException(status_code=403, detail=ui_detail(
+                "console_egress_admin_only", "Only admins can assign console egress or jump hosts"))
         raise HTTPException(status_code=403, detail=ui_detail(
             "infra_assignment_admin_only", "Only admins can assign scan agents, console egress or jump hosts"))
 

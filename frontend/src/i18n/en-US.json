@@ -3889,6 +3889,7 @@
     "impact_new_ip_unmanaged": "The new IP {address} is not in any managed subnet",
     "impact_target_outside_subnet": "{address} is not in subnet {subnet}",
     "infra_assignment_admin_only": "Only admins can assign scan agents, console egress or jump hosts",
+    "console_egress_admin_only": "Only admins can assign console egress or jump hosts",
     "subnet_monitoring_admin_only": "Only admins can turn off anomaly detection or AI audit",
     "move_needs_admin": "Moving to another section or customer needs admin permission on this object and edit permission on the destination",
     "parent_write_required": "You need edit permission on the chosen customer",

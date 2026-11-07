@@ -4049,7 +4049,8 @@
     "openstack_not_found": "OpenStack 接続が見つかりません（削除された可能性があります）。",
     "cubecos_auth_failed": "CubeCOS 管理画面がログインを拒否しました（またはログインページに転送されました）。",
     "cubecos_unreachable": "CubeCOS 管理画面に接続できません：{reason}",
-    "cubecos_bad_response": "CubeCOS の応答形式を認識できません（CubeCOS URL を確認してください）。"
+    "cubecos_bad_response": "CubeCOS の応答形式を認識できません（CubeCOS URL を確認してください）。",
+    "console_egress_admin_only": "コンソールの出口と踏み台を割り当てられるのは管理者だけです"
   },
   "adguard_admin": {
     "scope_subnets": "対象サブネットを限定",

@@ -4049,7 +4049,8 @@
     "openstack_not_found": "找不到這個 OpenStack 連線（可能已被刪除）。",
     "cubecos_auth_failed": "CubeCOS 管理介面拒絕登入（或被導向登入頁）。",
     "cubecos_unreachable": "連不上 CubeCOS 管理介面：{reason}",
-    "cubecos_bad_response": "CubeCOS 回應的格式無法辨識（請確認 CubeCOS 網址）。"
+    "cubecos_bad_response": "CubeCOS 回應的格式無法辨識（請確認 CubeCOS 網址）。",
+    "console_egress_admin_only": "主控台出口與跳板只有管理員可以指派"
   },
   "adguard_admin": {
     "scope_subnets": "限定子網路範圍",

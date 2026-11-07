@@ -89,6 +89,42 @@ async def test_only_admins_assign_agents_and_jump_hosts(client, db_session) -> N
     assert r.status_code == 201, r.text
 
 
+def test_ops_admins_may_assign_scan_agents_but_not_console_egress() -> None:
+    """運維管理員（工程師）可以自己指派掃描代理；主控台出口與跳板仍只有管理員。"""
+    from types import SimpleNamespace
+
+    import pytest
+    from app.api.v1.write_guards import require_admin_for_infra
+    from fastapi import HTTPException
+
+    rid = str(uuid.uuid4())
+    current = SimpleNamespace(scan_agent_id=None, console_agent_id=None, jump_host_id=None)
+    admin = SimpleNamespace(is_admin=True, is_ops_admin=False)
+    ops = SimpleNamespace(is_admin=False, is_ops_admin=True)
+    plain = SimpleNamespace(is_admin=False, is_ops_admin=False)
+
+    require_admin_for_infra(admin, {"scan_agent_id": rid, "jump_host_id": rid}, current)
+    require_admin_for_infra(ops, {"scan_agent_id": rid}, current)
+    require_admin_for_infra(ops, {"scan_agent_id": rid}, None)          # 建立時
+
+    for field in ("console_agent_id", "jump_host_id"):
+        with pytest.raises(HTTPException) as e:
+            require_admin_for_infra(ops, {field: rid}, current)
+        assert e.value.status_code == 403, field
+        assert e.value.detail["code"] == "console_egress_admin_only", field
+    # 同一次送出裡夾帶了主控台出口，整筆擋下（不能藉掃描代理順便帶過去）
+    with pytest.raises(HTTPException):
+        require_admin_for_infra(ops, {"scan_agent_id": rid, "console_agent_id": rid}, current)
+
+    # 一般帳號：三個欄位都不行，沿用原本的錯誤碼
+    for field in ("scan_agent_id", "console_agent_id", "jump_host_id"):
+        with pytest.raises(HTTPException) as e:
+            require_admin_for_infra(plain, {field: rid}, current)
+        assert e.value.detail["code"] == "infra_assignment_admin_only", field
+    # 表單每次都送全部欄位：值沒變就放行
+    require_admin_for_infra(plain, {"scan_agent_id": None, "jump_host_id": None}, current)
+
+
 async def test_only_admins_turn_off_anomaly_or_ai_audit(client, db_session) -> None:
     a, _b, _c, sub, _ip = await _base(db_session)
     u = await _user(db_session)
