@@ -51,6 +51,30 @@ wait_until_serving() {
     return 1
 }
 
+# 本機 nginx「前門」的位址：有人聽 443 就走 https，只有 80 有人聽就走 http。
+# 為什麼：預設架構是本機 nginx 在 443 終結 TLS；但「外部反向代理」架構（瀏覽器 → 前面的 HTTPS
+# 代理 → 本機 nginx :80，見 deploy/nginx/jt-ipam-external-proxy.conf）本機根本不開 443，
+# 拿 https://127.0.0.1 檢查永遠連不上，會把成功的升級誤判成 FATAL（2026-11-07 實機）。
+# 兩個埠都沒人聽時維持 https —— nginx 真的沒起來，要照樣被報出來，不能因此放行。
+# JT_IPAM_LISTEN_FILE 只給測試用（取代 `ss -ltn` 的輸出）。
+local_front_url() {
+    local listen addrs
+    if [[ -n "${JT_IPAM_LISTEN_FILE:-}" ]]; then
+        listen="$(cat "$JT_IPAM_LISTEN_FILE" 2>/dev/null || true)"
+    else
+        listen="$(ss -ltn 2>/dev/null || true)"
+    fi
+    # 先取出本機位址欄再 grep：`awk | grep -q` 在 pipefail 下，grep 提早結束會讓管線回非零
+    addrs="$(awk '{print $4}' <<<"$listen")"
+    if grep -qE '[:.]443$' <<<"$addrs"; then
+        echo "https://127.0.0.1"
+    elif grep -qE '[:.]80$' <<<"$addrs"; then
+        echo "http://127.0.0.1"
+    else
+        echo "https://127.0.0.1"
+    fi
+}
+
 DOCS_BASE="${JT_IPAM_DOCS_BASE:-https://jasoncheng7115.github.io/jt-ipam}"
 troubleshooting_url() {
     case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
@@ -2049,14 +2073,24 @@ cmd_doctor() {
         # proves nginx is alive and nothing more. Use a route that must be proxied;
         # 401 (unauthenticated) is a perfectly good "the backend answered", while a
         # dead backend gives 502.
-        local code
+        local code front
+        front="$(local_front_url)"
         code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 \
-                 "https://127.0.0.1/api/v1/system/version" 2>/dev/null || echo 000)"
+                 "${front}/api/v1/system/version" 2>/dev/null || echo 000)"
         if [[ "$code" =~ ^[1-4] ]]; then
-            _ok "reachable end to end over HTTPS (nginx -> backend, HTTP $code)"
+            if [[ "$front" == http://* ]]; then
+                _ok "reachable end to end over HTTP :80 (external reverse proxy mode: TLS ends on the front proxy; nginx -> backend, HTTP $code)"
+            else
+                _ok "reachable end to end over HTTPS (nginx -> backend, HTTP $code)"
+            fi
         elif [[ "$code" == "000" ]]; then
-            _bad "nothing answers HTTPS on port 443 -- this is what users hit" \
-                 "sudo nginx -t && sudo systemctl restart nginx"
+            if [[ "$front" == http://* ]]; then
+                _bad "nothing answers on the local nginx (:80) -- the front proxy forwards to it" \
+                     "sudo nginx -t && sudo systemctl restart nginx"
+            else
+                _bad "nothing answers HTTPS on port 443 -- this is what users hit" \
+                     "sudo nginx -t && sudo systemctl restart nginx"
+            fi
         else
             _bad "nginx answers but cannot reach the backend (HTTP $code)" \
                  "sudo systemctl restart jt-ipam-backend && journalctl -u jt-ipam-backend -n 50 --no-pager"
@@ -2567,7 +2601,8 @@ cmd_upgrade() {
     if [[ "$_rdy_tls" == "nginx" ]]; then
         # 走使用者實際走的路徑（443 → nginx → 後端）。**刻意不用 /healthz**：
         # nginx 自己就靜態回它 200，後端停著也一樣綠。
-        _rdy_url="https://127.0.0.1/api/v1/system/version"
+        _rdy_url="$(local_front_url)/api/v1/system/version"
+        [[ "$_rdy_url" == http://* ]] && log "Local nginx has no HTTPS listener (external reverse proxy mode); checking over HTTP on :80 instead."
     else
         _rdy_port="$(grep -oP 'BACKEND_BIND_PORT=\K\S+' "$ENV_FILE" 2>/dev/null || echo 8443)"
         _rdy_url="https://127.0.0.1:${_rdy_port}/api/v1/system/version"
@@ -2587,7 +2622,7 @@ cmd_upgrade() {
     local _up_tls _up_port _up_url
     _up_tls="$(grep -oP 'BACKEND_TLS_MODE=\K\S+' "$ENV_FILE" 2>/dev/null || echo nginx)"
     _up_port="$(grep -oP 'BACKEND_PORT=\K\S+' "$ENV_FILE" 2>/dev/null || echo 8443)"
-    if [[ "$_up_tls" == "nginx" ]]; then _up_url="https://127.0.0.1"; else _up_url="https://127.0.0.1:${_up_port}"; fi
+    if [[ "$_up_tls" == "nginx" ]]; then _up_url="$(local_front_url)"; else _up_url="https://127.0.0.1:${_up_port}"; fi
     install_local_scan_agent "$ROOT/backend" "$ENV_FILE" "$JTIPAM_USER" "$_up_url"
 
     trap - ERR
